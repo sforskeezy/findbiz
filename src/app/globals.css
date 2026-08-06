@@ -63,6 +63,16 @@ button:disabled {
   outline-offset: 2px;
 }
 
+/* Keep search fields chrome-free; buttons/links still get the focus ring above. */
+input:focus,
+input:focus-visible,
+textarea:focus,
+textarea:focus-visible,
+select:focus,
+select:focus-visible {
+  outline: none;
+}
+
 .scrollbar-none {
   scrollbar-width: none;
 }

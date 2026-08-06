@@ -85,7 +85,7 @@ export function SearchLanding() {
                       onChange={(event) => setAddress(event.target.value)}
                       onFocus={() => setFocused(true)}
                       onBlur={() => setFocused(false)}
-                      className="h-full min-w-0 flex-1 bg-transparent text-sm font-medium text-[#1c1c19] outline-none focus:outline-none focus-visible:outline-none placeholder:font-normal placeholder:text-[#999992]"
+                      className="h-full min-w-0 flex-1 bg-transparent text-sm font-medium text-[#1c1c19] outline-none ring-0 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 placeholder:font-normal placeholder:text-[#999992]"
                       placeholder="Street address or street + ZIP"
                       autoComplete="street-address"
                       autoFocus
@@ -97,7 +97,7 @@ export function SearchLanding() {
                       <select
                         value={radius}
                         onChange={(event) => setRadius(event.target.value)}
-                        className="h-full w-full appearance-none rounded-full border border-[#e4e4df]/90 bg-[#f7f7f4]/90 pl-4 pr-9 text-xs font-semibold text-[#252522] outline-none transition hover:bg-white focus:border-[#c9d2ef] focus:bg-white"
+                        className="h-full w-full appearance-none rounded-full border border-[#e4e4df]/90 bg-[#f7f7f4]/90 pl-4 pr-9 text-xs font-semibold text-[#252522] outline-none ring-0 transition hover:bg-white focus:border-[#e4e4df]/90 focus:bg-white focus:outline-none focus:ring-0"
                       >
                         {radii.map((item) => (
                           <option key={item.value} value={item.value}>

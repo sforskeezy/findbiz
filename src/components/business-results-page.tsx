@@ -197,7 +197,7 @@ export function BusinessResultsPage() {
                     onChange={(event) => setQueryAddress(event.target.value)}
                     onFocus={() => setFocused(true)}
                     onBlur={() => setFocused(false)}
-                    className="min-w-0 flex-1 bg-transparent text-sm text-[#282825] outline-none"
+                    className="min-w-0 flex-1 bg-transparent text-sm text-[#282825] outline-none ring-0 focus:outline-none focus:ring-0 focus-visible:outline-none"
                     placeholder="Street address or street + ZIP"
                   />
                 </label>
