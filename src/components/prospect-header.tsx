@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
+import { Pencil } from "lucide-react";
 
 const GITHUB_URL = process.env.NEXT_PUBLIC_GITHUB_URL || "https://github.com/sforskeezy/findbiz";
 
@@ -54,6 +55,106 @@ function RotatingTagline() {
   );
 }
 
+function RewriteBackLink({ href, label }: { href: string; label: string }) {
+  const [display, setDisplay] = useState(label);
+  const [phase, setPhase] = useState<"idle" | "erase" | "write">("idle");
+  const timersRef = useRef<number[]>([]);
+
+  function clearTimers() {
+    for (const id of timersRef.current) window.clearTimeout(id);
+    timersRef.current = [];
+  }
+
+  function schedule(fn: () => void, delay: number) {
+    timersRef.current.push(window.setTimeout(fn, delay));
+  }
+
+  function startRewrite() {
+    if (typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      return;
+    }
+    if (phase !== "idle") return;
+
+    clearTimers();
+    setPhase("erase");
+
+    const eraseStep = 32;
+    const typeStep = 40;
+
+    for (let i = 0; i <= label.length; i += 1) {
+      schedule(() => setDisplay(label.slice(0, label.length - i)), i * eraseStep);
+    }
+
+    const eraseDone = label.length * eraseStep + 120;
+    schedule(() => setPhase("write"), eraseDone);
+
+    for (let i = 1; i <= label.length; i += 1) {
+      schedule(() => setDisplay(label.slice(0, i)), eraseDone + i * typeStep);
+    }
+
+    schedule(() => {
+      setDisplay(label);
+      setPhase("idle");
+    }, eraseDone + label.length * typeStep + 60);
+  }
+
+  function stopRewrite() {
+    clearTimers();
+    setDisplay(label);
+    setPhase("idle");
+  }
+
+  useEffect(() => () => clearTimers(), []);
+
+  const rewriting = phase !== "idle";
+  const progress = label.length ? display.length / label.length : 1;
+
+  return (
+    <Link
+      href={href}
+      aria-label={label}
+      className="group inline-flex items-center text-xs font-semibold text-[#666660] transition hover:text-[#151513] focus:outline-none focus-visible:outline-none"
+      onMouseLeave={stopRewrite}
+    >
+      <span className="relative inline-grid tracking-[-0.01em]">
+        {/* Width lock so the header doesn't jump while the pencil writes. */}
+        <span className="invisible col-start-1 row-start-1 inline-flex items-center gap-1 whitespace-nowrap" aria-hidden="true">
+          {label}
+          <Pencil size={14} strokeWidth={2} />
+        </span>
+
+        <span className="col-start-1 row-start-1 inline-flex items-end whitespace-nowrap" aria-hidden="true">
+          <span className="relative">
+            {display}
+            <span
+              className="pointer-events-none absolute bottom-[-2px] left-0 h-px origin-left bg-current/35 transition-[width] duration-75"
+              style={{ width: rewriting ? `${progress * 100}%` : "0%" }}
+            />
+          </span>
+          <span
+            className="relative ml-0.5 inline-flex shrink-0"
+            onMouseEnter={startRewrite}
+            onFocus={startRewrite}
+          >
+            <Pencil
+              size={14}
+              strokeWidth={2}
+              aria-hidden="true"
+              className={
+                phase === "erase"
+                  ? "pencil-erase text-[#151513]"
+                  : phase === "write"
+                    ? "pencil-write text-[#151513]"
+                    : "transition duration-300 group-hover:-rotate-12"
+              }
+            />
+          </span>
+        </span>
+      </span>
+    </Link>
+  );
+}
+
 export function ProspectHeader({ backHref, backLabel }: { backHref?: string; backLabel?: string }) {
   return (
     <header className="relative z-20 mx-auto flex h-28 w-full max-w-[1180px] items-center justify-between px-5 sm:px-8">
@@ -68,9 +169,7 @@ export function ProspectHeader({ backHref, backLabel }: { backHref?: string; bac
         />
       </Link>
       {backHref ? (
-        <Link href={backHref} className="text-xs font-semibold text-[#666660] transition hover:text-[#151513]">
-          ← {backLabel ?? "Back"}
-        </Link>
+        <RewriteBackLink href={backHref} label={backLabel ?? "Back"} />
       ) : (
         <div className="flex items-center gap-3 sm:gap-4">
           <RotatingTagline />

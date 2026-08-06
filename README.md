@@ -6,9 +6,9 @@ Independent, open-source business prospect research helper.
 
 1. Enter an address.
 2. Choose a nearby business from public/licensed directory data.
-3. Review a public-business brief, official FCC broadband availability observations, and optional AI-assisted outreach draft.
+3. Review a public-business brief, official FCC broadband availability observations, and optional outreach draft.
 
-There is no map dashboard and **no connection to Prism or any Spectrum internal system**.
+There is no map dashboard and **no connection to any Spectrum internal system**.
 
 - Public repo purpose: full transparency if a manager, compliance reviewer, or auditor asks what the tool is.
 - Compliance statement: [`COMPLIANCE.md`](./COMPLIANCE.md)
@@ -27,19 +27,7 @@ Open `http://localhost:3000`.
 
 Live nearby-business discovery uses OpenStreetMap contributors through Nominatim and Overpass by default. Set `OSM_CONTACT_EMAIL` in `.env.local` so public-service requests identify the operator. `USE_DEMO_DATA=true` is an explicit development-only opt-in.
 
-Copy `.env.example` to `.env.local` and fill only the keys you are licensed to use.
-
-## Qwen 3.5 Flash
-
-Server-only Qwen configuration:
-
-```dotenv
-QWEN_API_KEY=
-QWEN_MODEL=qwen3.5-flash
-QWEN_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
-```
-
-`DASHSCOPE_API_KEY` is also accepted. Qwen writes the brief and outreach copy; deterministic application code owns the numeric fit score. Prompts forbid invented business facts and current-provider claims.
+Copy `.env.example` to `.env.local` and fill only the keys you are licensed to use. Optional profile/outreach drafting uses a server-only OpenAI-compatible endpoint configured with `RESEARCH_API_KEY`, `RESEARCH_MODEL`, and `RESEARCH_BASE_URL`. Deterministic application code owns the numeric fit score.
 
 ## Real FCC data
 

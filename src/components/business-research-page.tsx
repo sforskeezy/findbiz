@@ -73,8 +73,7 @@ function formatDate(value: string | null) {
 
 function cleanNote(message: string) {
   return message
-    .replace(/Qwen(?:\s*3\.5(?:\s*Flash)?)?/gi, "profile generation")
-    .replace(/DASHSCOPE[_\s]?API[_\s]?KEY/gi, "API key")
+    .replace(/RESEARCH[_\s]?API[_\s]?KEY/gi, "API key")
     .replace(/QWEN[_\s]?API[_\s]?KEY/gi, "API key");
 }
 
@@ -156,7 +155,7 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
         setStep("profile");
 
         try {
-          const aiResponse = await fetch("/api/ai/brief", {
+          const aiResponse = await fetch("/api/brief", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ prospect: selected, broadband: observations }),

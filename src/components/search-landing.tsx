@@ -128,33 +128,17 @@ export function SearchLanding() {
             </p>
           )}
 
-          <div className="mx-auto mt-8 max-w-[640px] space-y-2 text-[10px] leading-5 text-[#898983]">
-            <p>
-              Independent open-source research helper. Not affiliated with, endorsed by, or connected to Charter,
-              Spectrum, or Spectrum Business internal systems (including Prism).
-            </p>
-            <p>Public business listings and official FCC availability observations only — not subscriptions or orderability guarantees.</p>
-            <p>This product uses the FCC Data API but is not endorsed or certified by the FCC.</p>
-            <p>
-              <a
-                href={process.env.NEXT_PUBLIC_GITHUB_URL || "https://github.com/sforskeezy/findbiz"}
-                target="_blank"
-                rel="noreferrer"
-                className="font-semibold text-[#5f5f59] underline-offset-2 transition hover:text-[#151513] hover:underline"
-              >
-                View source on GitHub
-              </a>
-              {" · "}
-              <a
-                href="https://github.com/sforskeezy/findbiz/blob/master/COMPLIANCE.md"
-                target="_blank"
-                rel="noreferrer"
-                className="font-semibold text-[#5f5f59] underline-offset-2 transition hover:text-[#151513] hover:underline"
-              >
-                Compliance statement
-              </a>
-            </p>
-          </div>
+          <p className="mx-auto mt-6 max-w-[520px] text-[10px] leading-5 text-[#898983]">
+            Built on open public data only — no scraping, no internal systems.{" "}
+            <a
+              href={process.env.NEXT_PUBLIC_GITHUB_URL || "https://github.com/sforskeezy/findbiz"}
+              target="_blank"
+              rel="noreferrer"
+              className="font-semibold text-[#5f5f59] underline-offset-2 transition hover:text-[#151513] hover:underline"
+            >
+              Source on GitHub
+            </a>
+          </p>
         </div>
       </section>
     </main>

@@ -1,19 +1,19 @@
 import type { AiBriefResult, BroadbandObservation, Prospect } from "@/lib/types";
 
-type QwenChatResponse = {
+type ChatResponse = {
   choices?: Array<{ message?: { content?: string } }>;
   error?: { message?: string };
 };
 
 function requireString(value: unknown, name: string) {
-  if (typeof value !== "string" || !value.trim()) throw new Error(`Qwen omitted ${name}.`);
+  if (typeof value !== "string" || !value.trim()) throw new Error(`Profile generation omitted ${name}.`);
   return value.trim();
 }
 
 function requireStringArray(value: unknown, name: string, minimum = 1) {
-  if (!Array.isArray(value)) throw new Error(`Qwen returned an invalid ${name}.`);
+  if (!Array.isArray(value)) throw new Error(`Profile generation returned an invalid ${name}.`);
   const values = value.filter((item): item is string => typeof item === "string" && Boolean(item.trim()));
-  if (values.length < minimum) throw new Error(`Qwen omitted ${name}.`);
+  if (values.length < minimum) throw new Error(`Profile generation omitted ${name}.`);
   return values.map((item) => item.trim());
 }
 
@@ -99,23 +99,25 @@ function validateClaims(brief: AiBriefResult) {
     ...brief.discoveryQuestions,
   ];
   if (prose.some(containsCurrentProviderClaim)) {
-    throw new Error("Qwen returned an unsupported current-provider claim.");
+    throw new Error("Profile generation returned an unsupported current-provider claim.");
   }
 }
 
-export function qwenConfigured() {
-  return Boolean(process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY);
+export function researchBriefConfigured() {
+  return Boolean(process.env.RESEARCH_API_KEY && process.env.RESEARCH_MODEL && process.env.RESEARCH_BASE_URL);
 }
 
-export async function generateWithQwen(
+export async function generateResearchBrief(
   prospect: Prospect,
   broadband: BroadbandObservation[],
 ): Promise<AiBriefResult> {
-  const apiKey = process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY;
-  if (!apiKey) throw new Error("Qwen is not configured.");
+  const apiKey = process.env.RESEARCH_API_KEY?.trim();
+  const model = process.env.RESEARCH_MODEL?.trim();
+  const baseUrl = process.env.RESEARCH_BASE_URL?.trim().replace(/\/$/, "");
+  if (!apiKey || !model || !baseUrl) {
+    throw new Error("Profile generation is not configured.");
+  }
 
-  const baseUrl = (process.env.QWEN_BASE_URL || "https://dashscope-intl.aliyuncs.com/compatible-mode/v1").replace(/\/$/, "");
-  const model = process.env.QWEN_MODEL || "qwen3.5-flash";
   const facts = {
     business: {
       name: prospect.name,
@@ -186,10 +188,10 @@ If isIllustrative is true, begin summary by saying this is a fictitious demonstr
     cache: "no-store",
   });
 
-  const payload = (await response.json()) as QwenChatResponse;
-  if (!response.ok) throw new Error(payload.error?.message || `Qwen request failed (${response.status}).`);
+  const payload = (await response.json()) as ChatResponse;
+  if (!response.ok) throw new Error(payload.error?.message || `Profile generation failed (${response.status}).`);
   const content = payload.choices?.[0]?.message?.content;
-  if (!content) throw new Error("Qwen returned an empty response.");
+  if (!content) throw new Error("Profile generation returned an empty response.");
 
   const result = parseResult(content);
   validateClaims(result);

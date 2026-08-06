@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
 
 import { fccRuntimeConfigured } from "@/lib/fcc";
-import { qwenConfigured } from "@/lib/qwen";
+import { researchBriefConfigured } from "@/lib/research-brief";
 
 export function GET() {
   return NextResponse.json({
-    qwenConfigured: qwenConfigured(),
+    researchBriefConfigured: researchBriefConfigured(),
     googlePlacesConfigured:
       Boolean(process.env.GOOGLE_MAPS_API_KEY) && process.env.ENABLE_GOOGLE_PLACES === "true",
     databaseConfigured: Boolean(process.env.DATABASE_URL),

@@ -241,7 +241,9 @@ export function BusinessResultsPage() {
               </p>
               <h1 className="mt-3.5 max-w-[820px] text-[34px] font-semibold leading-[1.04] tracking-[-0.05em] text-[#141412] sm:text-[46px]">
                 {research.prospects.length} businesses{" "}
-                <span className="text-[#a6a69e]">near {shortAddress(research.target.formattedAddress)}</span>
+                <span className="text-shimmer-once text-[#a6a69e]">
+                  near {shortAddress(research.target.formattedAddress)}
+                </span>
               </h1>
               <p className="mt-4 max-w-[520px] text-sm leading-6 text-[#70706a]">
                 Choose a business to research its fit and address-specific broadband options.

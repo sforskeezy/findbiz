@@ -1,6 +1,6 @@
 # ProspectIQ — product and implementation blueprint
 
-Prepared August 5, 2026. This is an independent, unofficial, single-user research application that can support Spectrum Business prospecting workflows using public data only. It is not affiliated with Charter/Spectrum and has no connection to Prism or any other Spectrum internal system. See `/COMPLIANCE.md`.
+Prepared August 5, 2026. This is an independent, unofficial, single-user research application that can support Spectrum Business prospecting workflows using public data only. It is not affiliated with Charter/Spectrum and has no connection to any Spectrum internal system. See `/COMPLIANCE.md`.
 
 ## 1. Proposed system architecture
 
@@ -9,8 +9,8 @@ Prepared August 5, 2026. This is an independent, unofficial, single-user researc
 - Next.js App Router, TypeScript, React, and Tailwind CSS.
 - Server-only route handlers for geocoding, directory, FCC, and AI calls.
 - PostgreSQL with PostGIS in the production phase; browser-local persistence in the Phase 1 prototype.
-- Qwen `qwen3.5-flash` through Alibaba Cloud Model Studio's OpenAI-compatible endpoint.
-- Provider adapters so business directories, geocoders, maps, broadband sources, and AI models can be changed without rewriting the search workflow.
+- Optional OpenAI-compatible research-brief endpoint for outreach drafting.
+- Provider adapters so business directories, geocoders, maps, broadband sources, and research-brief drafting can be changed without rewriting the search workflow.
 - CSV creation on an explicit user action; no automatic outreach or data transfer.
 
 ```mermaid
@@ -21,7 +21,7 @@ flowchart LR
   R --> D["Licensed business-directory adapter"]
   R --> F["FCC download / import adapter"]
   R --> M["Manual broadband adapter"]
-  R --> Q["Qwen research adapter"]
+  R --> Q["Research brief adapter"]
   R --> S["Deterministic scoring engine"]
   R --> P[("PostgreSQL + PostGIS")]
   W --> C["User-triggered CSV export"]
@@ -57,7 +57,7 @@ Implementations planned or present:
 - `FccOfficialDownloadAdapter` can retrieve authorized bulk files.
 - `FccCsvImportAdapter` will ingest official files with checksums and source vintages.
 - `ManualBroadbandAdapter` is working in the prototype.
-- `QwenResearchAdapter` is working server-side; Qwen never controls the numeric score.
+- `ResearchBriefAdapter` is working server-side; the drafting step never controls the numeric score.
 - Mock/fixture adapters keep local development useful without making real-world claims.
 
 ### Search pipeline
@@ -70,7 +70,7 @@ Implementations planned or present:
 6. Exclude permanently closed, clearly residential, and out-of-radius records.
 7. Attach exact-address broadband observations where possible. Area-level observations remain **Estimated**.
 8. Calculate the deterministic, versioned prospect score.
-9. Send Qwen a minimized fact pack for prose only. Validate its structured JSON before saving.
+9. Send a minimized fact pack for prose drafting only. Validate its structured JSON before saving.
 10. Store source records, data dates, retrieval dates, adapter status, and sanitized errors.
 11. Return partial successful results when one provider fails.
 
@@ -101,7 +101,7 @@ The executable proposal is in `db/schema.sql`. Enable `postgis`, `citext`, and `
 | `source_records` | Provenance, terms URL, checksum, freshness, and retention metadata. |
 | `business_location_sources` | Field-level source attribution for a business location. |
 | `prospect_scores` | Versioned factor values, evidence multiplier, total, and explanation. |
-| `research_briefs` | Qwen model/prompt version and validated generated content. |
+| `research_briefs` | Drafting model/prompt version and validated generated content. |
 | `research_brief_sources` | Sources supporting each brief. |
 | `saved_prospects` | User shortlist and notes. |
 | `manual_corrections` | Auditable user edits with rationale and optional evidence. |
@@ -129,7 +129,7 @@ Prices are list-price estimates as of August 5, 2026 and must be checked again b
 | Geocoding | Same licensed provider or a separately licensed geocoder | Usage-based or quote | Keep this in its own adapter. |
 | Broadband availability files | FCC BDC Public Data API | No published API-call fee | FCC account plus API token required. Address matching is a separate licensing issue. |
 | Address-to-FCC Location ID | CostQuest commercial Fabric/Match API | Quote required | No-cost FCC Tier 4 licenses do not fit commercial sales use. |
-| AI research copy | Alibaba Model Studio, `qwen3.5-flash`, international scope | $0.10/M input tokens; $0.40/M output tokens | At 1,500 input + 800 output tokens: about $0.00047/brief, or $0.47/1,000 briefs. Promotional/free quotas may apply. |
+| Research copy drafting | Operator-configured OpenAI-compatible endpoint | Varies by vendor | Keep optional; application code owns the numeric score. |
 | Database | PostgreSQL/PostGIS | $0 local; managed hosting varies | Size for normalized data and indexes, not raw provider archives. |
 
 ### Google reference pricing and contractual caution
@@ -142,9 +142,7 @@ If a legal/contract review specifically authorizes Google Maps Platform for this
 
 Nearby Search returns at most 20 results per call, so broad category coverage may require multiple calls. At 1,000 searches per month with four Enterprise Nearby calls each, the rough Places charge is `(4,000 - 1,000) × $0.035 = $105/month`; geocoding and one map load per search remain within the stated free caps.
 
-However, the standard [Google Maps Platform Terms](https://cloud.google.com/maps-platform/terms) restrict indexing, storing, and exporting Google Maps Content; saving business names and addresses; creating content from Maps Content; and use to create or augment an advertising product. Those restrictions conflict with saved prospects, scoring, Qwen briefs, and CSV export. Standard Google Places therefore remains disabled pending written permission or legal approval. See also the [Places policies](https://developers.google.com/maps/documentation/places/web-service/policies), [pricing](https://developers.google.com/maps/billing-and-pricing/pricing), and [SKU field triggers](https://developers.google.com/maps/billing-and-pricing/sku-details).
-
-Qwen pricing source: [Alibaba Cloud Model Studio pricing](https://www.alibabacloud.com/help/en/model-studio/model-pricing).
+However, the standard [Google Maps Platform Terms](https://cloud.google.com/maps-platform/terms) restrict indexing, storing, and exporting Google Maps Content; saving business names and addresses; creating content from Maps Content; and use to create or augment an advertising product. Those restrictions conflict with saved prospects, scoring, drafted briefs, and CSV export. Standard Google Places therefore remains disabled pending written permission or legal approval. See also the [Places policies](https://developers.google.com/maps/documentation/places/web-service/policies), [pricing](https://developers.google.com/maps/billing-and-pricing/pricing), and [SKU field triggers](https://developers.google.com/maps/billing-and-pricing/sku-details).
 
 ## 4. Compliant FCC broadband access
 
@@ -187,7 +185,7 @@ Run an eligibility gate before scoring:
 
 - Exclude permanently closed, clearly residential, and out-of-radius records.
 - Keep temporarily closed records only with a visible warning and optional score cap.
-- Missing facts earn zero points. Qwen cannot guess inputs or alter the score.
+- Missing facts earn zero points. Drafting cannot guess inputs or alter the score.
 
 ```text
 Score = clamp(round(D + C + N + S + B + Q), 0, 100)
@@ -266,7 +264,7 @@ Absence of a competitor record never proves that no competitor exists. Display t
 │ Broadband            —            0/30                  │
 │ Evidence readiness   ━━━━━━       6/10                  │
 ├────────────────────────────────────────────────────────┤
-│ Qwen research brief                [Generate with Qwen] │
+│ Research brief                     [Generate brief]     │
 │ Summary · Hypotheses · Opportunity · Questions          │
 │ Dark, copyable call opener                             │
 │ Follow-up email                                        │
@@ -287,8 +285,8 @@ The visual system is deliberately black, white, and warm gray. Cobalt marks sele
 | Public-site crawling violates terms or robots rules | Medium / High | No crawling by default; use authorized APIs or user-provided text. |
 | Claiming a business's current provider without evidence | Medium / High | Model availability observations only; visible scope/confidence labels; prohibited-claim tests. |
 | FCC/provider data is stale, provider-reported, residential, or approximate | High / High | Store source/scope/date; apply staleness policy and evidence multiplier; show conflicts. |
-| Qwen invents facts | Medium / High | Minimized structured fact pack, JSON validation, deterministic score, hypothesis labels, human review. |
-| Qwen retention/region/cross-border processing | Medium / High | Review vendor DPA and region; send business-only data; allow AI to be disabled. |
+| Drafting invents facts | Medium / High | Minimized structured fact pack, JSON validation, deterministic score, hypothesis labels, human review. |
+| Drafting vendor retention/region/cross-border processing | Medium / High | Review vendor DPA and region; send business-only data; allow drafting to be disabled. |
 | Telemarketing, Do-Not-Call, TCPA, or state-law violations | Medium / High | No auto-dialing/sending; add suppression workflow before any outreach automation; legal review. |
 | CAN-SPAM or deceptive email | Medium / High | Draft only; user sends manually; no misleading subject or unsupported personalization. |
 | Unnecessary personal information | Medium / High | Business-level records only; no contact-person enrichment in MVP; retention/deletion controls. |
@@ -297,7 +295,7 @@ The visual system is deliberately black, white, and warm gray. Cobalt marks sele
 | Dedupe merges franchise locations | Medium / Medium | Keep location entities separate; conservative merge; auditable split/correction. |
 | Category scoring becomes opaque or biased | Medium / Medium | Versioned visible factors; no protected traits or proxies; manual review. |
 | Trademark or implied official endorsement | Low / High | Private/internal positioning and approved brand language; no implication of internal access. |
-| Accidental Prism/internal-system interaction | Low / High | No connector, URL, credential, import, or automation path for internal systems. |
+| Accidental internal-system interaction | Low / High | No connector, URL, credential, import, or automation path for internal systems. |
 | Provider quota/cost spike | Medium / Medium | Radius/result caps, details on demand, budget alarms, rate limits, adapter audit. |
 | Raw provider payload retention breaches license/privacy | Medium / Medium | Persist only permitted normalized fields; short encrypted TTL only when allowed. |
 
@@ -324,7 +322,7 @@ Formal provider-terms, outreach-compliance, security, and privacy review is requ
    - Add conflict, scope, source-date, and staleness handling.
 6. **Phase 3 scoring**
    - Implement and test versioned category/need rules, exact factor breakdown, input hash, evidence multiplier, and confidence.
-7. **Phase 3 Qwen research**
+7. **Phase 3 research drafting**
    - Strict structured output, minimized facts, deterministic fallback, unsupported-claim validation, and source tracing.
 8. **Phase 4 workflow**
    - Saved prospects, notes, immutable history, manual corrections, improved dedupe, reporting.
@@ -341,7 +339,7 @@ Implemented now:
 - Relative radius map with target and score markers.
 - Category filters, minimum score, sort controls, explainable results table, and CSV export.
 - Prospect detail drawer with factor-by-factor score, hypotheses, discovery questions, call opener, email draft, and sources.
-- Validated server-only Qwen `qwen3.5-flash` adapter with JSON output validation and deterministic template fallback.
+- Validated server-only research-brief adapter with JSON output validation and deterministic template fallback.
 - Manual broadband entry with provider, technology, speeds, classification, scope, source/as-of date, retrieval date, and confidence.
 - Saved prospects and search history in browser-local storage.
 - Data-source status screen and explicit no-internal-system boundary.
