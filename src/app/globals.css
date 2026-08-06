@@ -1,0 +1,181 @@
+@import "tailwindcss";
+
+:root {
+  --canvas: #f3f3f0;
+  --surface: #ffffff;
+  --ink: #11110f;
+  --muted: #6f706b;
+  --line: #dfdfda;
+  --line-strong: #c9cac4;
+  --accent: #2855e7;
+  --success: #19734a;
+  --warning: #95640c;
+  --danger: #b42318;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--canvas);
+}
+
+body {
+  min-height: 100vh;
+  margin: 0;
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: Inter, "Segoe UI", Helvetica, Arial, sans-serif;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button,
+a,
+select {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button:not(:disabled),
+select:not(:disabled) {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+::selection {
+  background: #dfe7ff;
+  color: var(--ink);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.scrollbar-none {
+  scrollbar-width: none;
+}
+
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+.animate-enter {
+  animation: enter 420ms cubic-bezier(0.2, 0.75, 0.2, 1) both;
+}
+
+.assessment-highlight {
+  background-color: rgb(246 231 168 / 0.95);
+  color: inherit;
+  padding: 0.12em 0.28em;
+  margin: 0 -0.08em;
+  border-radius: 0.35em;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+.ambient-orb {
+  animation: ambient-drift 16s ease-in-out infinite alternate;
+}
+
+.ambient-orb-delayed {
+  animation: ambient-drift-delayed 19s ease-in-out infinite alternate;
+}
+
+.fit-bar {
+  transform-origin: left center;
+  animation: fit-bar 720ms cubic-bezier(0.2, 0.75, 0.2, 1) both;
+}
+
+.research-pulse {
+  animation: research-pulse 1.35s ease-in-out infinite;
+}
+
+.research-sweep {
+  animation: research-sweep 1.6s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+@keyframes enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fit-bar {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+@keyframes ambient-drift {
+  to {
+    transform: translate3d(36px, -22px, 0) scale(1.05);
+  }
+}
+
+@keyframes ambient-drift-delayed {
+  to {
+    transform: translate3d(-28px, 18px, 0) scale(0.96);
+  }
+}
+
+@keyframes research-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes research-sweep {
+  0% {
+    transform: translateX(-110%);
+  }
+  100% {
+    transform: translateX(410%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@media print {
+  body {
+    background: white;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+}

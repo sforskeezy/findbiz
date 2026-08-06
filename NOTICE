@@ -1,0 +1,22 @@
+PAI / ProspectIQ
+Copyright (c) 2026 PAI / ProspectIQ contributors
+
+This product uses the FCC Data API but is not endorsed or certified by the FCC.
+
+This project is an independent, unofficial, open-source research tool.
+It is not affiliated with, endorsed by, sponsored by, or approved by
+Charter Communications, Spectrum, Spectrum Business, Spectrum Enterprise,
+or any related affiliate.
+
+"Spectrum", "Spectrum Business", "Spectrum Enterprise", "Charter", and
+related marks are trademarks of their respective owners. Any mention of
+those marks in outreach templates is for optional use by individuals who
+are already authorized to represent that brand. The marks are not product
+branding for this software.
+
+Public data sources used by this project may include:
+- FCC Broadband Data Collection / National Broadband Map public downloads and APIs
+- OpenStreetMap / Nominatim / Overpass (contributor data, ODbL where applicable)
+- Optional third-party directory APIs configured by the operator
+
+See COMPLIANCE.md for the full intended-use and non-affiliation statement.
