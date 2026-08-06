@@ -25,7 +25,7 @@ npm run dev
 
 Open `http://localhost:3000`.
 
-Live nearby-business discovery uses OpenStreetMap contributors through Nominatim and Overpass by default. Set `OSM_CONTACT_EMAIL` in `.env.local` so public-service requests identify the operator. `USE_DEMO_DATA=true` is an explicit development-only opt-in.
+Live nearby-business discovery prefers **RapidAPI Maps Data** (`maps-data.p.rapidapi.com`) — Google Maps listings — when `RAPIDAPI_KEY` is set. Direct Google Places and OpenStreetMap are fallbacks. `USE_DEMO_DATA=true` is an explicit development-only opt-in.
 
 Copy `.env.example` to `.env.local` and fill only the keys you are licensed to use. Optional profile/outreach drafting uses a server-only OpenAI-compatible endpoint configured with `RESEARCH_API_KEY`, `RESEARCH_MODEL`, and `RESEARCH_BASE_URL`. Deterministic application code owns the numeric fit score.
 

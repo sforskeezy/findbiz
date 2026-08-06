@@ -366,13 +366,19 @@ async function geocodeWithNominatim(query: string, parsed: ParsedAddress): Promi
 async function geocodeWithRapidApi(query: string, parsed: ParsedAddress): Promise<Candidate[]> {
   const apiKey = process.env.RAPIDAPI_KEY?.trim();
   if (!apiKey) return [];
-  const host = process.env.RAPIDAPI_HOST?.trim() || "local-business-data.p.rapidapi.com";
+  const host = process.env.RAPIDAPI_HOST?.trim() || "maps-data.p.rapidapi.com";
+  const path = host.includes("maps-data") ? "/searchmaps.php" : "/search";
 
-  const url = new URL(`https://${host}/search`);
+  const url = new URL(`https://${host}${path}`);
   url.searchParams.set("query", query);
   url.searchParams.set("limit", "5");
-  url.searchParams.set("language", "en");
-  url.searchParams.set("region", "us");
+  if (host.includes("maps-data")) {
+    url.searchParams.set("lang", "en");
+    url.searchParams.set("country", "us");
+  } else {
+    url.searchParams.set("language", "en");
+    url.searchParams.set("region", "us");
+  }
 
   const response = await fetch(url, {
     headers: {

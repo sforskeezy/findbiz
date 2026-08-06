@@ -34,26 +34,28 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Choose a supported search radius." }, { status: 400 });
   }
 
-  const googleKey = process.env.GOOGLE_MAPS_API_KEY;
-  const googleExplicitlyEnabled = process.env.ENABLE_GOOGLE_PLACES === "true";
+  const googleKey = process.env.GOOGLE_MAPS_API_KEY?.trim();
+  const googleDisabled = process.env.ENABLE_GOOGLE_PLACES === "false";
   if (process.env.USE_DEMO_DATA === "true") {
     return NextResponse.json(generateDemoResearch(address, radiusMiles));
   }
 
   try {
+    // Prefer RapidAPI Maps Data (Google Maps listings) — matches what reps see in Maps.
     if (hasRapidApiKey()) {
       try {
         const rapid = await researchWithRapidApi(address, radiusMiles);
         if (rapid.prospects.length > 0) return NextResponse.json(rapid);
       } catch {
-        // Quota, outages, or empty provider — fall through to OpenStreetMap.
+        // Quota/outage — fall through to Google Cloud Places or OpenStreetMap.
       }
     }
 
-    const result =
-      googleKey && googleExplicitlyEnabled
-        ? await researchWithGoogle(address, radiusMiles, googleKey)
-        : await researchWithOpenStreetMap(address, radiusMiles);
+    if (googleKey && !googleDisabled) {
+      return NextResponse.json(await researchWithGoogle(address, radiusMiles, googleKey));
+    }
+
+    const result = await researchWithOpenStreetMap(address, radiusMiles);
     return NextResponse.json(result);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Research provider failed.";

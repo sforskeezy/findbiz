@@ -11,7 +11,7 @@ type GooglePlace = {
   id?: string;
   displayName?: GoogleText;
   formattedAddress?: string;
-  location?: Coordinates;
+  location?: { latitude?: number; longitude?: number; lat?: number; lng?: number };
   types?: string[];
   primaryType?: string;
   primaryTypeDisplayName?: GoogleText;
@@ -23,6 +23,13 @@ type GooglePlace = {
   userRatingCount?: number;
   businessStatus?: "OPERATIONAL" | "CLOSED_TEMPORARILY" | "CLOSED_PERMANENTLY";
 };
+
+function placeCoordinates(place: GooglePlace): Coordinates | null {
+  const lat = place.location?.latitude ?? place.location?.lat;
+  const lng = place.location?.longitude ?? place.location?.lng;
+  if (lat == null || lng == null || Number.isNaN(lat) || Number.isNaN(lng)) return null;
+  return { lat, lng };
+}
 
 type GeocodeResponse = {
   status?: string;
@@ -104,35 +111,54 @@ async function geocode(address: string, apiKey: string) {
   };
 }
 
-async function nearby(center: Coordinates, radiusMiles: number, apiKey: string) {
+const NEARBY_FIELD_MASK = [
+  "places.id",
+  "places.displayName",
+  "places.formattedAddress",
+  "places.location",
+  "places.types",
+  "places.primaryType",
+  "places.primaryTypeDisplayName",
+  "places.nationalPhoneNumber",
+  "places.websiteUri",
+  "places.googleMapsUri",
+  "places.regularOpeningHours",
+  "places.rating",
+  "places.userRatingCount",
+  "places.businessStatus",
+].join(",");
+
+// Nearby Search (New) caps at 20 per request. Fan out by type so results
+// closer match what reps see in Google Maps for a given address.
+const NEARBY_TYPE_BATCHES: string[][] = [
+  [], // unrestricted pass — closest establishments overall
+  ["dentist", "doctor", "hospital", "physiotherapist", "pharmacy"],
+  ["lawyer", "accounting", "bank", "insurance_agency", "real_estate_agency"],
+  ["restaurant", "cafe", "bar", "hotel", "store", "grocery_store"],
+  ["car_repair", "car_dealer", "car_wash", "electrician", "plumber", "general_contractor"],
+  ["school", "preschool", "child_care_agency", "warehouse", "moving_company", "storage"],
+];
+
+async function nearbyOnce(
+  center: Coordinates,
+  radiusMiles: number,
+  apiKey: string,
+  includedTypes: string[],
+) {
   const response = await fetch(NEARBY_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "X-Goog-Api-Key": apiKey,
-      "X-Goog-FieldMask": [
-        "places.id",
-        "places.displayName",
-        "places.formattedAddress",
-        "places.location",
-        "places.types",
-        "places.primaryType",
-        "places.primaryTypeDisplayName",
-        "places.nationalPhoneNumber",
-        "places.websiteUri",
-        "places.googleMapsUri",
-        "places.regularOpeningHours",
-        "places.rating",
-        "places.userRatingCount",
-        "places.businessStatus",
-      ].join(","),
+      "X-Goog-FieldMask": NEARBY_FIELD_MASK,
     },
     body: JSON.stringify({
       maxResultCount: 20,
       rankPreference: "DISTANCE",
+      ...(includedTypes.length ? { includedTypes } : {}),
       locationRestriction: {
         circle: {
-          center,
+          center: { latitude: center.lat, longitude: center.lng },
           radius: Math.min(radiusMiles * 1609.344, 50000),
         },
       },
@@ -148,11 +174,33 @@ async function nearby(center: Coordinates, radiusMiles: number, apiKey: string) 
   return payload.places ?? [];
 }
 
+async function nearby(center: Coordinates, radiusMiles: number, apiKey: string) {
+  const batches = await Promise.allSettled(
+    NEARBY_TYPE_BATCHES.map((types) => nearbyOnce(center, radiusMiles, apiKey, types)),
+  );
+
+  const byId = new Map<string, GooglePlace>();
+  let firstError: Error | null = null;
+  for (const batch of batches) {
+    if (batch.status === "fulfilled") {
+      for (const place of batch.value) {
+        if (place.id && !byId.has(place.id)) byId.set(place.id, place);
+      }
+    } else if (!firstError) {
+      firstError = batch.reason instanceof Error ? batch.reason : new Error(String(batch.reason));
+    }
+  }
+
+  if (!byId.size && firstError) throw firstError;
+  return [...byId.values()];
+}
+
 function toProspect(place: GooglePlace, target: Coordinates, retrievedAt: string): Prospect | null {
-  if (!place.id || !place.displayName?.text || !place.location) return null;
+  const location = placeCoordinates(place);
+  if (!place.id || !place.displayName?.text || !location) return null;
   if (place.businessStatus === "CLOSED_PERMANENTLY") return null;
 
-  const distance = distanceMiles(target, place.location);
+  const distance = distanceMiles(target, location);
   const category = categoryFor(place);
   const needs = needsByCategory[category] ?? needsByCategory["Professional services"];
   const { total, breakdown } = scoreProspect({
@@ -173,7 +221,7 @@ function toProspect(place: GooglePlace, target: Coordinates, retrievedAt: string
     id: place.id,
     name,
     address: place.formattedAddress ?? "Unavailable",
-    coordinates: place.location,
+    coordinates: location,
     distanceMiles: distance,
     category,
     phone: place.nationalPhoneNumber ?? null,
