@@ -78,27 +78,30 @@ button:disabled {
 .text-shimmer-once {
   color: #a6a69e;
   background-image: linear-gradient(
-    105deg,
+    90deg,
     #a6a69e 0%,
-    #a6a69e 38%,
-    #efefe9 50%,
-    #a6a69e 62%,
+    #a6a69e 42%,
+    #f7f7f2 50%,
+    #a6a69e 58%,
     #a6a69e 100%
   );
-  background-size: 220% 100%;
-  background-position: 100% 0;
+  background-size: 280% 100%;
+  background-repeat: no-repeat;
+  background-position: 100% 50%;
   background-clip: text;
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
-  animation: text-shimmer-once 1.35s cubic-bezier(0.22, 0.7, 0.25, 1) 1 both;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  animation: text-shimmer-once 1.85s cubic-bezier(0.4, 0, 0.2, 1) 1 forwards;
 }
 
 @keyframes text-shimmer-once {
-  from {
-    background-position: 100% 0;
+  0% {
+    background-position: 100% 50%;
   }
-  to {
-    background-position: -120% 0;
+  100% {
+    background-position: 0% 50%;
   }
 }
 
