@@ -6,7 +6,7 @@ import type { BroadbandObservation, Prospect } from "@/lib/types";
 export async function POST(request: Request) {
   if (!researchBriefConfigured()) {
     return NextResponse.json(
-      { error: "Profile generation is not configured. Add RESEARCH_API_KEY, RESEARCH_MODEL, and RESEARCH_BASE_URL to .env.local." },
+      { error: "Profile generation is not configured." },
       { status: 503 },
     );
   }

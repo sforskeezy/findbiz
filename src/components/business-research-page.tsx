@@ -7,10 +7,40 @@ import { ThinkingOrb } from "thinking-orbs";
 
 import { ProspectHeader } from "@/components/prospect-header";
 import { cn } from "@/components/ui";
-import type { AiBriefResult, BroadbandObservation, FccLookupResponse, Prospect, ResearchResponse } from "@/lib/types";
+import { classifyServiceability, displayServiceability } from "@/lib/serviceability";
+import type {
+  AiBriefResult,
+  BroadbandObservation,
+  FccLookupResponse,
+  Prospect,
+  RepDisposition,
+  ResearchResponse,
+  ServiceabilitySignal,
+} from "@/lib/types";
 
 type ResearchStep = "business" | "fcc" | "profile" | "complete";
-type Tab = "research" | "broadband" | "outreach";
+type Tab = "research" | "availability" | "outreach";
+
+const DISPOSITION_STORAGE_KEY = "prospectiq.serviceabilityDisposition";
+
+function readDisposition(prospectId: string): RepDisposition | null {
+  try {
+    const raw = window.localStorage.getItem(DISPOSITION_STORAGE_KEY);
+    if (!raw) return null;
+    const map = JSON.parse(raw) as Record<string, RepDisposition>;
+    return map[prospectId] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function writeDisposition(prospectId: string, value: RepDisposition | null) {
+  const raw = window.localStorage.getItem(DISPOSITION_STORAGE_KEY);
+  const map = (raw ? JSON.parse(raw) : {}) as Record<string, RepDisposition>;
+  if (value) map[prospectId] = value;
+  else delete map[prospectId];
+  window.localStorage.setItem(DISPOSITION_STORAGE_KEY, JSON.stringify(map));
+}
 
 function verdict(score: number) {
   if (score >= 70) return "Prioritize this call";
@@ -71,12 +101,6 @@ function formatDate(value: string | null) {
   return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" }).format(new Date(value));
 }
 
-function cleanNote(message: string) {
-  return message
-    .replace(/RESEARCH[_\s]?API[_\s]?KEY/gi, "API key")
-    .replace(/QWEN[_\s]?API[_\s]?KEY/gi, "API key");
-}
-
 export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
   const params = useSearchParams();
   const address = params.get("address") ?? "";
@@ -86,10 +110,11 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
   const [brief, setBrief] = useState<AiBriefResult | null>(null);
   const [broadband, setBroadband] = useState<BroadbandObservation[]>([]);
   const [fcc, setFcc] = useState<FccLookupResponse | null>(null);
+  const [signal, setSignal] = useState<ServiceabilitySignal | null>(null);
+  const [disposition, setDisposition] = useState<RepDisposition | null>(null);
   const [step, setStep] = useState<ResearchStep>("business");
   const [tab, setTab] = useState<Tab>("research");
   const [error, setError] = useState("");
-  const [aiNote, setAiNote] = useState("");
   const [saved, setSaved] = useState(false);
   const [toast, setToast] = useState("");
 
@@ -116,6 +141,7 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
         if (!selected) throw new Error("This business was not found in the current search.");
         if (cancelled) return;
         setProspect(selected);
+        setDisposition(readDisposition(selected.id));
 
         const existingSaved = JSON.parse(window.localStorage.getItem("prospectiq.saved") || "[]") as Prospect[];
         setSaved(existingSaved.some((item) => item.id === selected!.id));
@@ -135,11 +161,15 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
             }),
           });
           const fccPayload = (await fccResponse.json()) as FccLookupResponse;
-          if (!cancelled) setFcc(fccPayload);
+          const nextSignal = fccPayload.serviceability ?? classifyServiceability(fccPayload);
+          if (!cancelled) {
+            setFcc(fccPayload);
+            setSignal(nextSignal);
+          }
           if (fccResponse.ok && fccPayload.status === "available") observations = fccPayload.observations;
         } catch {
           if (!cancelled) {
-            setFcc({
+            const fallback: FccLookupResponse = {
               status: "error",
               observations: [],
               message: "The FCC lookup failed. No provider claim was generated.",
@@ -147,7 +177,9 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
               asOfDate: null,
               matchedLocationId: null,
               matchQuality: "none",
-            });
+            };
+            setFcc(fallback);
+            setSignal(classifyServiceability(fallback));
           }
         }
         if (cancelled) return;
@@ -165,7 +197,8 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
             throw new Error(aiPayload.error || "Profile generation did not return a brief.");
           }
           if (!cancelled) setBrief(aiPayload.brief);
-        } catch (aiError) {
+        } catch {
+          // Fall back to the source-bounded template quietly — never surface env/config errors in the UI.
           if (!cancelled) {
             setBrief({
               summary: selected.summary,
@@ -175,13 +208,6 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
               callOpener: selected.callOpener,
               followUpEmail: selected.followUpEmail,
             });
-            setAiNote(
-              cleanNote(
-                aiError instanceof Error
-                  ? aiError.message
-                  : "Profile generation was unavailable; the source-bounded template is shown.",
-              ),
-            );
           }
         }
         if (!cancelled) setStep("complete");
@@ -220,6 +246,18 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
       body: body ? highlightSummary(body, prospect, used) : null,
     };
   }, [brief, prospect]);
+
+  const displayedSignal = useMemo(() => {
+    if (!signal) return null;
+    return displayServiceability(signal, disposition);
+  }, [signal, disposition]);
+
+  function setRepDisposition(next: RepDisposition | null) {
+    if (!prospect) return;
+    setDisposition(next);
+    writeDisposition(prospect.id, next);
+    setToast(next ? "Note saved on this device." : "Note cleared.");
+  }
 
   function toggleSaved() {
     if (!prospect) return;
@@ -289,6 +327,11 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                       {prospect.score}
                       <span className="ml-1 text-xs font-medium text-[#85857f]">/ 100</span>
                     </p>
+                    {displayedSignal && (
+                      <p className={cn("mt-2 text-[11px] font-semibold", displayedSignal.toneClass)}>
+                        {displayedSignal.shortLabel}
+                      </p>
+                    )}
                   </div>
                   <button
                     type="button"
@@ -316,7 +359,7 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                   {(
                     [
                       ["research", "Research"],
-                      ["broadband", "Broadband"],
+                      ["availability", "Availability"],
                       ["outreach", "Outreach"],
                     ] as const
                   ).map(([id, label]) => (
@@ -364,36 +407,83 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                           </p>
                         </div>
                       )}
-
-                      {aiNote && <p className="mt-8 text-xs leading-5 text-[#8a8a84]">{aiNote}</p>}
                     </div>
                   </section>
                 )}
 
-                {tab === "broadband" && (
+                {tab === "availability" && (
                   <section className="py-10">
-                    <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
-                      <div>
-                        <p className="text-[13px] font-medium tracking-[-0.01em] text-[#777771]">Official availability data</p>
-                        <h2 className="mt-3 text-3xl font-semibold tracking-[-0.04em] text-[#1a1a17]">
-                          {fcc?.matchQuality === "exact" || fcc?.matchedLocationId
-                            ? "Providers reported at this location"
-                            : "Providers reported for this area"}
-                        </h2>
-                      </div>
+                    <div className="max-w-[760px]">
+                      <p className="text-[13px] font-medium tracking-[-0.01em] text-[#777771]">Availability</p>
+                      <h2
+                        className={cn(
+                          "mt-4 max-w-[18ch] text-[40px] font-semibold leading-[1.05] tracking-[-0.05em] sm:text-[52px]",
+                          displayedSignal?.toneClass ?? "text-[#141412]",
+                        )}
+                      >
+                        {displayedSignal?.shortLabel ?? "Checking availability"}
+                      </h2>
+                      <p className="mt-4 max-w-[36rem] text-[15px] leading-7 text-[#6e6e68]">
+                        {displayedSignal?.detail ?? "Looking up FCC provider-reported availability for this address."}
+                      </p>
                       {fcc?.asOfDate && (
-                        <span className="text-[11px] text-[#85857f]">FCC data as of {formatDate(fcc.asOfDate)}</span>
+                        <p className="mt-3 text-xs text-[#85857f]">FCC data as of {formatDate(fcc.asOfDate)}</p>
                       )}
+
+                      <div className="mt-8 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs font-semibold">
+                        <button
+                          type="button"
+                          onClick={() => setRepDisposition(disposition === "customer" ? null : "customer")}
+                          className={cn(
+                            "transition",
+                            disposition === "customer" ? "text-[#17653f]" : "text-[#8a8a84] hover:text-[#171715]",
+                          )}
+                        >
+                          Mark active
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setRepDisposition(disposition === "do_not_contact" ? null : "do_not_contact")}
+                          className={cn(
+                            "transition",
+                            disposition === "do_not_contact" ? "text-[#a63a31]" : "text-[#8a8a84] hover:text-[#171715]",
+                          )}
+                        >
+                          Do not touch
+                        </button>
+                        {disposition && (
+                          <button
+                            type="button"
+                            onClick={() => setRepDisposition(null)}
+                            className="text-[#8a8a84] transition hover:text-[#171715]"
+                          >
+                            Clear note
+                          </button>
+                        )}
+                      </div>
+
+                      <p className="mt-8 max-w-[40rem] text-xs leading-5 text-[#85857f]">
+                        FCC filings only — not Spectrum’s serviceability tool, not a subscription claim, and not an orderability
+                        guarantee. Confirm in the official tool before quoting. This product uses the FCC Data API but is not
+                        endorsed or certified by the FCC.
+                      </p>
                     </div>
-                    <p className="mt-4 max-w-[720px] text-sm leading-6 text-[#70706a]">
-                      These are official FCC provider-reported availability records for the business location’s census block or matched Fabric point. They are not the business’s current subscription and do not guarantee orderability. This product uses the FCC Data API but is not endorsed or certified by the FCC.
-                    </p>
+
+                    <div className="mt-12">
+                      <p className="text-[13px] font-medium tracking-[-0.01em] text-[#777771]">Providers on file</p>
+                      <h3 className="mt-2 text-xl font-semibold tracking-[-0.03em] text-[#1a1a17]">
+                        {fcc?.matchQuality === "exact" || fcc?.matchedLocationId
+                          ? "Reported at this location"
+                          : "Reported for this area"}
+                      </h3>
+                    </div>
+
                     {broadband.length > 0 && fcc?.message && (
                       <p className="mt-3 max-w-[760px] text-xs leading-5 text-[#85857f]">{fcc.message}</p>
                     )}
 
                     {broadband.length ? (
-                      <div className="mt-8 space-y-0 border-t border-[#e6e6e1]">
+                      <div className="mt-6 space-y-0 border-t border-[#e6e6e1]">
                         {broadband.map((item) => (
                           <div
                             key={item.id}
@@ -422,7 +512,7 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                         ))}
                       </div>
                     ) : (
-                      <div className="mt-8 max-w-[720px]">
+                      <div className="mt-6 max-w-[720px]">
                         <p className="text-sm font-semibold text-[#2d2d29]">No FCC provider records were returned.</p>
                         <p className="mt-2 text-sm leading-6 text-[#777771]">
                           {fcc?.message ?? "The FCC lookup did not return availability for this location."}

@@ -119,6 +119,24 @@ export type AiBriefResult = Pick<
   | "followUpEmail"
 >;
 
+/** FCC-derived Charter/Spectrum signal — not Spectrum orderability. */
+export type ServiceabilityTier = "reported_exact" | "reported_area" | "not_reported";
+
+/** Rep-owned local note only — never inferred from FCC data. */
+export type RepDisposition = "customer" | "do_not_contact";
+
+export type FccMatchQuality = "exact" | "user_supplied_location_id" | "area_h3" | "none";
+
+export type ServiceabilitySignal = {
+  tier: ServiceabilityTier;
+  providerLabel: string | null;
+  asOfDate: string | null;
+  matchQuality: FccMatchQuality;
+  shortLabel: string;
+  detail: string;
+  disclaimer: string;
+};
+
 export type FccLookupResponse = {
   status: "available" | "not_configured" | "no_exact_match" | "unavailable" | "error";
   observations: BroadbandObservation[];
@@ -126,5 +144,6 @@ export type FccLookupResponse = {
   sourceUrl: string;
   asOfDate: string | null;
   matchedLocationId: string | null;
-  matchQuality: "exact" | "user_supplied_location_id" | "area_h3" | "none";
+  matchQuality: FccMatchQuality;
+  serviceability?: ServiceabilitySignal;
 };

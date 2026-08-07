@@ -44,6 +44,13 @@ PAI / ProspectIQ is an **independent, unofficial, open-source** local research h
 - Exact rooftop Fabric matching may require a separate CostQuest commercial license. Without that license, the app must stay on the permitted public-index / area-level path and must not scrape the FCC map UI.
 - Do not modify FCC content and still claim the FCC as the source.
 
+### FCC serviceability signal
+
+- The in-app **FCC serviceability signal** is a confidence ladder from FCC match quality for Charter/Spectrum brand filings (exact vs area vs not reported).
+- It is **not** Spectrum’s internal or customer-facing serviceability tool, not an orderability guarantee, and not proof of an active customer.
+- **Active** and **Do not touch** colors are optional notes the user sets locally on their device. The app never infers those from FCC data and must not store Spectrum account details.
+- Absence of a Charter/Spectrum FCC row means **not reported**, not “impossible to serve.”
+
 ### Business directory / map data
 
 - Default public discovery may use OpenStreetMap ecosystem services. Follow their usage policies, identify your client, and respect rate limits.

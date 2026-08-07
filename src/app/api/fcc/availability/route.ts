@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { lookupFccAvailability } from "@/lib/fcc";
+import { classifyServiceability } from "@/lib/serviceability";
 import type { Coordinates } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -40,5 +41,11 @@ export async function POST(request: Request) {
     coordinates: body.coordinates,
     locationId,
   });
-  return NextResponse.json(result, { status: result.status === "error" ? 502 : 200 });
+  return NextResponse.json(
+    {
+      ...result,
+      serviceability: classifyServiceability(result),
+    },
+    { status: result.status === "error" ? 502 : 200 },
+  );
 }

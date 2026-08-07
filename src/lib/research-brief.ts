@@ -1,3 +1,4 @@
+import { findCharterSpectrumObservations } from "@/lib/serviceability";
 import type { AiBriefResult, BroadbandObservation, Prospect } from "@/lib/types";
 
 type ChatResponse = {
@@ -46,7 +47,7 @@ function speedLabel(observation: BroadbandObservation) {
 // Availability rows are the only sourced numbers in the brief, so the angle is built
 // deterministically here rather than left to the model.
 function measurableOpportunity(fallbackOpportunity: string, broadband: BroadbandObservation[]) {
-  const spectrum = broadband.find((item) => item.provider.toLowerCase().includes("spectrum"));
+  const spectrum = findCharterSpectrumObservations(broadband)[0];
   if (!spectrum) return fallbackOpportunity;
 
   const speeds = speedLabel(spectrum);
