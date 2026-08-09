@@ -1,39 +1,26 @@
 import { NextResponse } from "next/server";
 
+import { NO_STORE_HEADERS } from "@/lib/api-safety";
+import { commercialProviderStatus } from "@/lib/commercial-provider";
 import { fccRuntimeConfigured } from "@/lib/fcc";
-import { hasGooglePlacesKey } from "@/lib/google-places";
-import { PAI_PLACES_LABEL } from "@/lib/pai-places";
-import { placesCacheStatus } from "@/lib/places-cache";
-import { hasRapidApiKey } from "@/lib/rapidapi-local-business";
+import { overtureConfigurationStatus } from "@/lib/overture";
 import { researchBriefConfigured } from "@/lib/research-brief";
 
 export async function GET() {
-  const cache = await placesCacheStatus();
-  const googleOptIn = hasGooglePlacesKey();
-  const rapidOptIn = hasRapidApiKey();
-
-  return NextResponse.json({
-    researchBriefConfigured: researchBriefConfigured(),
-    paiPlaces: {
-      geocodeApi: "/api/places/geocode",
-      nearbyApi: "/api/places/nearby",
-      attribution: PAI_PLACES_LABEL,
-      discoverySources: ["OpenStreetMap (Overpass)", "Local PAI Places cache"],
-      geocoders: ["US Census", "Photon", "Nominatim"],
-      localCache: cache,
+  const overture = overtureConfigurationStatus();
+  const commercial = commercialProviderStatus();
+  return NextResponse.json(
+    {
+      researchBriefConfigured: researchBriefConfigured(),
+      businessDataMode: "pai_places_v2",
+      discoverySources: {
+        overture: { status: overture.configured ? "ready" : "unavailable", code: overture.code },
+        openStreetMap: { status: "supplemental", code: "OVERPASS_SEQUENTIAL_FALLBACK" },
+        commercial: { status: commercial.configured ? "ready" : "disabled", code: commercial.code },
+      },
+      fccMode: fccRuntimeConfigured() ? "current_bdc_local_index" : "data_unavailable",
+      zeroRetention: true,
     },
-    // /api/research always uses PAI Places. Deprecated providers are never primary.
-    businessDataMode: "pai_places",
-    deprecatedProviders: {
-      googlePlaces: googleOptIn ? "opt_in_available_unused_by_research" : "disabled",
-      rapidApiMapsData: rapidOptIn ? "opt_in_available_unused_by_research" : "disabled",
-      note: "Research and /api/places/* always use PAI Places. Google/RapidAPI modules remain in the tree but are not called by default.",
-    },
-    databaseConfigured: Boolean(process.env.DATABASE_URL),
-    fccMode: fccRuntimeConfigured()
-      ? process.env.COSTQUEST_API_TOKEN
-        ? "official_exact_and_area"
-        : "official_area"
-      : "not_configured",
-  });
+    { headers: NO_STORE_HEADERS },
+  );
 }

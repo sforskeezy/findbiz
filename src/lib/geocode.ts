@@ -1,10 +1,11 @@
 import type { Confidence, Coordinates } from "@/lib/types";
+import { createTimeoutSignal } from "@/lib/request-safety";
 
 export type GeocodeResult = {
   formattedAddress: string;
   coordinates: Coordinates;
   confidence: Confidence;
-  provider: "census" | "photon" | "nominatim" | "rapidapi";
+  provider: "census" | "photon" | "nominatim";
 };
 
 type ParsedAddress = {
@@ -215,7 +216,6 @@ function scoreCandidate(candidate: Omit<Candidate, "score">, parsed: ParsedAddre
   if (parsed.city && formatted.includes(normalizeToken(parsed.city))) score += 18;
   if (candidate.confidence === "Verified") score += 10;
   if (candidate.provider === "census") score += 6;
-  if (candidate.provider === "rapidapi") score += 5;
   return score;
 }
 
@@ -225,7 +225,7 @@ async function geocodeWithCensus(query: string): Promise<GeocodeResult | null> {
   url.searchParams.set("benchmark", "Public_AR_Current");
   url.searchParams.set("format", "json");
 
-  const response = await fetch(url, { cache: "no-store" });
+  const response = await fetch(url, { cache: "no-store", signal: createTimeoutSignal(4_500) });
   if (!response.ok) return null;
   const payload = (await response.json()) as {
     result?: {
@@ -282,6 +282,7 @@ async function geocodeWithPhoton(query: string, parsed: ParsedAddress): Promise<
   const response = await fetch(url, {
     headers: { Accept: "application/json", "User-Agent": userAgent() },
     cache: "no-store",
+    signal: createTimeoutSignal(4_500),
   });
   if (!response.ok) return [];
 
@@ -351,6 +352,7 @@ async function geocodeWithNominatim(query: string, parsed: ParsedAddress): Promi
   const response = await fetch(url, {
     headers: { "User-Agent": userAgent(), Accept: "application/json" },
     cache: "no-store",
+    signal: createTimeoutSignal(5_000),
   });
   if (!response.ok) return null;
   const results = (await response.json()) as Array<{ lat: string; lon: string; display_name: string }>;
@@ -361,63 +363,6 @@ async function geocodeWithNominatim(query: string, parsed: ParsedAddress): Promi
     confidence: "Estimated",
     provider: "nominatim",
   };
-}
-
-async function geocodeWithRapidApi(query: string, parsed: ParsedAddress): Promise<Candidate[]> {
-  if (process.env.ENABLE_RAPIDAPI_PLACES !== "true") return [];
-  const apiKey = process.env.RAPIDAPI_KEY?.trim();
-  if (!apiKey) return [];
-  const host = process.env.RAPIDAPI_HOST?.trim() || "maps-data.p.rapidapi.com";
-  const path = host.includes("maps-data") ? "/searchmaps.php" : "/search";
-
-  const url = new URL(`https://${host}${path}`);
-  url.searchParams.set("query", query);
-  url.searchParams.set("limit", "5");
-  if (host.includes("maps-data")) {
-    url.searchParams.set("lang", "en");
-    url.searchParams.set("country", "us");
-  } else {
-    url.searchParams.set("language", "en");
-    url.searchParams.set("region", "us");
-  }
-
-  const response = await fetch(url, {
-    headers: {
-      "x-rapidapi-key": apiKey,
-      "x-rapidapi-host": host,
-      Accept: "application/json",
-    },
-    cache: "no-store",
-  });
-  if (!response.ok) return [];
-
-  const payload = (await response.json()) as {
-    data?: Array<{
-      name?: string;
-      full_address?: string;
-      address?: string;
-      latitude?: number;
-      longitude?: number;
-      type?: string;
-      subtypes?: string[];
-    }>;
-  };
-
-  const out: Candidate[] = [];
-  for (const place of payload.data ?? []) {
-    if (place.latitude == null || place.longitude == null) continue;
-    const formatted = place.full_address || place.address || place.name || query;
-    const result: GeocodeResult = {
-      formattedAddress: formatted,
-      coordinates: { lat: place.latitude, lng: place.longitude },
-      confidence: "Estimated",
-      provider: "rapidapi",
-    };
-    // Prefer places that look like the address itself over random businesses.
-    const nameBonus = place.name && normalizeToken(place.name).includes("state route") ? 8 : 0;
-    out.push({ ...result, score: scoreCandidate(result, parsed) + nameBonus });
-  }
-  return out;
 }
 
 export async function geocodeAddress(inputAddress: string): Promise<GeocodeResult> {
@@ -470,18 +415,6 @@ export async function geocodeAddress(inputAddress: string): Promise<GeocodeResul
     }
   }
 
-  // RapidAPI geocoding is opt-in only (and usually quota-exhausted).
-  if (process.env.ENABLE_RAPIDAPI_PLACES === "true" && !candidates.some((item) => item.score >= 40)) {
-    for (const query of [parsed.raw, ...queries.slice(0, 1)]) {
-      try {
-        candidates.push(...(await geocodeWithRapidApi(query, parsed)));
-      } catch {
-        // Optional paid provider / monthly quota.
-      }
-      if (candidates.some((item) => item.score >= 40)) break;
-    }
-  }
-
   candidates.sort((a, b) => b.score - a.score);
   const best = candidates[0];
   if (!best || best.score < 25) {
@@ -494,6 +427,6 @@ export async function geocodeAddress(inputAddress: string): Promise<GeocodeResul
     confidence: best.confidence,
     provider: best.provider,
   };
-  geocodeCache.set(key, { value, expiresAt: Date.now() + 24 * 60 * 60 * 1_000 });
+  geocodeCache.set(key, { value, expiresAt: Date.now() + 5 * 60 * 1_000 });
   return value;
 }

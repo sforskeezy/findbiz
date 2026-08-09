@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 
 function usage() {
   throw new Error(
-    "Usage: npm run fcc:import -- --db <index.sqlite> --as-of <YYYY-MM-DD> --fabric-vintage <YYYYMM> <unzipped FCC CSV files...>",
+    "Usage: npm run fcc:import -- --db <index.sqlite> --as-of <YYYY-MM-DD> --fabric-vintage <YYYYMM> [--dataset-vintage <label>] <unzipped FCC BDC CSV files...>",
   );
 }
 
@@ -16,6 +16,7 @@ function argumentsFrom(argv) {
     if (value === "--db") options.db = argv[++index];
     else if (value === "--as-of") options.asOf = argv[++index];
     else if (value === "--fabric-vintage") options.fabricVintage = argv[++index];
+    else if (value === "--dataset-vintage") options.datasetVintage = argv[++index];
     else if (value.startsWith("--")) usage();
     else options.files.push(value);
   }
@@ -87,6 +88,7 @@ database.exec(`
 const setMetadata = database.prepare("INSERT OR REPLACE INTO fcc_metadata(key, value) VALUES (?, ?)");
 setMetadata.run("fcc_as_of_date", options.asOf);
 setMetadata.run("fabric_vintage", options.fabricVintage);
+setMetadata.run("fcc_dataset_vintage", options.datasetVintage || `BDC ${options.asOf}`);
 
 const insert = database.prepare(`
   INSERT OR IGNORE INTO fcc_availability (

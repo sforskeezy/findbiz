@@ -1,20 +1,20 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "next/navigation";
 import { Copy, ExternalLink } from "lucide-react";
 import { ThinkingOrb } from "thinking-orbs";
 
 import { ProspectHeader } from "@/components/prospect-header";
 import { cn } from "@/components/ui";
 import { buildFallbackBrief } from "@/lib/brief-fallback";
-import { classifyServiceability, displayServiceability, isCharterSpectrumProvider } from "@/lib/serviceability";
+import { buildBriefRequest } from "@/lib/brief-schema";
+import { currentProspect, currentSearch } from "@/lib/client-session";
+import { classifyServiceability, displayServiceability, isCharterSpectrumObservation } from "@/lib/serviceability";
 import type {
   AiBriefResult,
   BroadbandObservation,
   FccLookupResponse,
   Prospect,
-  ResearchResponse,
   ServiceabilitySignal,
 } from "@/lib/types";
 
@@ -118,10 +118,6 @@ function formatDate(value: string | null) {
 }
 
 export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
-  const params = useSearchParams();
-  const address = params.get("address") ?? "";
-  const radius = Number(params.get("radius") ?? 0.5);
-  const backQuery = new URLSearchParams({ address, radius: String(radius) }).toString();
   const [prospect, setProspect] = useState<Prospect | null>(null);
   const [brief, setBrief] = useState<AiBriefResult | null>(null);
   const [broadband, setBroadband] = useState<BroadbandObservation[]>([]);
@@ -136,23 +132,9 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
     let cancelled = false;
     async function researchBusiness() {
       try {
-        let selected: Prospect | undefined;
-        const stored = window.sessionStorage.getItem("prospectiq.selectedProspect");
-        if (stored) {
-          const parsed = JSON.parse(stored) as Prospect;
-          if (parsed.id === prospectId) selected = parsed;
-        }
-        if (!selected) {
-          const response = await fetch("/api/research", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ address, radiusMiles: radius }),
-          });
-          const payload = (await response.json()) as ResearchResponse & { error?: string };
-          if (!response.ok) throw new Error(payload.error || "Could not reload the business search.");
-          selected = payload.prospects.find((item) => item.id === prospectId);
-        }
-        if (!selected) throw new Error("This business was not found in the current search.");
+        const selected = currentProspect(prospectId);
+        const search = currentSearch();
+        if (!selected || !search) throw new Error("This in-memory research session ended. Return to the search page and start a new search.");
         if (cancelled) return;
         setProspect(selected);
         setStep("fcc");
@@ -163,10 +145,10 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              address: MISSING_ADDRESS.has(selected.address) ? address : selected.address,
+              address: MISSING_ADDRESS.has(selected.address) ? search.address : selected.address,
               coordinates: selected.coordinates,
-              businessId: selected.id,
             }),
+            cache: "no-store",
           });
           const fccPayload = (await fccResponse.json()) as FccLookupResponse;
           const nextSignal = fccPayload.serviceability ?? classifyServiceability(fccPayload);
@@ -183,6 +165,7 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
               message: "The FCC lookup failed. No provider claim was generated.",
               sourceUrl: "https://broadbandmap.fcc.gov/home",
               asOfDate: null,
+              datasetVintage: null,
               matchedLocationId: null,
               matchQuality: "none",
             };
@@ -198,7 +181,8 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
           const aiResponse = await fetch("/api/brief", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ prospect: selected, broadband: observations }),
+            body: JSON.stringify(buildBriefRequest(selected, observations)),
+            cache: "no-store",
           });
           const aiPayload = (await aiResponse.json()) as { brief?: AiBriefResult; error?: string };
           if (!aiResponse.ok || !aiPayload.brief) {
@@ -221,7 +205,7 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
     return () => {
       cancelled = true;
     };
-  }, [address, prospectId, radius]);
+  }, [prospectId]);
 
   useEffect(() => {
     if (!toast) return;
@@ -265,6 +249,10 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
   const providerChart = useMemo(() => {
     return [...broadband].sort((a, b) => (b.downloadMbps ?? 0) - (a.downloadMbps ?? 0));
   }, [broadband]);
+  const uniqueProviderCount = useMemo(
+    () => new Set(broadband.map((item) => item.providerId || item.provider)).size,
+    [broadband],
+  );
 
   async function copy(value: string, label: string) {
     await navigator.clipboard.writeText(value);
@@ -274,7 +262,7 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
   if (error || (step === "complete" && !prospect)) {
     return (
       <main className="min-h-screen bg-[#f5f5f2]">
-        <ProspectHeader backHref={`/search?${backQuery}`} backLabel="Back to results" />
+        <ProspectHeader backHref="/search" backLabel="Back to results" />
         <div className="mx-auto flex min-h-[600px] max-w-lg items-center justify-center px-5 text-center">
           <div>
             <h1 className="text-2xl font-semibold text-[#22221f]">Research could not be completed.</h1>
@@ -287,7 +275,7 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
 
   return (
     <main className="min-h-screen bg-[#f5f5f2]">
-      <ProspectHeader backHref={`/search?${backQuery}`} backLabel="Back to results" />
+      <ProspectHeader backHref="/search" backLabel="Back to results" />
 
       <div className="mx-auto w-full max-w-[940px] px-5 pb-24 pt-6 sm:px-8 sm:pt-12">
         {prospect ? (
@@ -304,6 +292,7 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                       prospect.address,
                       `${prospect.distanceMiles.toFixed(2)} miles from the search address`,
                       prospect.phone,
+                      prospect.operatingStatus === "Temporarily closed" ? "Temporarily closed" : null,
                     ]
                       .filter(Boolean)
                       .join(" · ")}
@@ -319,14 +308,28 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                         Source record <ExternalLink size={11} />
                       </a>
                     )}
+                    {prospect.sources.map((source) => source.url && source.url !== prospect.directoryUrl ? (
+                      <a key={`${source.providerId}-${source.providerRecordId}`} href={source.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 hover:text-[#171715]">
+                        {source.label}{source.updatedAt ? ` · ${source.updatedAt.slice(0, 10)}` : " · date unavailable"} <ExternalLink size={11} />
+                      </a>
+                    ) : null)}
+                    <a
+                      href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${prospect.name} ${MISSING_ADDRESS.has(prospect.address) ? "" : prospect.address}`.trim())}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1.5 hover:text-[#171715]"
+                    >
+                      Verify on Google Maps <ExternalLink size={11} />
+                    </a>
                   </div>
                 </div>
                 <div className="shrink-0 text-right">
-                  <p className="text-[9px] font-bold uppercase tracking-[0.14em] text-[#969690]">Initial fit</p>
+                  <p className="text-[9px] font-bold uppercase tracking-[0.14em] text-[#969690]">Research heuristic</p>
                   <p className="mt-1 text-2xl font-semibold tabular-nums text-[#20201d]">
                     {prospect.score}
                     <span className="ml-1 text-xs font-medium text-[#85857f]">/ 100</span>
                   </p>
+                  <p className="mt-1 text-[10px] font-medium text-[#777771]">{prospect.priority} · {prospect.dataConfidence} confidence</p>
                   {displayedSignal && (
                     <p className={cn("mt-2 text-[11px] font-semibold", displayedSignal.toneClass)}>
                       {displayedSignal.shortLabel}
@@ -456,9 +459,18 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                         </div>
                       )}
 
+                      {brief.unsupportedClaimsToAvoid.length > 0 && (
+                        <div className="mt-12 max-w-[42rem]">
+                          <SectionHeading label="Unsupported claims to avoid" hint="Keep the call honest" />
+                          <ul className="mt-4 space-y-3 text-[13px] leading-6 text-[#666660]">
+                            {brief.unsupportedClaimsToAvoid.map((claim) => <li key={claim}>— {claim}</li>)}
+                          </ul>
+                        </div>
+                      )}
+
                       <p className="mt-6 max-w-[42rem] text-[11px] leading-5 text-[#9a9a93]">
-                        Availability figures come from public FCC provider filings for this address or area — not a
-                        subscription, quote, or serviceability guarantee. Confirm in the official tool before quoting.
+                        FCC rows are public provider filings, not subscriptions, quotes, business availability, or
+                        serviceability guarantees. Nearby rows are market context only.
                       </p>
                     </div>
                   </section>
@@ -477,7 +489,7 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                         {displayedSignal?.shortLabel ?? "Checking availability"}
                       </h2>
                       <p className="mt-4 max-w-[36rem] text-[15px] leading-7 text-[#6e6e68]">
-                        {displayedSignal?.detail ?? "Looking up FCC provider-reported availability for this address."}
+                        {displayedSignal?.detail ?? "Looking up current FCC Broadband Data Collection filing context."}
                       </p>
                       {fcc?.asOfDate && (
                         <p className="mt-3 text-xs text-[#85857f]">FCC data as of {formatDate(fcc.asOfDate)}</p>
@@ -501,12 +513,12 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                           <div className="border-b-4 border-black px-3.5 py-2">
                             <div className="flex items-end justify-between gap-3">
                               <p className="text-[11px] font-bold uppercase tracking-[0.04em]">
-                                Serving this census block
+                                Unique providers in loaded evidence
                               </p>
                               <p className="text-[13px] font-black tabular-nums">
-                                {providerChart.length}{" "}
+                                {uniqueProviderCount}{" "}
                                 <span className="text-[11px] font-bold">
-                                  {providerChart.length === 1 ? "provider" : "providers"}
+                                  {uniqueProviderCount === 1 ? "provider" : "providers"}
                                 </span>
                               </p>
                             </div>
@@ -525,7 +537,7 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
 
                           <ul>
                             {providerChart.map((item, index) => {
-                              const isSpectrum = isCharterSpectrumProvider(item.provider);
+                              const isSpectrum = isCharterSpectrumObservation(item);
                               return (
                                 <li
                                   key={item.id}
@@ -542,7 +554,7 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                                       </p>
                                       {isSpectrum && (
                                         <p className="mt-1 text-[10px] font-black uppercase tracking-[0.08em] text-[#17653f]">
-                                          Spectrum / Charter match
+                                          Configured provider identifier match
                                         </p>
                                       )}
                                     </div>
@@ -559,7 +571,7 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                                       </span>
                                     </div>
                                     <div className="flex items-baseline justify-between gap-3 border-t border-dotted border-black/35 pt-1">
-                                      <span className="font-semibold">Typical download speed</span>
+                                      <span className="font-semibold">Maximum advertised download</span>
                                       <span className="font-black tabular-nums">
                                         {item.downloadMbps != null
                                           ? `${item.downloadMbps.toLocaleString()} Mbps`
@@ -567,7 +579,7 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                                       </span>
                                     </div>
                                     <div className="flex items-baseline justify-between gap-3 border-t border-dotted border-black/35 pt-1">
-                                      <span className="font-semibold">Typical upload speed</span>
+                                      <span className="font-semibold">Maximum advertised upload</span>
                                       <span className="font-black tabular-nums">
                                         {item.uploadMbps != null
                                           ? `${item.uploadMbps.toLocaleString()} Mbps`
@@ -575,6 +587,9 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                                       </span>
                                     </div>
                                   </div>
+                                  <p className="mt-2 border-t border-dotted border-black/35 pt-2 text-[10px] font-medium leading-4">
+                                    {item.scope === "exact_location" ? "Exact FCC Location ID evidence" : "Nearby market context—not availability at this address"} · {item.matchMethod} · vintage {item.datasetVintage}
+                                  </p>
                                 </li>
                               );
                             })}
@@ -582,8 +597,8 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
 
                           <div className="border-t-4 border-black px-3.5 py-2.5">
                             <p className="text-[10px] font-medium leading-4">
-                              Speeds shown are FCC provider filings for the matched area — not a quote,
-                              subscription claim, or orderability guarantee.
+                              Maximum advertised speed pairs are preserved exactly as filed. Residential or nearby
+                              evidence does not prove business availability at this address.
                             </p>
                             <a
                               href={fcc?.sourceUrl || "https://broadbandmap.fcc.gov/home"}

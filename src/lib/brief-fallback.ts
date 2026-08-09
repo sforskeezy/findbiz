@@ -78,10 +78,15 @@ const CATEGORY_STAKES: Record<string, CategoryStakes> = {
     breaks: "the whole office goes idle at the same moment",
     growth: "headcount and device count creeping up quietly",
   },
+  "Other/Unknown": {
+    pressure: "whatever connected systems the operation actually uses",
+    breaks: "the call must establish the operational impact instead of guessing it",
+    growth: "new staff, devices, software, or locations",
+  },
 };
 
 export function categoryStakes(category: string): CategoryStakes {
-  return CATEGORY_STAKES[category] ?? CATEGORY_STAKES["Professional services"];
+  return CATEGORY_STAKES[category] ?? CATEGORY_STAKES["Other/Unknown"];
 }
 
 function speedLabel(observation: BroadbandObservation) {
@@ -101,12 +106,14 @@ export function measurableOpportunity(fallbackOpportunity: string, broadband: Br
   if (!spectrum) return fallbackOpportunity;
 
   const speeds = speedLabel(spectrum);
+  const scope = spectrum.scope === "exact_location"
+    ? "An FCC filing for the matched Location ID"
+    : "Nearby market context—not availability at this address: an FCC filing in the loaded area";
   if (!speeds) {
-    return "FCC records list Spectrum as available at this location, but without usable speed figures. Confirm the exact address, then win the conversation on reliability, support, and contract terms instead of a speed number.";
+    return `${scope} lists the configured provider without usable speed figures. Treat it only as a question to verify, never as serviceability.`;
   }
 
-  const qualifier = spectrum.confidence === "Verified" ? "" : " (estimated)";
-  const lead = `FCC records list Spectrum as available here at ${speeds}${qualifier}`;
+  const lead = `${scope} preserves a maximum advertised ${speeds} pair`;
   const alternatives = broadband.filter((item) => item.id !== spectrum.id);
   const strongestDownload = alternatives
     .filter((item) => item.downloadMbps !== null)
@@ -120,7 +127,7 @@ export function measurableOpportunity(fallbackOpportunity: string, broadband: Br
     strongestUpload?.uploadMbps != null &&
     strongestUpload.uploadMbps > spectrum.uploadMbps
   ) {
-    return `${lead}, while ${strongestUpload.provider} reports a higher ${strongestUpload.uploadMbps.toLocaleString()} Mbps upload. Avoid leading on upload — make it about download headroom, uptime, support, and terms, and verify the exact address.`;
+    return `${lead}, while ${strongestUpload.provider} filed a higher ${strongestUpload.uploadMbps.toLocaleString()} Mbps upload. Use this only to ask how they evaluate options; it does not establish business availability.`;
   }
 
   if (
@@ -128,10 +135,10 @@ export function measurableOpportunity(fallbackOpportunity: string, broadband: Br
     strongestDownload?.downloadMbps != null &&
     spectrum.downloadMbps > strongestDownload.downloadMbps
   ) {
-    return `${lead}, above the ${strongestDownload.downloadMbps.toLocaleString()} Mbps download reported by ${strongestDownload.provider}. Verify the exact address, then find out whether that extra headroom actually changes their day.`;
+    return `${lead}, above the ${strongestDownload.downloadMbps.toLocaleString()} Mbps download filed by ${strongestDownload.provider}. Verify the address and business offering before discussing options.`;
   }
 
-  return `${lead}, with no clear speed edge over the other reported providers. Verify the exact address and make the case on reliability, support, and contract terms.`;
+  return `${lead}, with no clear filed-speed edge over the other rows. Verify the address and business offering before discussing options.`;
 }
 
 function publicSignalPhrase(prospect: Prospect) {
@@ -152,12 +159,15 @@ function availabilitySentence(broadband: BroadbandObservation[]) {
   const spectrum = findCharterSpectrumObservations(broadband)[0];
   if (spectrum) {
     const speeds = speedLabel(spectrum);
+    const scope = spectrum.scope === "exact_location"
+      ? "the matched FCC Location ID"
+      : "a nearby H3 area, not this address";
     return speeds
-      ? `FCC filings report Spectrum as available in this area at ${speeds}, which is availability context only — it says nothing about who they buy from today.`
-      : "FCC filings report Spectrum as available in this area without usable speed figures, so treat it as context only — it says nothing about who they buy from today.";
+      ? `FCC filings for ${scope} preserve a maximum advertised ${speeds} pair; this is filing context, not business serviceability or a current provider.`
+      : `FCC filings for ${scope} include the configured provider without usable speeds; this is context only.`;
   }
   if (broadband.length) {
-    return `FCC filings list ${broadband.length} reported provider${broadband.length === 1 ? "" : "s"} for this area and no Spectrum row, so verify the exact address before you frame any options.`;
+    return `FCC filings list ${broadband.length} reported provider${broadband.length === 1 ? "" : "s"} in the loaded evidence and no configured-provider identifier match, so verify the exact address before you frame any options.`;
   }
   return "No FCC availability rows came back for this address, so keep provider questions genuinely open and verify the address before quoting anything.";
 }
@@ -183,8 +193,12 @@ export function buildFallbackBrief(prospect: Prospect, broadband: BroadbandObser
     ? `Public data gives you ${signals} — enough to sound prepared, not enough to assume anything about how they run.`
     : "Public data on this one is thin, so plan to learn the operation on the call instead of pitching from desk research.";
 
+  const sourceFact = prospect.sources[0]
+    ? `${prospect.sources[0].label}${prospect.sources[0].updatedAt ? ` (${prospect.sources[0].updatedAt.slice(0, 10)})` : " (date unavailable)"}`
+    : "public source (date unavailable)";
   const summary = [
     `${prospect.name} is a ${category} operation about ${prospect.distanceMiles.toFixed(2)} miles from the address you searched.`,
+    `That identity and category come from ${sourceFact}.`,
     `Businesses like this live on ${stakes.pressure}, and that load is what really decides how their day goes.`,
     `When the connection slows or drops, ${stakes.breaks} — that is the version of the problem worth talking about, not megabits.`,
     signalSentence,
@@ -220,12 +234,17 @@ export function buildFallbackBrief(prospect: Prospect, broadband: BroadbandObser
 
   return {
     summary,
-    hypothesizedNeeds: prospect.hypothesizedNeeds.slice(0, 5),
+    hypothesizedNeeds: prospect.hypothesizedNeeds.slice(0, 3),
     reflectOn,
     talkAbout,
     topOpportunity: measurableOpportunity(prospect.topOpportunity, broadband),
-    discoveryQuestions,
+    discoveryQuestions: discoveryQuestions.slice(0, 3),
     callOpener: prospect.callOpener,
+    unsupportedClaimsToAvoid: [
+      "Do not claim a current internet provider or contract status.",
+      "Do not claim serviceability, pricing, speed, or installation timing.",
+      "Do not present category-based operational possibilities as known facts.",
+    ],
     followUpEmail: prospect.followUpEmail,
   };
 }

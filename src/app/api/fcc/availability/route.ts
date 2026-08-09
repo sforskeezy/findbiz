@@ -1,51 +1,27 @@
 import { NextResponse } from "next/server";
 
+import { NO_STORE_HEADERS, checkRateLimit, fccRequestSchema, parseBoundedJson, validationMessage } from "@/lib/api-safety";
 import { lookupFccAvailability } from "@/lib/fcc";
 import { classifyServiceability } from "@/lib/serviceability";
-import type { Coordinates } from "@/lib/types";
 
 export const runtime = "nodejs";
 
+function json(body: unknown, status = 200, headers: Record<string, string> = {}) {
+  return NextResponse.json(body, { status, headers: { ...NO_STORE_HEADERS, ...headers } });
+}
+
 export async function POST(request: Request) {
-  let body: {
-    address?: string;
-    coordinates?: Coordinates;
-    locationId?: string;
-  };
+  const rate = checkRateLimit(request, "fcc", 30);
+  if (!rate.allowed) return json({ error: "Too many FCC lookups.", code: "RATE_LIMITED" }, 429, { "Retry-After": String(rate.retryAfterSeconds) });
+  let raw: unknown;
   try {
-    body = (await request.json()) as typeof body;
-  } catch {
-    return NextResponse.json({ error: "Request body must be valid JSON." }, { status: 400 });
+    raw = await parseBoundedJson(request, 8_192);
+  } catch (error) {
+    const tooLarge = error instanceof Error && error.message === "PAYLOAD_TOO_LARGE";
+    return json({ error: tooLarge ? "Request payload is too large." : "Request body must be valid JSON.", code: tooLarge ? "PAYLOAD_TOO_LARGE" : "INVALID_JSON" }, tooLarge ? 413 : 400);
   }
-
-  const address = body.address?.trim() || "";
-  const locationId = body.locationId?.trim();
-  if (address.length < 6 || address.length > 300) {
-    return NextResponse.json({ error: "A complete, bounded business address is required." }, { status: 400 });
-  }
-  if (locationId && !/^\d+$/.test(locationId)) {
-    return NextResponse.json({ error: "FCC Location ID must be numeric." }, { status: 400 });
-  }
-  if (
-    body.coordinates &&
-    (!Number.isFinite(body.coordinates.lat) ||
-      !Number.isFinite(body.coordinates.lng) ||
-      Math.abs(body.coordinates.lat) > 90 ||
-      Math.abs(body.coordinates.lng) > 180)
-  ) {
-    return NextResponse.json({ error: "Business coordinates are invalid." }, { status: 400 });
-  }
-
-  const result = await lookupFccAvailability({
-    address,
-    coordinates: body.coordinates,
-    locationId,
-  });
-  return NextResponse.json(
-    {
-      ...result,
-      serviceability: classifyServiceability(result),
-    },
-    { status: result.status === "error" ? 502 : 200 },
-  );
+  const parsed = fccRequestSchema.safeParse(raw);
+  if (!parsed.success) return json({ error: validationMessage(parsed.error), code: "INVALID_REQUEST" }, 400);
+  const result = await lookupFccAvailability(parsed.data);
+  return json({ ...result, serviceability: classifyServiceability(result) }, result.status === "error" ? 502 : 200);
 }

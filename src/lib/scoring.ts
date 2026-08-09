@@ -1,33 +1,30 @@
-import type { ScoreBreakdown } from "@/lib/types";
+import type { DataConfidence, ScoreBreakdown } from "@/lib/types";
 
 type ScoreInput = {
   distanceMiles: number;
   category: string;
-  rating: number | null;
-  reviewCount: number | null;
   hasPhone: boolean;
   hasWebsite: boolean;
-  locationCount: number | null;
-  verifiedBroadbandDelta: boolean;
-  uploadGapMbps?: number;
-  confidence: "Verified" | "Estimated" | "Manually entered" | "Unavailable" | "Potentially stale";
+  sourceCount: number;
+  dataConfidence: DataConfidence;
+  evidenceCompleteness: number;
 };
 
 const industryFit: Record<string, number> = {
   "Medical & dental": 15,
   "Legal & accounting": 15,
   "Logistics & warehouse": 15,
-  "Property management": 15,
-  "Financial services": 15,
-  "Education & childcare": 15,
-  "Automotive": 12,
-  "Hospitality & food": 12,
-  "Professional services": 15,
-  "Retail": 12,
-  "Construction": 12,
+  "Property management": 13,
+  "Financial services": 12,
+  "Education & childcare": 11,
+  Automotive: 13,
+  "Hospitality & food": 13,
+  "Professional services": 14,
+  Retail: 12,
+  Construction: 13,
   "Agriculture & equine": 12,
   "Community & faith": 8,
-  "Other": 8,
+  "Other/Unknown": 7,
 };
 
 const dependence: Record<string, number> = {
@@ -36,15 +33,15 @@ const dependence: Record<string, number> = {
   "Logistics & warehouse": 18,
   "Property management": 18,
   "Financial services": 20,
-  "Education & childcare": 18,
-  "Automotive": 15,
+  "Education & childcare": 17,
+  Automotive: 15,
   "Hospitality & food": 17,
   "Professional services": 18,
-  "Retail": 16,
-  "Construction": 14,
+  Retail: 16,
+  Construction: 14,
   "Agriculture & equine": 13,
   "Community & faith": 10,
-  "Other": 10,
+  "Other/Unknown": 9,
 };
 
 function proximityScore(distanceMiles: number) {
@@ -55,41 +52,18 @@ function proximityScore(distanceMiles: number) {
   return 2;
 }
 
-export function scoreProspect(input: ScoreInput): {
-  total: number;
-  breakdown: ScoreBreakdown;
-} {
-  const organizationScale = Math.min(
-    10,
-    (input.locationCount && input.locationCount > 1 ? 5 : 2) +
-      (input.reviewCount && input.reviewCount >= 100 ? 3 : input.reviewCount ? 2 : 0) +
-      (input.rating ? 1 : 0) +
-      (input.hasWebsite ? 1 : 0),
-  );
-
-  const broadbandOpportunity = input.verifiedBroadbandDelta
-    ? Math.min(30, 12 + Math.max(0, Math.round((input.uploadGapMbps ?? 0) / 10)))
-    : 0;
-
-  const confidenceBase =
-    input.confidence === "Verified"
-      ? 5
-      : input.confidence === "Manually entered"
-        ? 4
-        : input.confidence === "Estimated"
-          ? 3
-          : 1;
-  const dataConfidence = Math.min(
-    10,
-    confidenceBase + (input.hasPhone ? 1 : 0) + (input.hasWebsite ? 1 : 0) + (input.rating ? 1 : 0),
-  );
+export function scoreProspect(input: ScoreInput): { total: number; breakdown: ScoreBreakdown } {
+  const evidencePoints = (input.hasPhone ? 2 : 0) + (input.hasWebsite ? 2 : 0) + Math.min(3, input.sourceCount);
+  const organizationScale = Math.min(10, 2 + evidencePoints);
+  const confidenceBase = input.dataConfidence === "High" ? 6 : input.dataConfidence === "Medium" ? 4 : 2;
+  const dataConfidence = Math.min(10, confidenceBase + Math.round(input.evidenceCompleteness / 34));
 
   const breakdown: ScoreBreakdown = {
     proximity: proximityScore(input.distanceMiles),
-    industryFit: industryFit[input.category] ?? industryFit.Other,
-    operationalDependence: dependence[input.category] ?? dependence.Other,
+    industryFit: industryFit[input.category] ?? industryFit["Other/Unknown"],
+    operationalDependence: dependence[input.category] ?? dependence["Other/Unknown"],
     organizationScale,
-    broadbandOpportunity,
+    broadbandOpportunity: 0,
     dataConfidence,
   };
 
@@ -104,15 +78,15 @@ export function describeScore(
   distanceMiles: number,
   category: string,
   breakdown: ScoreBreakdown,
+  confidence: DataConfidence,
+  completeness: number,
 ) {
   const reasons = [
     `${distanceMiles.toFixed(2)} miles from the target`,
-    `${category.toLowerCase()} operations often depend on connected systems`,
+    `${category.toLowerCase()} category fit`,
+    `${confidence.toLowerCase()} data confidence`,
+    `${completeness}% evidence completeness`,
   ];
-
-  if (breakdown.organizationScale >= 7) reasons.push("public signals suggest meaningful operating scale");
-  if (breakdown.broadbandOpportunity >= 12) reasons.push("verified public data shows a measurable broadband gap");
-  else reasons.push("address-level broadband still needs verification");
-
-  return `Score ${score}. ${reasons.join(", ")}.`;
+  if (breakdown.broadbandOpportunity === 0) reasons.push("FCC context is not used to decide business eligibility");
+  return `Prospect-research heuristic ${score}/100: ${reasons.join(", ")}. It is not a probability of sale.`;
 }

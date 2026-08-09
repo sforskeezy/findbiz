@@ -1,49 +1,31 @@
 import { NextResponse } from "next/server";
 
-import { generateDemoResearch } from "@/lib/demo-data";
+import { NO_STORE_HEADERS, checkRateLimit, parseBoundedJson, placeSearchRequestSchema, validationMessage } from "@/lib/api-safety";
 import { researchWithPaiPlaces } from "@/lib/pai-places";
+import { redactError } from "@/lib/request-safety";
 
-const allowedRadii = new Set([0.25, 0.5, 1, 2, 5]);
+function json(body: unknown, status = 200, headers: Record<string, string> = {}) {
+  return NextResponse.json(body, { status, headers: { ...NO_STORE_HEADERS, ...headers } });
+}
 
 export async function POST(request: Request) {
-  let body: unknown;
+  const rate = checkRateLimit(request, "research", 20);
+  if (!rate.allowed) return json({ error: "Too many searches. Try again shortly.", code: "RATE_LIMITED" }, 429, { "Retry-After": String(rate.retryAfterSeconds) });
+  let raw: unknown;
   try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "Request body must be valid JSON." }, { status: 400 });
-  }
-
-  const address =
-    typeof body === "object" && body !== null && "address" in body && typeof body.address === "string"
-      ? body.address.trim()
-      : "";
-  const radiusMiles =
-    typeof body === "object" && body !== null && "radiusMiles" in body
-      ? Number(body.radiusMiles)
-      : 0.25;
-
-  if (address.length < 6 || address.length > 300) {
-    return NextResponse.json(
-      { error: "Enter a complete street address between 6 and 300 characters." },
-      { status: 400 },
-    );
-  }
-  if (!allowedRadii.has(radiusMiles)) {
-    return NextResponse.json({ error: "Choose a supported search radius." }, { status: 400 });
-  }
-
-  if (process.env.USE_DEMO_DATA === "true") {
-    return NextResponse.json(generateDemoResearch(address, radiusMiles));
-  }
-
-  try {
-    // Primary (and only) discovery path: PAI Places (/api/places/* internals).
-    // Google Places and RapidAPI stay in the tree behind ENABLE_* flags but are
-    // not called here — those providers are deprecated for this product.
-    return NextResponse.json(await researchWithPaiPlaces(address, radiusMiles));
+    raw = await parseBoundedJson(request);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Research provider failed.";
-    const notFound = message.includes("could not be located");
-    return NextResponse.json({ error: message, retryable: !notFound }, { status: notFound ? 422 : 502 });
+    const tooLarge = error instanceof Error && error.message === "PAYLOAD_TOO_LARGE";
+    return json({ error: tooLarge ? "Request payload is too large." : "Request body must be valid JSON.", code: tooLarge ? "PAYLOAD_TOO_LARGE" : "INVALID_JSON" }, tooLarge ? 413 : 400);
+  }
+  const parsed = placeSearchRequestSchema.safeParse(raw);
+  if (!parsed.success) return json({ error: validationMessage(parsed.error), code: "INVALID_REQUEST" }, 400);
+
+  try {
+    return json(await researchWithPaiPlaces(parsed.data.address, parsed.data.radiusMiles));
+  } catch (error) {
+    const message = redactError(error, "Research provider failed.");
+    const notFound = error instanceof Error && error.message.includes("could not be located");
+    return json({ error: message, code: notFound ? "LOCATION_NOT_FOUND" : "RESEARCH_FAILED", retryable: !notFound }, notFound ? 422 : 502);
   }
 }

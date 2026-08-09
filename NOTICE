@@ -15,6 +15,7 @@ are already authorized to represent that brand. The marks are not product
 branding for this software.
 
 Public data sources used by this project may include:
+- Overture Maps Foundation Places data and its disclosed upstream sources
 - FCC Broadband Data Collection / National Broadband Map public downloads and APIs
 - OpenStreetMap / Nominatim / Overpass (contributor data, ODbL where applicable)
 - Optional third-party directory APIs configured by the operator

@@ -27,6 +27,5 @@ next-env.d.ts
 /data/*.sqlite
 /data/*.sqlite-*
 /data/fcc-downloads/
-
-# Operator-maintained business list (may contain private prospect notes)
-/data/places-cache.json
+/data/overture/
+/coverage/
