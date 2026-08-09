@@ -13,6 +13,7 @@
     "build": "next build",
     "start": "next start",
     "fcc:import": "node scripts/import-fcc-availability.mjs",
+    "places:probe": "node scripts/probe-osm-coverage.mjs",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit"
   },

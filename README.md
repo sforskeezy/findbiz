@@ -23,11 +23,45 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:3000`.
+Open `http://localhost:3000`. No API key is required for business discovery.
 
-Live nearby-business discovery prefers **RapidAPI Maps Data** (`maps-data.p.rapidapi.com`) — Google Maps listings — when `RAPIDAPI_KEY` is set. Direct Google Places and OpenStreetMap are fallbacks. `USE_DEMO_DATA=true` is an explicit development-only opt-in.
+Copy `.env.example` to `.env.local` and fill only the keys you are licensed to use. Optional profile/outreach drafting uses Claude Opus 5 by default (`RESEARCH_MODEL=claude-opus-5`) via the Anthropic Messages API (`RESEARCH_BASE_URL=https://api.anthropic.com/v1`) or any OpenAI-compatible proxy that serves the same model. Deterministic application code owns the numeric fit score.
 
-Copy `.env.example` to `.env.local` and fill only the keys you are licensed to use. Optional profile/outreach drafting uses a server-only OpenAI-compatible endpoint configured with `RESEARCH_API_KEY`, `RESEARCH_MODEL`, and `RESEARCH_BASE_URL`. Deterministic application code owns the numeric fit score.
+## PAI Places — our own discovery API
+
+Nearby-business discovery runs through **PAI Places**, a first-party API owned by this app. It needs no third-party key and calls no commercial map provider.
+
+| Endpoint | Body | Returns |
+| --- | --- | --- |
+| `POST /api/places/geocode` | `{ address }` | Coordinates from the US Census geocoder, Photon, or Nominatim |
+| `POST /api/places/nearby` | `{ address, radiusMiles }` | Nearby businesses, their distances, and source attribution |
+
+`POST /api/research` uses PAI Places as its primary provider and adds scoring and outreach drafting on top.
+
+Discovery sources, in priority order:
+
+1. **Your local cache** — `data/places-cache.json`, businesses you enter yourself.
+2. **OpenStreetMap** via Overpass, queried across shop, craft, office, healthcare, industrial, farmyard, commercial-landuse, named commercial buildings, and operator tags.
+
+Geocoding uses the US Census geocoder first, then Photon and Nominatim.
+
+**Be aware of the coverage limit.** OpenStreetMap is volunteer-mapped and thin in rural areas. A business that appears on a commercial map may simply not exist in OSM, in which case PAI Places cannot invent it. When a radius comes back empty, the response reports how far away the nearest mapped business is instead of silently returning nothing.
+
+Check coverage for any address before assuming a bug:
+
+```powershell
+npm run places:probe -- "46 Carina Ln, Lugoff, SC 29078" 1
+```
+
+### Adding businesses PAI Places cannot find
+
+Copy `data/places-cache.example.json` to `data/places-cache.json` and add your own entries. Only `name` is required; supply `lat`/`lng` for exact placement, or just an `address` and PAI Places geocodes it at request time. Cached entries outrank map data during dedupe and are labeled "Manually entered" in the UI. The file is gitignored.
+
+Record businesses you verified yourself. Do not paste listing data copied out of a commercial map provider.
+
+### Deprecated providers
+
+Google Places and RapidAPI Maps Data remain in the tree for reference but are **off by default** and are **not used** by `/api/research` or `/api/places/*`. Setting `ENABLE_GOOGLE_PLACES=true` / `ENABLE_RAPIDAPI_PLACES=true` does not change the live discovery path — PAI Places is always primary. `GET /api/status` reports the live mode.
 
 ## Real FCC data
 

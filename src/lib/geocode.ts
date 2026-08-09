@@ -364,6 +364,7 @@ async function geocodeWithNominatim(query: string, parsed: ParsedAddress): Promi
 }
 
 async function geocodeWithRapidApi(query: string, parsed: ParsedAddress): Promise<Candidate[]> {
+  if (process.env.ENABLE_RAPIDAPI_PLACES !== "true") return [];
   const apiKey = process.env.RAPIDAPI_KEY?.trim();
   if (!apiKey) return [];
   const host = process.env.RAPIDAPI_HOST?.trim() || "maps-data.p.rapidapi.com";
@@ -426,31 +427,39 @@ export async function geocodeAddress(inputAddress: string): Promise<GeocodeResul
 
   const parsed = parseUsAddress(inputAddress);
   const queries = buildQueryVariants(parsed);
+  // Also try a zero-stripped house number variant without mutating the primary parse.
+  if (parsed.housenumber?.startsWith("0")) {
+    const stripped = { ...parsed, housenumber: parsed.housenumber.replace(/^0+/, "") || parsed.housenumber };
+    for (const q of buildQueryVariants(stripped).slice(0, 2)) {
+      if (!queries.includes(q)) queries.splice(1, 0, q);
+    }
+  }
   const candidates: Candidate[] = [];
 
-  for (const query of queries.slice(0, 8)) {
+  // Prefer the original / cleaned street forms — don't burn time on 8 sequential Census calls.
+  for (const query of queries.slice(0, 3)) {
     try {
       const census = await geocodeWithCensus(query);
       if (census) candidates.push({ ...census, score: scoreCandidate(census, parsed) });
     } catch {
       // Continue with other providers.
     }
-    if (candidates.some((item) => item.provider === "census" && item.score >= 70)) break;
+    if (candidates.some((item) => item.provider === "census" && item.score >= 55)) break;
   }
 
-  if (!candidates.some((item) => item.score >= 80)) {
-    for (const query of queries.slice(0, 10)) {
+  if (!candidates.some((item) => item.score >= 70)) {
+    for (const query of queries.slice(0, 4)) {
       try {
         candidates.push(...(await geocodeWithPhoton(query, parsed)));
       } catch {
         // Continue.
       }
-      if (candidates.some((item) => item.score >= 70)) break;
+      if (candidates.some((item) => item.score >= 60)) break;
     }
   }
 
   if (!candidates.length) {
-    for (const query of queries.slice(0, 3)) {
+    for (const query of queries.slice(0, 2)) {
       try {
         const nominatim = await geocodeWithNominatim(query, parsed);
         if (nominatim) candidates.push({ ...nominatim, score: scoreCandidate(nominatim, parsed) });
@@ -461,9 +470,9 @@ export async function geocodeAddress(inputAddress: string): Promise<GeocodeResul
     }
   }
 
-  // RapidAPI geocoding is optional and quota-limited — only use when free providers fail.
-  if (!candidates.some((item) => item.score >= 40)) {
-    for (const query of [parsed.raw, ...queries.slice(0, 2)]) {
+  // RapidAPI geocoding is opt-in only (and usually quota-exhausted).
+  if (process.env.ENABLE_RAPIDAPI_PLACES === "true" && !candidates.some((item) => item.score >= 40)) {
+    for (const query of [parsed.raw, ...queries.slice(0, 1)]) {
       try {
         candidates.push(...(await geocodeWithRapidApi(query, parsed)));
       } catch {

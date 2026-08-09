@@ -109,15 +109,18 @@ export type SearchHistoryItem = {
   demoMode: boolean;
 };
 
-export type AiBriefResult = Pick<
-  Prospect,
-  | "summary"
-  | "hypothesizedNeeds"
-  | "topOpportunity"
-  | "discoveryQuestions"
-  | "callOpener"
-  | "followUpEmail"
->;
+export type AiBriefResult = {
+  summary: string;
+  hypothesizedNeeds: string[];
+  /** Prep reflections for the rep before dialing. */
+  reflectOn: string[];
+  /** Concrete mid-call talking points. */
+  talkAbout: string[];
+  topOpportunity: string;
+  discoveryQuestions: string[];
+  callOpener: string;
+  followUpEmail: FollowUpEmail;
+};
 
 /** FCC-derived Charter/Spectrum signal — not Spectrum orderability. */
 export type ServiceabilityTier = "reported_exact" | "reported_area" | "not_reported";

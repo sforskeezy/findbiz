@@ -1,9 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { generateDemoResearch } from "@/lib/demo-data";
-import { researchWithGoogle } from "@/lib/google-places";
-import { researchWithOpenStreetMap } from "@/lib/openstreetmap";
-import { hasRapidApiKey, researchWithRapidApi } from "@/lib/rapidapi-local-business";
+import { researchWithPaiPlaces } from "@/lib/pai-places";
 
 const allowedRadii = new Set([0.25, 0.5, 1, 2, 5]);
 
@@ -34,34 +32,18 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Choose a supported search radius." }, { status: 400 });
   }
 
-  const googleKey = process.env.GOOGLE_MAPS_API_KEY?.trim();
-  const googleDisabled = process.env.ENABLE_GOOGLE_PLACES === "false";
   if (process.env.USE_DEMO_DATA === "true") {
     return NextResponse.json(generateDemoResearch(address, radiusMiles));
   }
 
   try {
-    // Prefer RapidAPI Maps Data (Google Maps listings) — matches what reps see in Maps.
-    if (hasRapidApiKey()) {
-      try {
-        const rapid = await researchWithRapidApi(address, radiusMiles);
-        if (rapid.prospects.length > 0) return NextResponse.json(rapid);
-      } catch {
-        // Quota/outage — fall through to Google Cloud Places or OpenStreetMap.
-      }
-    }
-
-    if (googleKey && !googleDisabled) {
-      return NextResponse.json(await researchWithGoogle(address, radiusMiles, googleKey));
-    }
-
-    const result = await researchWithOpenStreetMap(address, radiusMiles);
-    return NextResponse.json(result);
+    // Primary (and only) discovery path: PAI Places (/api/places/* internals).
+    // Google Places and RapidAPI stay in the tree behind ENABLE_* flags but are
+    // not called here — those providers are deprecated for this product.
+    return NextResponse.json(await researchWithPaiPlaces(address, radiusMiles));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Research provider failed.";
-    return NextResponse.json(
-      { error: message, retryable: !message.includes("could not be located") },
-      { status: message.includes("could not be located") ? 422 : 502 },
-    );
+    const notFound = message.includes("could not be located");
+    return NextResponse.json({ error: message, retryable: !notFound }, { status: notFound ? 422 : 502 });
   }
 }

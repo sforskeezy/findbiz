@@ -4,6 +4,7 @@ import type { Coordinates, Prospect, ResearchResponse } from "@/lib/types";
 
 const GEOCODING_URL = "https://maps.googleapis.com/maps/api/geocode/json";
 const NEARBY_URL = "https://places.googleapis.com/v1/places:searchNearby";
+const TEXT_SEARCH_URL = "https://places.googleapis.com/v1/places:searchText";
 
 type GoogleText = { text?: string; languageCode?: string };
 
@@ -24,6 +25,12 @@ type GooglePlace = {
   businessStatus?: "OPERATIONAL" | "CLOSED_TEMPORARILY" | "CLOSED_PERMANENTLY";
 };
 
+export type GeocodeResult = {
+  formattedAddress: string;
+  coordinates: Coordinates;
+  confidence: "Verified" | "Estimated";
+};
+
 function placeCoordinates(place: GooglePlace): Coordinates | null {
   const lat = place.location?.latitude ?? place.location?.lat;
   const lng = place.location?.longitude ?? place.location?.lng;
@@ -41,16 +48,17 @@ type GeocodeResponse = {
 };
 
 const categoryTypes: Array<[string[], string]> = [
-  [["dentist", "doctor", "medical_clinic", "hospital", "physiotherapist"], "Medical & dental"],
+  [["dentist", "doctor", "medical_clinic", "hospital", "physiotherapist", "pharmacy", "veterinary_care"], "Medical & dental"],
   [["lawyer", "accounting"], "Legal & accounting"],
   [["warehouse", "moving_company", "storage"], "Logistics & warehouse"],
-  [["real_estate_agency"], "Property management"],
+  [["real_estate_agency", "real_estate_agent"], "Property management"],
   [["bank", "insurance_agency", "finance"], "Financial services"],
-  [["school", "preschool", "child_care_agency"], "Education & childcare"],
-  [["car_dealer", "car_repair", "car_wash"], "Automotive"],
-  [["restaurant", "cafe", "bar", "hotel"], "Hospitality & food"],
-  [["store", "shopping_mall", "clothing_store", "grocery_store"], "Retail"],
-  [["general_contractor", "roofing_contractor", "electrician", "plumber"], "Construction"],
+  [["school", "preschool", "child_care_agency", "primary_school", "secondary_school"], "Education & childcare"],
+  [["car_dealer", "car_repair", "car_wash", "car_rental"], "Automotive"],
+  [["restaurant", "cafe", "bar", "hotel", "bakery", "meal_takeaway"], "Hospitality & food"],
+  [["store", "shopping_mall", "clothing_store", "grocery_store", "convenience_store"], "Retail"],
+  [["general_contractor", "roofing_contractor", "electrician", "plumber", "painter"], "Construction"],
+  [["farm", "stable"], "Professional services"],
 ];
 
 const needsByCategory: Record<string, string[]> = {
@@ -66,6 +74,51 @@ const needsByCategory: Record<string, string[]> = {
   Construction: ["Cloud project tools", "Plan file transfers", "Video conferencing", "Field coordination"],
   "Professional services": ["Cloud applications", "VoIP phones", "Video conferencing", "Backup connectivity"],
 };
+
+const PLACE_FIELD_MASK = [
+  "places.id",
+  "places.displayName",
+  "places.formattedAddress",
+  "places.location",
+  "places.types",
+  "places.primaryType",
+  "places.primaryTypeDisplayName",
+  "places.nationalPhoneNumber",
+  "places.websiteUri",
+  "places.googleMapsUri",
+  "places.regularOpeningHours",
+  "places.rating",
+  "places.userRatingCount",
+  "places.businessStatus",
+].join(",");
+
+// Nearby Search caps at 20. Fan out by type so rural pins aren't missed.
+const NEARBY_TYPE_BATCHES: string[][] = [
+  [], // unrestricted — closest establishments
+  ["dentist", "doctor", "hospital", "physiotherapist", "pharmacy", "veterinary_care"],
+  ["lawyer", "accounting", "bank", "insurance_agency", "real_estate_agency"],
+  ["restaurant", "cafe", "bar", "hotel", "store", "grocery_store"],
+  ["car_repair", "car_dealer", "car_wash", "electrician", "plumber", "general_contractor"],
+  ["school", "preschool", "child_care_agency", "warehouse", "moving_company", "storage"],
+  ["farm", "stable", "church", "gym", "beauty_salon", "hair_salon"],
+];
+
+/** Text searches catch home-based / oddly typed Google Maps businesses Nearby misses. */
+const TEXT_QUERIES = [
+  "businesses",
+  "companies",
+  "home builder",
+  "contractor",
+  "farm",
+  "horse",
+  "stable",
+  "customs",
+  "auto repair",
+  "welder",
+  "services",
+  "shop",
+  "office",
+];
 
 function categoryFor(place: GooglePlace) {
   const types = [place.primaryType, ...(place.types ?? [])].filter(Boolean) as string[];
@@ -90,7 +143,18 @@ function normalizeOperatingStatus(place: GooglePlace): Prospect["operatingStatus
   return "Unknown";
 }
 
-async function geocode(address: string, apiKey: string) {
+/** Deprecated third-party path. Off unless ENABLE_GOOGLE_PLACES is explicitly "true". */
+export function hasGooglePlacesKey() {
+  return Boolean(process.env.GOOGLE_MAPS_API_KEY?.trim()) && process.env.ENABLE_GOOGLE_PLACES === "true";
+}
+
+export function googlePlacesApiKey() {
+  const key = process.env.GOOGLE_MAPS_API_KEY?.trim();
+  if (!key) throw new Error("GOOGLE_MAPS_API_KEY is not configured.");
+  return key;
+}
+
+export async function geocodeWithGoogle(address: string, apiKey = googlePlacesApiKey()): Promise<GeocodeResult> {
   const response = await fetch(
     `${GEOCODING_URL}?address=${encodeURIComponent(address)}&key=${encodeURIComponent(apiKey)}`,
     { cache: "no-store" },
@@ -107,50 +171,17 @@ async function geocode(address: string, apiKey: string) {
   return {
     formattedAddress: result.formatted_address ?? address,
     coordinates: result.geometry!.location!,
-    confidence: result.geometry?.location_type === "ROOFTOP" ? ("Verified" as const) : ("Estimated" as const),
+    confidence: result.geometry?.location_type === "ROOFTOP" ? "Verified" : "Estimated",
   };
 }
 
-const NEARBY_FIELD_MASK = [
-  "places.id",
-  "places.displayName",
-  "places.formattedAddress",
-  "places.location",
-  "places.types",
-  "places.primaryType",
-  "places.primaryTypeDisplayName",
-  "places.nationalPhoneNumber",
-  "places.websiteUri",
-  "places.googleMapsUri",
-  "places.regularOpeningHours",
-  "places.rating",
-  "places.userRatingCount",
-  "places.businessStatus",
-].join(",");
-
-// Nearby Search (New) caps at 20 per request. Fan out by type so results
-// closer match what reps see in Google Maps for a given address.
-const NEARBY_TYPE_BATCHES: string[][] = [
-  [], // unrestricted pass — closest establishments overall
-  ["dentist", "doctor", "hospital", "physiotherapist", "pharmacy"],
-  ["lawyer", "accounting", "bank", "insurance_agency", "real_estate_agency"],
-  ["restaurant", "cafe", "bar", "hotel", "store", "grocery_store"],
-  ["car_repair", "car_dealer", "car_wash", "electrician", "plumber", "general_contractor"],
-  ["school", "preschool", "child_care_agency", "warehouse", "moving_company", "storage"],
-];
-
-async function nearbyOnce(
-  center: Coordinates,
-  radiusMiles: number,
-  apiKey: string,
-  includedTypes: string[],
-) {
+async function nearbyOnce(center: Coordinates, radiusMiles: number, apiKey: string, includedTypes: string[]) {
   const response = await fetch(NEARBY_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "X-Goog-Api-Key": apiKey,
-      "X-Goog-FieldMask": NEARBY_FIELD_MASK,
+      "X-Goog-FieldMask": PLACE_FIELD_MASK,
     },
     body: JSON.stringify({
       maxResultCount: 20,
@@ -168,19 +199,64 @@ async function nearbyOnce(
 
   if (!response.ok) {
     const body = (await response.text()).slice(0, 500);
-    throw new Error(`Places request failed (${response.status}): ${body}`);
+    throw new Error(`Places Nearby request failed (${response.status}): ${body}`);
   }
   const payload = (await response.json()) as { places?: GooglePlace[] };
   return payload.places ?? [];
 }
 
-async function nearby(center: Coordinates, radiusMiles: number, apiKey: string) {
-  const batches = await Promise.allSettled(
-    NEARBY_TYPE_BATCHES.map((types) => nearbyOnce(center, radiusMiles, apiKey, types)),
-  );
+async function textSearchOnce(
+  query: string,
+  center: Coordinates,
+  radiusMiles: number,
+  apiKey: string,
+) {
+  const response = await fetch(TEXT_SEARCH_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Goog-Api-Key": apiKey,
+      "X-Goog-FieldMask": PLACE_FIELD_MASK,
+    },
+    body: JSON.stringify({
+      textQuery: query,
+      maxResultCount: 20,
+      rankPreference: "DISTANCE",
+      locationBias: {
+        circle: {
+          center: { latitude: center.lat, longitude: center.lng },
+          radius: Math.min(radiusMiles * 1609.344, 50000),
+        },
+      },
+    }),
+    cache: "no-store",
+  });
 
+  if (!response.ok) {
+    const body = (await response.text()).slice(0, 500);
+    throw new Error(`Places Text Search failed (${response.status}): ${body}`);
+  }
+  const payload = (await response.json()) as { places?: GooglePlace[] };
+  return payload.places ?? [];
+}
+
+export async function searchNearbyGooglePlaces(
+  center: Coordinates,
+  radiusMiles: number,
+  options: { apiKey?: string; localityHint?: string } = {},
+) {
+  const apiKey = options.apiKey ?? googlePlacesApiKey();
   const byId = new Map<string, GooglePlace>();
   let firstError: Error | null = null;
+
+  const nearbyJobs = NEARBY_TYPE_BATCHES.map((types) => nearbyOnce(center, radiusMiles, apiKey, types));
+  const locality = options.localityHint?.trim();
+  const textQueries = locality
+    ? TEXT_QUERIES.map((q) => `${q} near ${locality}`)
+    : TEXT_QUERIES.map((q) => `${q} nearby`);
+  const textJobs = textQueries.map((query) => textSearchOnce(query, center, radiusMiles, apiKey));
+
+  const batches = await Promise.allSettled([...nearbyJobs, ...textJobs]);
   for (const batch of batches) {
     if (batch.status === "fulfilled") {
       for (const place of batch.value) {
@@ -234,7 +310,7 @@ function toProspect(place: GooglePlace, target: Coordinates, retrievedAt: string
     businessSize: null,
     operatingStatus: normalizeOperatingStatus(place),
     publicNotes: null,
-    source: "Google Places API (New)",
+    source: "Google Places (deprecated opt-in)",
     sourceDate: retrievedAt,
     retrievedAt,
     confidence: "Verified",
@@ -266,14 +342,24 @@ function toProspect(place: GooglePlace, target: Coordinates, retrievedAt: string
   };
 }
 
+/**
+ * Deprecated. Not used by /api/research. Only callable when ENABLE_GOOGLE_PLACES=true
+ * and a GOOGLE_MAPS_API_KEY is set. Do not attribute these results as PAI Places.
+ */
 export async function researchWithGoogle(
   inputAddress: string,
   radiusMiles: number,
-  apiKey: string,
+  apiKey = googlePlacesApiKey(),
 ): Promise<ResearchResponse> {
+  if (process.env.ENABLE_GOOGLE_PLACES !== "true") {
+    throw new Error("Google Places is disabled. PAI Places is the supported discovery path.");
+  }
   const retrievedAt = new Date().toISOString();
-  const target = await geocode(inputAddress, apiKey);
-  const places = await nearby(target.coordinates, radiusMiles, apiKey);
+  const target = await geocodeWithGoogle(inputAddress, apiKey);
+  const places = await searchNearbyGooglePlaces(target.coordinates, radiusMiles, {
+    apiKey,
+    localityHint: target.formattedAddress,
+  });
   const deduped = new Map<string, Prospect>();
 
   for (const place of places) {
@@ -289,12 +375,12 @@ export async function researchWithGoogle(
       geocodingConfidence: target.confidence,
     },
     radiusMiles,
-    prospects: [...deduped.values()].sort((a, b) => b.score - a.score),
+    prospects: [...deduped.values()].sort((a, b) => b.score - a.score || a.distanceMiles - b.distanceMiles),
     broadband: [],
     sources: [
       {
-        id: `google-${Date.now()}`,
-        label: "Google Geocoding API and Places API (New)",
+        id: `google-places-${Date.now()}`,
+        label: "Google Places (deprecated opt-in — not PAI Places)",
         url: "https://developers.google.com/maps/documentation/places/web-service/overview",
         sourceDate: retrievedAt,
         retrievedAt,
@@ -304,8 +390,9 @@ export async function researchWithGoogle(
     retrievedAt,
     demoMode: false,
     warnings: [
-      "FCC broadband data is not attached. Import official data or enter a sourced observation manually.",
-      "A target-area observation does not verify availability at any nearby business address.",
+      "Deprecated path: results come from Google Places, not PAI Places / OpenStreetMap.",
+      "Standard Google Maps Platform terms restrict storing, scoring, and exporting Places content — verify your license before using this path.",
+      "FCC broadband data is not attached until a business is selected.",
     ],
   };
 }

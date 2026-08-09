@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "_readme": [
+    "Copy this file to data/places-cache.json, then replace these examples with businesses you verified yourself.",
+    "Only 'name' is required.",
+    "Give accurate 'lat'/'lng' for placement. If you only supply an address, PAI Places geocodes it (town-level addresses land at the town centroid and may fall outside a small radius).",
+    "OpenStreetMap is often empty in rural areas. This cache is the supported way to add those businesses without using Google Maps or RapidAPI.",
+    "Record businesses you verified yourself. Do not paste listing data copied out of a commercial map provider.",
+    "This file is gitignored once copied to places-cache.json."
+  ],
+  "places": [
+    {
+      "name": "Example Auto Shop",
+      "address": "1234 Example Rd, Yourtown, ST 00000",
+      "lat": 34.12,
+      "lng": -80.71,
+      "category": "Automotive",
+      "phone": "+1 555-555-0100",
+      "website": null,
+      "notes": "Replace with a business you verified. Coordinates are what place it in search results."
+    },
+    {
+      "name": "Example Equine Facility",
+      "address": "Yourtown, ST 00000",
+      "category": "Agriculture & equine",
+      "notes": "No coordinates supplied, so PAI Places geocodes the address. Prefer lat/lng when you know them."
+    }
+  ]
+}

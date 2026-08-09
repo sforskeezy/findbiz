@@ -7,13 +7,13 @@ import { ThinkingOrb } from "thinking-orbs";
 
 import { ProspectHeader } from "@/components/prospect-header";
 import { cn } from "@/components/ui";
-import { classifyServiceability, displayServiceability } from "@/lib/serviceability";
+import { buildFallbackBrief } from "@/lib/brief-fallback";
+import { classifyServiceability, displayServiceability, isCharterSpectrumProvider } from "@/lib/serviceability";
 import type {
   AiBriefResult,
   BroadbandObservation,
   FccLookupResponse,
   Prospect,
-  RepDisposition,
   ResearchResponse,
   ServiceabilitySignal,
 } from "@/lib/types";
@@ -21,26 +21,11 @@ import type {
 type ResearchStep = "business" | "fcc" | "profile" | "complete";
 type Tab = "research" | "availability" | "outreach";
 
-const DISPOSITION_STORAGE_KEY = "prospectiq.serviceabilityDisposition";
-
-function readDisposition(prospectId: string): RepDisposition | null {
-  try {
-    const raw = window.localStorage.getItem(DISPOSITION_STORAGE_KEY);
-    if (!raw) return null;
-    const map = JSON.parse(raw) as Record<string, RepDisposition>;
-    return map[prospectId] ?? null;
-  } catch {
-    return null;
-  }
-}
-
-function writeDisposition(prospectId: string, value: RepDisposition | null) {
-  const raw = window.localStorage.getItem(DISPOSITION_STORAGE_KEY);
-  const map = (raw ? JSON.parse(raw) : {}) as Record<string, RepDisposition>;
-  if (value) map[prospectId] = value;
-  else delete map[prospectId];
-  window.localStorage.setItem(DISPOSITION_STORAGE_KEY, JSON.stringify(map));
-}
+const MISSING_ADDRESS = new Set([
+  "Address not listed in public data",
+  "Address not listed in OpenStreetMap",
+  "Address unavailable",
+]);
 
 function verdict(score: number) {
   if (score >= 70) return "Prioritize this call";
@@ -89,11 +74,42 @@ function splitAssessment(summary: string) {
 
   let lead = sentences[0];
   let next = 1;
-  while (lead.length < 40 && next < sentences.length - 1) {
+  // Longer Opus assessments get a two-sentence lead when the opener is short.
+  while ((lead.length < 70 || next < 2) && next < Math.min(3, sentences.length - 1)) {
     lead = `${lead} ${sentences[next]}`;
     next += 1;
   }
   return { lead, body: sentences.slice(next).join(" ") };
+}
+
+function SectionHeading({ label, hint }: { label: string; hint: string }) {
+  return (
+    <div className="flex items-baseline justify-between gap-4 border-b border-[#dedad3] pb-3">
+      <p className="text-[13px] font-medium tracking-[-0.01em] text-[#777771]">{label}</p>
+      <p className="text-[11px] font-medium tracking-[-0.005em] text-[#a1a19a]">{hint}</p>
+    </div>
+  );
+}
+
+function briefToPlainText(brief: AiBriefResult, prospect: Prospect) {
+  return [
+    `${prospect.name} — ${prospect.category}`,
+    prospect.address,
+    "",
+    brief.summary,
+    "",
+    "Reflect on",
+    ...brief.reflectOn.map((item, index) => `${index + 1}. ${item}`),
+    "",
+    "Talk about",
+    ...brief.talkAbout.map((item) => `- ${item}`),
+    "",
+    "Working hypotheses",
+    ...brief.hypothesizedNeeds.map((item) => `- ${item}`),
+    "",
+    "Sales angle",
+    brief.topOpportunity,
+  ].join("\n");
 }
 
 function formatDate(value: string | null) {
@@ -111,11 +127,9 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
   const [broadband, setBroadband] = useState<BroadbandObservation[]>([]);
   const [fcc, setFcc] = useState<FccLookupResponse | null>(null);
   const [signal, setSignal] = useState<ServiceabilitySignal | null>(null);
-  const [disposition, setDisposition] = useState<RepDisposition | null>(null);
   const [step, setStep] = useState<ResearchStep>("business");
   const [tab, setTab] = useState<Tab>("research");
   const [error, setError] = useState("");
-  const [saved, setSaved] = useState(false);
   const [toast, setToast] = useState("");
 
   useEffect(() => {
@@ -141,10 +155,6 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
         if (!selected) throw new Error("This business was not found in the current search.");
         if (cancelled) return;
         setProspect(selected);
-        setDisposition(readDisposition(selected.id));
-
-        const existingSaved = JSON.parse(window.localStorage.getItem("prospectiq.saved") || "[]") as Prospect[];
-        setSaved(existingSaved.some((item) => item.id === selected!.id));
         setStep("fcc");
 
         let observations: BroadbandObservation[] = [];
@@ -153,9 +163,7 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              address: selected.address !== "Address not listed in OpenStreetMap" && selected.address !== "Address unavailable"
-                ? selected.address
-                : address,
+              address: MISSING_ADDRESS.has(selected.address) ? address : selected.address,
               coordinates: selected.coordinates,
               businessId: selected.id,
             }),
@@ -199,16 +207,7 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
           if (!cancelled) setBrief(aiPayload.brief);
         } catch {
           // Fall back to the source-bounded template quietly — never surface env/config errors in the UI.
-          if (!cancelled) {
-            setBrief({
-              summary: selected.summary,
-              hypothesizedNeeds: selected.hypothesizedNeeds,
-              topOpportunity: selected.topOpportunity,
-              discoveryQuestions: selected.discoveryQuestions,
-              callOpener: selected.callOpener,
-              followUpEmail: selected.followUpEmail,
-            });
-          }
+          if (!cancelled) setBrief(buildFallbackBrief(selected, observations));
         }
         if (!cancelled) setStep("complete");
       } catch (loadError) {
@@ -241,34 +240,31 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
     if (!brief || !prospect) return null;
     const { lead, body } = splitAssessment(brief.summary);
     const used = new Set<string>();
+    const bodyParagraphs = body
+      ? body
+          .split(/(?<=[.!?])\s+/)
+          .reduce<string[][]>((groups, sentence, index) => {
+            if (index % 2 === 0) groups.push([sentence]);
+            else groups[groups.length - 1]?.push(sentence);
+            return groups;
+          }, [])
+          .map((group) => group.join(" "))
+      : [];
     return {
       lead: highlightSummary(lead, prospect, used),
-      body: body ? highlightSummary(body, prospect, used) : null,
+      bodyParagraphs: bodyParagraphs.map((paragraph) => highlightSummary(paragraph, prospect, used)),
     };
   }, [brief, prospect]);
 
   const displayedSignal = useMemo(() => {
     if (!signal) return null;
-    return displayServiceability(signal, disposition);
-  }, [signal, disposition]);
+    // Status is derived from FCC filings automatically — no manual rep notes.
+    return displayServiceability(signal, null);
+  }, [signal]);
 
-  function setRepDisposition(next: RepDisposition | null) {
-    if (!prospect) return;
-    setDisposition(next);
-    writeDisposition(prospect.id, next);
-    setToast(next ? "Note saved on this device." : "Note cleared.");
-  }
-
-  function toggleSaved() {
-    if (!prospect) return;
-    const existing = JSON.parse(window.localStorage.getItem("prospectiq.saved") || "[]") as Prospect[];
-    const next = saved
-      ? existing.filter((item) => item.id !== prospect.id)
-      : [prospect, ...existing.filter((item) => item.id !== prospect.id)];
-    window.localStorage.setItem("prospectiq.saved", JSON.stringify(next));
-    setSaved(!saved);
-    setToast(saved ? "Removed from saved businesses." : "Business saved.");
-  }
+  const providerChart = useMemo(() => {
+    return [...broadband].sort((a, b) => (b.downloadMbps ?? 0) - (a.downloadMbps ?? 0));
+  }, [broadband]);
 
   async function copy(value: string, label: string) {
     await navigator.clipboard.writeText(value);
@@ -304,7 +300,13 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                     {prospect.name}
                   </h1>
                   <p className="mt-4 max-w-[680px] text-sm leading-6 text-[#70706a]">
-                    {prospect.address} · {prospect.distanceMiles.toFixed(2)} miles from the search address
+                    {[
+                      prospect.address,
+                      `${prospect.distanceMiles.toFixed(2)} miles from the search address`,
+                      prospect.phone,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
                   </p>
                   <div className="mt-4 flex flex-wrap gap-x-4 gap-y-2 text-[11px] font-medium text-[#65655f]">
                     {prospect.website && (
@@ -317,32 +319,19 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                         Source record <ExternalLink size={11} />
                       </a>
                     )}
-                    {prospect.phone && <span>{prospect.phone}</span>}
                   </div>
                 </div>
-                <div className="flex shrink-0 items-center gap-3">
-                  <div className="text-right">
-                    <p className="text-[9px] font-bold uppercase tracking-[0.14em] text-[#969690]">Initial fit</p>
-                    <p className="mt-1 text-2xl font-semibold tabular-nums text-[#20201d]">
-                      {prospect.score}
-                      <span className="ml-1 text-xs font-medium text-[#85857f]">/ 100</span>
+                <div className="shrink-0 text-right">
+                  <p className="text-[9px] font-bold uppercase tracking-[0.14em] text-[#969690]">Initial fit</p>
+                  <p className="mt-1 text-2xl font-semibold tabular-nums text-[#20201d]">
+                    {prospect.score}
+                    <span className="ml-1 text-xs font-medium text-[#85857f]">/ 100</span>
+                  </p>
+                  {displayedSignal && (
+                    <p className={cn("mt-2 text-[11px] font-semibold", displayedSignal.toneClass)}>
+                      {displayedSignal.shortLabel}
                     </p>
-                    {displayedSignal && (
-                      <p className={cn("mt-2 text-[11px] font-semibold", displayedSignal.toneClass)}>
-                        {displayedSignal.shortLabel}
-                      </p>
-                    )}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={toggleSaved}
-                    className={cn(
-                      "h-10 rounded-full px-4 text-xs font-semibold transition",
-                      saved ? "bg-[#171715] text-white" : "border border-[#d2d2cd] bg-white text-[#373733] hover:border-[#aaa9a3]",
-                    )}
-                  >
-                    {saved ? "Saved" : "Save business"}
-                  </button>
+                  )}
                 </div>
               </div>
             </header>
@@ -380,33 +369,97 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                 {tab === "research" && (
                   <section className="py-10">
                     <div className="max-w-[760px]">
-                      <p className="text-[13px] font-medium tracking-[-0.01em] text-[#777771]">Assessment</p>
+                      <div className="flex items-start justify-between gap-6">
+                        <p className="text-[13px] font-medium tracking-[-0.01em] text-[#777771]">Assessment</p>
+                        <button
+                          type="button"
+                          onClick={() => void copy(briefToPlainText(brief, prospect), "Assessment")}
+                          className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-[#666660] transition hover:text-[#171715]"
+                        >
+                          <Copy size={11} /> Copy assessment
+                        </button>
+                      </div>
                       <h2 className="mt-4 max-w-[16ch] text-[40px] font-semibold leading-[1.05] tracking-[-0.05em] text-[#141412] sm:text-[52px]">
                         {verdict(prospect.score)}
                       </h2>
                       <p className="mt-4 max-w-[36rem] text-[15px] leading-7 text-[#6e6e68]">{verdictDetail(prospect.score)}</p>
 
                       {assessment && (
-                        <div className="mt-10 max-w-[40rem]">
-                          <p className="text-[19px] font-medium leading-8 tracking-[-0.022em] text-[#1c1c19]">
+                        <div className="mt-10 max-w-[42rem]">
+                          <p className="text-[20px] font-medium leading-[1.45] tracking-[-0.022em] text-[#1c1c19] sm:text-[22px] sm:leading-[1.4]">
                             {assessment.lead}
                           </p>
-                          {assessment.body && (
-                            <p className="mt-4 text-[16px] leading-8 tracking-[-0.012em] text-[#5d5d57]">
-                              {assessment.body}
-                            </p>
+                          {assessment.bodyParagraphs.length > 0 && (
+                            <div className="mt-5 space-y-4 text-[16px] leading-8 tracking-[-0.012em] text-[#5d5d57]">
+                              {assessment.bodyParagraphs.map((paragraph, index) => (
+                                <p key={index}>{paragraph}</p>
+                              ))}
+                            </div>
                           )}
                         </div>
                       )}
 
+                      {brief.reflectOn.length > 0 && (
+                        <div className="mt-14 max-w-[42rem]">
+                          <SectionHeading label="Reflect on" hint="Before you dial" />
+                          <ol className="mt-6 space-y-5">
+                            {brief.reflectOn.map((item, index) => (
+                              <li key={item} className="flex gap-5">
+                                <span className="w-7 shrink-0 border-t border-[#c9c9c2] pt-2 text-[11px] font-semibold tabular-nums text-[#a4a49d]">
+                                  {String(index + 1).padStart(2, "0")}
+                                </span>
+                                <p className="text-[16px] font-medium leading-7 tracking-[-0.015em] text-[#252522]">
+                                  {item}
+                                </p>
+                              </li>
+                            ))}
+                          </ol>
+                        </div>
+                      )}
+
+                      {brief.talkAbout.length > 0 && (
+                        <div className="mt-14 max-w-[42rem]">
+                          <SectionHeading label="Talk about" hint="On the call" />
+                          <ul className="mt-2 divide-y divide-[#e6e6e1]">
+                            {brief.talkAbout.map((item) => (
+                              <li key={item} className="flex gap-3.5 py-4">
+                                <span aria-hidden className="mt-[11px] h-[5px] w-[5px] shrink-0 rounded-full bg-[#b6b6ae]" />
+                                <p className="text-[15px] leading-7 tracking-[-0.012em] text-[#33332f]">{item}</p>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                      {brief.hypothesizedNeeds.length > 0 && (
+                        <div className="mt-14 max-w-[42rem]">
+                          <SectionHeading label="Working hypotheses" hint="Test, never assume" />
+                          <ul className="mt-5 flex flex-wrap gap-2">
+                            {brief.hypothesizedNeeds.map((need) => (
+                              <li
+                                key={need}
+                                className="rounded-full border border-[#dcdcd5] bg-white px-3.5 py-1.5 text-[13px] font-medium tracking-[-0.01em] text-[#4a4a44]"
+                              >
+                                {need}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
                       {brief.topOpportunity && (
-                        <div className="mt-10 max-w-[40rem] border-l-2 border-[#1d1d1a] pl-5">
-                          <p className="text-[13px] font-medium tracking-[-0.01em] text-[#777771]">Sales angle</p>
-                          <p className="mt-2.5 text-[16px] font-medium leading-7 tracking-[-0.015em] text-[#1f1f1c]">
+                        <div className="mt-14 max-w-[42rem] rounded-2xl bg-[#171715] px-7 py-7 shadow-[0_18px_50px_rgba(20,20,16,0.16)]">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#8f8f86]">Sales angle</p>
+                          <p className="mt-3.5 text-[17px] font-medium leading-[1.65] tracking-[-0.015em] text-[#f3f3ed]">
                             {brief.topOpportunity}
                           </p>
                         </div>
                       )}
+
+                      <p className="mt-6 max-w-[42rem] text-[11px] leading-5 text-[#9a9a93]">
+                        Availability figures come from public FCC provider filings for this address or area — not a
+                        subscription, quote, or serviceability guarantee. Confirm in the official tool before quoting.
+                      </p>
                     </div>
                   </section>
                 )}
@@ -429,104 +482,139 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                       {fcc?.asOfDate && (
                         <p className="mt-3 text-xs text-[#85857f]">FCC data as of {formatDate(fcc.asOfDate)}</p>
                       )}
-
-                      <div className="mt-8 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs font-semibold">
-                        <button
-                          type="button"
-                          onClick={() => setRepDisposition(disposition === "customer" ? null : "customer")}
-                          className={cn(
-                            "transition",
-                            disposition === "customer" ? "text-[#17653f]" : "text-[#8a8a84] hover:text-[#171715]",
-                          )}
-                        >
-                          Mark active
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setRepDisposition(disposition === "do_not_contact" ? null : "do_not_contact")}
-                          className={cn(
-                            "transition",
-                            disposition === "do_not_contact" ? "text-[#a63a31]" : "text-[#8a8a84] hover:text-[#171715]",
-                          )}
-                        >
-                          Do not touch
-                        </button>
-                        {disposition && (
-                          <button
-                            type="button"
-                            onClick={() => setRepDisposition(null)}
-                            className="text-[#8a8a84] transition hover:text-[#171715]"
-                          >
-                            Clear note
-                          </button>
-                        )}
-                      </div>
-
-                      <p className="mt-8 max-w-[40rem] text-xs leading-5 text-[#85857f]">
-                        FCC filings only — not Spectrum’s serviceability tool, not a subscription claim, and not an orderability
-                        guarantee. Confirm in the official tool before quoting. This product uses the FCC Data API but is not
-                        endorsed or certified by the FCC.
-                      </p>
                     </div>
 
-                    <div className="mt-12">
-                      <p className="text-[13px] font-medium tracking-[-0.01em] text-[#777771]">Providers on file</p>
-                      <h3 className="mt-2 text-xl font-semibold tracking-[-0.03em] text-[#1a1a17]">
-                        {fcc?.matchQuality === "exact" || fcc?.matchedLocationId
-                          ? "Reported at this location"
-                          : "Reported for this area"}
-                      </h3>
-                    </div>
-
-                    {broadband.length > 0 && fcc?.message && (
-                      <p className="mt-3 max-w-[760px] text-xs leading-5 text-[#85857f]">{fcc.message}</p>
-                    )}
-
-                    {broadband.length ? (
-                      <div className="mt-6 space-y-0 border-t border-[#e6e6e1]">
-                        {broadband.map((item) => (
-                          <div
-                            key={item.id}
-                            className="grid gap-4 border-b border-[#e6e6e1] py-5 sm:grid-cols-[minmax(0,1.4fr)_1fr_1fr] sm:items-start"
-                          >
-                            <div>
-                              <p className="text-[15px] font-semibold text-[#252522]">{item.provider}</p>
-                              <p className="mt-1 text-[12px] text-[#85857f]">
-                                {item.technology}
-                                {item.classification ? ` · ${item.classification}` : ""}
-                              </p>
-                            </div>
-                            <div>
-                              <p className="text-[11px] text-[#999992]">Download</p>
-                              <p className="mt-1 text-sm font-semibold tabular-nums text-[#292926]">
-                                {item.downloadMbps != null ? `${item.downloadMbps.toLocaleString()} Mbps` : "—"}
-                              </p>
-                            </div>
-                            <div>
-                              <p className="text-[11px] text-[#999992]">Upload</p>
-                              <p className="mt-1 text-sm font-semibold tabular-nums text-[#292926]">
-                                {item.uploadMbps != null ? `${item.uploadMbps.toLocaleString()} Mbps` : "—"}
-                              </p>
-                            </div>
+                    <div className="mt-14 w-full max-w-[640px]">
+                      {providerChart.length ? (
+                        <div className="border-[3px] border-black bg-white text-black shadow-[6px_6px_0_#171715]">
+                          <div className="border-b-[8px] border-black px-3.5 pb-2.5 pt-3">
+                            <p className="text-[34px] font-black leading-none tracking-[-0.04em] sm:text-[40px]">
+                              Broadband Facts
+                            </p>
+                            <p className="mt-1.5 text-[12px] font-bold leading-snug">
+                              {fcc?.matchQuality === "exact" || fcc?.matchedLocationId
+                                ? "Provider-reported speeds at this location"
+                                : "Provider-reported speeds for this area"}
+                            </p>
                           </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="mt-6 max-w-[720px]">
-                        <p className="text-sm font-semibold text-[#2d2d29]">No FCC provider records were returned.</p>
-                        <p className="mt-2 text-sm leading-6 text-[#777771]">
-                          {fcc?.message ?? "The FCC lookup did not return availability for this location."}
-                        </p>
-                        <a
-                          href={fcc?.sourceUrl || "https://broadbandmap.fcc.gov/home"}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="mt-4 inline-flex items-center gap-1.5 text-xs font-semibold text-[#2855e7]"
-                        >
-                          Open the official FCC map <ExternalLink size={11} />
-                        </a>
-                      </div>
-                    )}
+
+                          <div className="border-b-4 border-black px-3.5 py-2">
+                            <div className="flex items-end justify-between gap-3">
+                              <p className="text-[11px] font-bold uppercase tracking-[0.04em]">
+                                Serving this census block
+                              </p>
+                              <p className="text-[13px] font-black tabular-nums">
+                                {providerChart.length}{" "}
+                                <span className="text-[11px] font-bold">
+                                  {providerChart.length === 1 ? "provider" : "providers"}
+                                </span>
+                              </p>
+                            </div>
+                            {fcc?.asOfDate && (
+                              <p className="mt-1 text-[11px] font-medium">
+                                FCC data as of {formatDate(fcc.asOfDate)}
+                              </p>
+                            )}
+                          </div>
+
+                          <div className="border-b border-black px-3.5 py-1.5">
+                            <p className="text-[11px] font-black uppercase tracking-[0.06em]">
+                              Amount Per Provider
+                            </p>
+                          </div>
+
+                          <ul>
+                            {providerChart.map((item, index) => {
+                              const isSpectrum = isCharterSpectrumProvider(item.provider);
+                              return (
+                                <li
+                                  key={item.id}
+                                  className={cn(
+                                    "px-3.5 py-3",
+                                    index < providerChart.length - 1 && "border-b border-black",
+                                    isSpectrum && "bg-[#f3faf5]",
+                                  )}
+                                >
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div className="min-w-0">
+                                      <p className="text-[15px] font-black leading-tight tracking-[-0.02em]">
+                                        {item.provider}
+                                      </p>
+                                      {isSpectrum && (
+                                        <p className="mt-1 text-[10px] font-black uppercase tracking-[0.08em] text-[#17653f]">
+                                          Spectrum / Charter match
+                                        </p>
+                                      )}
+                                    </div>
+                                    <p className="shrink-0 text-[11px] font-bold uppercase tracking-[0.04em]">
+                                      {item.classification}
+                                    </p>
+                                  </div>
+
+                                  <div className="mt-2 space-y-1 border-t border-black/25 pt-2 text-[13px] leading-5">
+                                    <div className="flex items-baseline justify-between gap-3">
+                                      <span className="font-semibold">Technology</span>
+                                      <span className="max-w-[60%] text-right font-medium">
+                                        {item.technology || "Not listed"}
+                                      </span>
+                                    </div>
+                                    <div className="flex items-baseline justify-between gap-3 border-t border-dotted border-black/35 pt-1">
+                                      <span className="font-semibold">Typical download speed</span>
+                                      <span className="font-black tabular-nums">
+                                        {item.downloadMbps != null
+                                          ? `${item.downloadMbps.toLocaleString()} Mbps`
+                                          : "—"}
+                                      </span>
+                                    </div>
+                                    <div className="flex items-baseline justify-between gap-3 border-t border-dotted border-black/35 pt-1">
+                                      <span className="font-semibold">Typical upload speed</span>
+                                      <span className="font-black tabular-nums">
+                                        {item.uploadMbps != null
+                                          ? `${item.uploadMbps.toLocaleString()} Mbps`
+                                          : "—"}
+                                      </span>
+                                    </div>
+                                  </div>
+                                </li>
+                              );
+                            })}
+                          </ul>
+
+                          <div className="border-t-4 border-black px-3.5 py-2.5">
+                            <p className="text-[10px] font-medium leading-4">
+                              Speeds shown are FCC provider filings for the matched area — not a quote,
+                              subscription claim, or orderability guarantee.
+                            </p>
+                            <a
+                              href={fcc?.sourceUrl || "https://broadbandmap.fcc.gov/home"}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="mt-1.5 inline-flex items-center gap-1 text-[10px] font-bold underline underline-offset-2"
+                            >
+                              FCC Broadband Map <ExternalLink size={9} />
+                            </a>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="border-[3px] border-black bg-white px-3.5 py-4 text-black shadow-[6px_6px_0_#171715]">
+                          <p className="text-[28px] font-black leading-none tracking-[-0.04em]">Broadband Facts</p>
+                          <div className="mt-3 border-t-4 border-black pt-3">
+                            <p className="text-sm font-black">No FCC provider records were returned.</p>
+                            <p className="mt-2 text-[12px] font-medium leading-5">
+                              {fcc?.message ?? "The FCC lookup did not return availability for this location."}
+                            </p>
+                            <a
+                              href={fcc?.sourceUrl || "https://broadbandmap.fcc.gov/home"}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="mt-3 inline-flex items-center gap-1.5 text-[11px] font-bold underline underline-offset-2"
+                            >
+                              Open the official FCC map <ExternalLink size={11} />
+                            </a>
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   </section>
                 )}
 

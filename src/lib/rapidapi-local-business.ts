@@ -1,10 +1,11 @@
 import { describeScore, scoreProspect } from "@/lib/scoring";
-import { geocodeAddress } from "@/lib/geocode";
+import { geocodeAddress, parseUsAddress } from "@/lib/geocode";
 import { buildSalesOpportunity, buildSalesSummary } from "@/lib/sales-copy";
 import type { Coordinates, Prospect, ResearchResponse } from "@/lib/types";
 
 const HOST = () => process.env.RAPIDAPI_HOST?.trim() || "maps-data.p.rapidapi.com";
 
+/** Short cooldown after 429 — do not hard-block for hours. */
 let rapidApiCooldownUntil = 0;
 
 type RapidPlace = {
@@ -48,17 +49,31 @@ const needsByCategory: Record<string, string[]> = {
   "Professional services": ["Cloud applications", "VoIP phones", "Video conferencing", "Backup connectivity"],
 };
 
-const SEARCH_QUERIES = [
-  "business",
-  "office",
-  "restaurant",
-  "medical",
-  "dentist",
-  "lawyer",
-  "store",
-  "auto repair",
-  "school",
+/**
+ * Prioritized Google Maps keyword set.
+ * Rural / home-based pins (horse farms, customs shops, model homes) come first.
+ * Keep this short — blasting dozens of parallel calls triggers RapidAPI 429s and OSM fallback.
+ */
+const PRIORITY_QUERIES = [
+  "horse",
+  "customs",
+  "home builder",
+  "llc",
+  "farm",
+  "company",
   "contractor",
+  "services",
+  "auto",
+  "welder",
+  "construction",
+  "new homes",
+  "shop",
+  "store",
+  "business",
+  "restaurant",
+  "office",
+  "medical",
+  "school",
 ];
 
 function distanceMiles(a: Coordinates, b: Coordinates) {
@@ -74,11 +89,12 @@ function distanceMiles(a: Coordinates, b: Coordinates) {
 }
 
 function zoomForRadius(radiusMiles: number) {
+  // Keep zoom fairly tight so Maps returns local pins, not city-wide keyword hits.
   if (radiusMiles <= 0.25) return 16;
   if (radiusMiles <= 0.5) return 15;
-  if (radiusMiles <= 1) return 14;
-  if (radiusMiles <= 2) return 13;
-  return 12;
+  if (radiusMiles <= 1) return 15;
+  if (radiusMiles <= 2) return 14;
+  return 13;
 }
 
 function categoryFor(place: RapidPlace) {
@@ -90,13 +106,15 @@ function categoryFor(place: RapidPlace) {
   if (/dentist|doctor|medical|clinic|hospital|pharmacy|veterinary|chiropractor/.test(tokens)) return "Medical & dental";
   if (/lawyer|attorney|accountant|accounting|tax/.test(tokens)) return "Legal & accounting";
   if (/warehouse|logistics|moving|storage|freight/.test(tokens)) return "Logistics & warehouse";
-  if (/real estate|property management|realtor/.test(tokens)) return "Property management";
+  if (/real estate|property management|realtor|home builder|housing development/.test(tokens)) return "Property management";
   if (/bank|insurance|financial|credit union/.test(tokens)) return "Financial services";
   if (/school|preschool|child care|daycare|college|university/.test(tokens)) return "Education & childcare";
-  if (/car |auto|garage|tire|dealer/.test(tokens)) return "Automotive";
+  if (/car |auto|garage|tire|dealer|welder|customs|motorcycle/.test(tokens)) return "Automotive";
   if (/restaurant|cafe|coffee|bar|hotel|motel|food|pizza|bakery/.test(tokens)) return "Hospitality & food";
   if (/store|shop|retail|grocery|supermarket|boutique/.test(tokens)) return "Retail";
-  if (/contractor|construction|plumber|electrician|roofer|hvac/.test(tokens)) return "Construction";
+  if (/contractor|construction|plumber|electrician|roofer|hvac|builder|farm|horse|equestrian|ranch/.test(tokens)) {
+    return /farm|horse|equestrian|ranch/.test(tokens) ? "Professional services" : "Construction";
+  }
   return "Professional services";
 }
 
@@ -116,9 +134,21 @@ function operatingStatus(place: RapidPlace): Prospect["operatingStatus"] {
   return "Unknown";
 }
 
+function looksLikeBusiness(place: RapidPlace) {
+  if (!place.name?.trim()) return false;
+  if (place.is_permanently_closed) return false;
+  const name = place.name.trim();
+  if (/^(street|road|lane|drive|court|circle|avenue|boulevard|way|trail)\b/i.test(name)) return false;
+  if (/^\d+[A-Za-z]?\s+\S+/.test(name) && !(place.types?.length || place.type || place.phone_number || place.website)) {
+    return false;
+  }
+  if (place.types?.length || place.type || place.phone_number || place.website || place.rating != null) return true;
+  if (!/^(north|south|east|west)?\s*\d/i.test(name) && name.split(/\s+/).length >= 2) return true;
+  return false;
+}
+
 function toProspect(place: RapidPlace, target: Coordinates, retrievedAt: string): Prospect | null {
-  if (!place.name || place.latitude == null || place.longitude == null) return null;
-  if (place.is_permanently_closed) return null;
+  if (!looksLikeBusiness(place) || place.latitude == null || place.longitude == null) return null;
 
   const coordinates = { lat: place.latitude, lng: place.longitude };
   const distance = distanceMiles(target, coordinates);
@@ -147,7 +177,7 @@ function toProspect(place: RapidPlace, target: Coordinates, retrievedAt: string)
 
   return {
     id: `rapid-${id}`,
-    name: place.name,
+    name: place.name!,
     address,
     coordinates,
     distanceMiles: distance,
@@ -171,7 +201,7 @@ function toProspect(place: RapidPlace, target: Coordinates, retrievedAt: string)
     scoreRationale: describeScore(total, distance, category, breakdown),
     topOpportunity: buildSalesOpportunity(category),
     summary: buildSalesSummary({
-      name: place.name,
+      name: place.name!,
       category,
       distanceMiles: distance,
       phone,
@@ -218,7 +248,8 @@ async function rapidGet(path: string, params: Record<string, string>) {
   if (!response.ok) {
     const body = await response.text();
     if (response.status === 429) {
-      rapidApiCooldownUntil = Date.now() + 6 * 60 * 60 * 1_000;
+      // Brief pause only — a 6h lock was sending every search to OSM.
+      rapidApiCooldownUntil = Date.now() + 15_000;
     }
     throw new Error(`RapidAPI request failed (${response.status}): ${body.slice(0, 180)}`);
   }
@@ -226,37 +257,75 @@ async function rapidGet(path: string, params: Record<string, string>) {
   return (await response.json()) as { data?: RapidPlace[]; status?: string; message?: string };
 }
 
-async function searchNearby(center: Coordinates, radiusMiles: number) {
+async function mapPool<T, R>(items: T[], concurrency: number, worker: (item: T) => Promise<R>) {
+  const results: R[] = [];
+  let index = 0;
+  async function next() {
+    while (index < items.length) {
+      const current = index++;
+      results[current] = await worker(items[current]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => next()));
+  return results;
+}
+
+function buildQueries(inputAddress: string) {
+  const parsed = parseUsAddress(inputAddress);
+  const locality = [parsed.city, parsed.state].filter(Boolean).join(" ");
+  const queries = [...PRIORITY_QUERIES];
+  if (locality) {
+    queries.push(`business ${locality}`, `contractor ${locality}`, `farm ${locality}`);
+  }
+  if (parsed.postcode) queries.push(`businesses ${parsed.postcode}`);
+  return [...new Set(queries)];
+}
+
+async function searchNearby(center: Coordinates, radiusMiles: number, inputAddress: string) {
   const host = HOST();
-  const limit = String(Math.min(20, Math.max(10, Math.round(radiusMiles * 12))));
+  const limit = "30";
   const zoom = String(zoomForRadius(radiusMiles));
   const deduped = new Map<string, RapidPlace>();
+  const queries = buildQueries(inputAddress);
 
-  const runSearchmaps = async (query: string) => {
-    const batch = await rapidGet("/searchmaps.php", {
-      query,
-      limit,
-      country: "us",
-      lang: "en",
-      lat: String(center.lat),
-      lng: String(center.lng),
-      zoom,
-    });
-    for (const place of batch.data ?? []) {
+  const ingest = (places: RapidPlace[]) => {
+    for (const place of places) {
+      if (place.latitude == null || place.longitude == null) continue;
+      if (distanceMiles(center, { lat: place.latitude, lng: place.longitude }) > radiusMiles + 0.05) continue;
+      if (!looksLikeBusiness(place)) continue;
       const key = place.business_id || place.place_id || place.google_id || `${place.name}-${place.latitude}-${place.longitude}`;
       if (key) deduped.set(key, place);
     }
   };
 
-  // maps-data host uses /searchmaps.php; older local-business-data used /search-nearby.
   if (host.includes("maps-data")) {
-    const results = await Promise.allSettled(SEARCH_QUERIES.map((query) => runSearchmaps(query)));
-    if (!deduped.size) {
-      const firstError = results.find((r) => r.status === "rejected");
-      if (firstError && firstError.status === "rejected") {
-        throw firstError.reason instanceof Error ? firstError.reason : new Error(String(firstError.reason));
+    // Single endpoint + limited concurrency avoids RapidAPI 429 → silent OSM fallback.
+    let failures = 0;
+    let lastError: Error | null = null;
+    await mapPool(queries, 3, async (query) => {
+      try {
+        const batch = await rapidGet("/searchmaps.php", {
+          query,
+          limit,
+          country: "us",
+          lang: "en",
+          lat: String(center.lat),
+          lng: String(center.lng),
+          zoom,
+        });
+        ingest(batch.data ?? []);
+      } catch (error) {
+        failures += 1;
+        lastError = error instanceof Error ? error : new Error(String(error));
+        // If rate-limited mid-batch, wait briefly then continue remaining queries.
+        if (String(lastError.message).includes("429")) {
+          await new Promise((resolve) => setTimeout(resolve, 1200));
+          rapidApiCooldownUntil = 0;
+        }
       }
-    }
+    });
+
+    if (!deduped.size && lastError && failures === queries.length) throw lastError;
     return [...deduped.values()];
   }
 
@@ -269,24 +338,34 @@ async function searchNearby(center: Coordinates, radiusMiles: number) {
     region: "us",
     extract_emails_and_contacts: "false",
   });
-  for (const place of batch.data ?? []) {
-    const key = place.business_id || place.place_id || place.google_id || `${place.name}-${place.latitude}-${place.longitude}`;
-    if (key) deduped.set(key, place);
-  }
+  ingest(batch.data ?? []);
   return [...deduped.values()];
 }
 
+/** Deprecated third-party path. Off unless ENABLE_RAPIDAPI_PLACES is explicitly "true". */
 export function hasRapidApiKey() {
-  return Boolean(process.env.RAPIDAPI_KEY?.trim()) && Date.now() >= rapidApiCooldownUntil;
+  return Boolean(process.env.RAPIDAPI_KEY?.trim()) && process.env.ENABLE_RAPIDAPI_PLACES === "true";
 }
 
+/**
+ * Deprecated. Not used by /api/research. Only callable when ENABLE_RAPIDAPI_PLACES=true.
+ * Quota on maps-data.p.rapidapi.com is typically exhausted — prefer PAI Places.
+ */
 export async function researchWithRapidApi(
   inputAddress: string,
   radiusMiles: number,
 ): Promise<ResearchResponse> {
+  if (process.env.ENABLE_RAPIDAPI_PLACES !== "true") {
+    throw new Error("RapidAPI Maps Data is disabled. PAI Places is the supported discovery path.");
+  }
+  // Clear stale cooldown from previous runaway fan-out so this request can try.
+  if (rapidApiCooldownUntil && Date.now() < rapidApiCooldownUntil) {
+    rapidApiCooldownUntil = 0;
+  }
+
   const retrievedAt = new Date().toISOString();
   const location = await geocodeAddress(inputAddress);
-  const places = await searchNearby(location.coordinates, radiusMiles);
+  const places = await searchNearby(location.coordinates, radiusMiles, inputAddress);
   const prospects = places
     .map((place) => toProspect(place, location.coordinates, retrievedAt))
     .filter((item): item is Prospect => Boolean(item && item.distanceMiles <= radiusMiles))
@@ -300,6 +379,9 @@ export async function researchWithRapidApi(
     warnings.unshift(
       "Address was matched at street, city, or ZIP precision, not an exact rooftop point. Confirm the location before outreach.",
     );
+  }
+  if (!prospects.length) {
+    warnings.unshift("No Google Maps businesses were found inside this radius. Try a wider radius.");
   }
 
   return {
@@ -316,7 +398,7 @@ export async function researchWithRapidApi(
       {
         id: `rapid-${Date.now()}`,
         label: "Google Maps data (RapidAPI Maps Data)",
-        url: "https://rapidapi.com/letscrape-6bRBa3QguO5/api/maps-data",
+        url: "https://rapidapi.com/alexanderxbx/api/maps-data",
         sourceDate: retrievedAt,
         retrievedAt,
         status: "Verified",

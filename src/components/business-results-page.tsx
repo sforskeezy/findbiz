@@ -12,7 +12,11 @@ import type { Prospect, ResearchResponse } from "@/lib/types";
 
 type LoadState = "loading" | "success" | "error";
 
-const missingAddress = new Set(["Address not listed in OpenStreetMap", "Address unavailable"]);
+const missingAddress = new Set([
+  "Address not listed in public data",
+  "Address not listed in OpenStreetMap",
+  "Address unavailable",
+]);
 
 function shortAddress(value: string) {
   const parts = value.split(",").map((item) => item.trim());
@@ -86,9 +90,13 @@ export function BusinessResultsPage() {
       try {
         const cached = JSON.parse(window.sessionStorage.getItem("prospectiq.currentResearch") || "null") as ResearchResponse | null;
         const age = cached ? Date.now() - new Date(cached.retrievedAt).getTime() : Number.POSITIVE_INFINITY;
+        const fromPaiPlaces = cached?.sources?.some((source) =>
+          (source.label || "").toLowerCase().includes("pai places"),
+        );
         if (
           cached?.target.inputAddress === address &&
           cached.radiusMiles === radius &&
+          fromPaiPlaces &&
           age < 15 * 60 * 1_000
         ) {
           if (!cancelled) {
@@ -97,6 +105,8 @@ export function BusinessResultsPage() {
           }
           return;
         }
+        // Drop stale third-party / OSM-only session results so PAI Places is always used.
+        window.sessionStorage.removeItem("prospectiq.currentResearch");
       } catch {
         window.sessionStorage.removeItem("prospectiq.currentResearch");
       }
@@ -245,9 +255,6 @@ export function BusinessResultsPage() {
                   near {shortAddress(research.target.formattedAddress)}
                 </span>
               </h1>
-              <p className="mt-4 max-w-[520px] text-sm leading-6 text-[#70706a]">
-                Choose a business to research its fit and address-specific broadband options.
-              </p>
             </header>
 
             {research.demoMode && (
@@ -386,7 +393,8 @@ export function BusinessResultsPage() {
                   </p>
                   <p className="mt-2 max-w-[340px] text-[13px] leading-6 text-[#7d7d77]">
                     {category === "All"
-                      ? "Try a larger radius or check the address."
+                      ? research.warnings?.[0] ||
+                        "OpenStreetMap may have no businesses mapped here. Widen the radius or add entries to data/places-cache.json."
                       : "Clear the category filter or widen the search radius."}
                   </p>
                 </div>

@@ -25,6 +25,8 @@ const industryFit: Record<string, number> = {
   "Professional services": 15,
   "Retail": 12,
   "Construction": 12,
+  "Agriculture & equine": 12,
+  "Community & faith": 8,
   "Other": 8,
 };
 
@@ -40,6 +42,8 @@ const dependence: Record<string, number> = {
   "Professional services": 18,
   "Retail": 16,
   "Construction": 14,
+  "Agriculture & equine": 13,
+  "Community & faith": 10,
   "Other": 10,
 };
 
