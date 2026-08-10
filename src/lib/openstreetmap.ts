@@ -49,7 +49,14 @@ function endpointCircuit(endpoint: string, failureThreshold: number) {
 }
 
 function endpoints() {
-  return [process.env.OVERPASS_API_URL?.trim(), ...DEFAULT_OVERPASS_ENDPOINTS].filter(
+  const configured = process.env.OVERPASS_API_URL?.trim();
+  // Known public mirrors follow the reviewed health order even if a deploy
+  // still carries an older preferred-mirror value. A genuinely custom
+  // operator endpoint remains first.
+  const ordered = configured && !DEFAULT_OVERPASS_ENDPOINTS.includes(configured)
+    ? [configured, ...DEFAULT_OVERPASS_ENDPOINTS]
+    : DEFAULT_OVERPASS_ENDPOINTS;
+  return ordered.filter(
     (value, index, all): value is string => Boolean(value) && all.indexOf(value) === index,
   );
 }

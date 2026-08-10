@@ -1,9 +1,10 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { boundsForRadius, buildSearchCells } from "@/lib/place-provider";
 import { buildOverpassQuery, clearOverpassRuntimeForTests, OpenStreetMapPlaceProvider, sequentialOverpassFetch } from "@/lib/openstreetmap";
 
 beforeEach(() => clearOverpassRuntimeForTests());
+afterEach(() => delete process.env.OVERPASS_API_URL);
 
 describe("OpenStreetMap provider", () => {
   it("falls back to mirrors sequentially without racing", async () => {
@@ -16,6 +17,17 @@ describe("OpenStreetMap provider", () => {
     const result = await sequentialOverpassFetch("unique sequential query", { endpoints: ["https://first.example", "https://second.example"], retries: 0, fetchImpl, timeoutMs: 2_000 });
     expect(result).toHaveLength(1);
     expect(calls).toEqual(["https://first.example", "https://second.example"]);
+  });
+
+  it("keeps known mirrors in reviewed health order despite a stale deploy preference", async () => {
+    process.env.OVERPASS_API_URL = "https://overpass.private.coffee/api/interpreter";
+    const calls: string[] = [];
+    const fetchImpl = vi.fn(async (url: URL | RequestInfo) => {
+      calls.push(String(url));
+      return Response.json({ elements: [] });
+    }) as typeof fetch;
+    await sequentialOverpassFetch("known mirror health order query", { fetchImpl });
+    expect(calls[0]).toBe("https://overpass-api.de/api/interpreter");
   });
 
   it("opens a short circuit for a hanging fallback so later cells do not keep waiting", async () => {
