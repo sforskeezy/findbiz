@@ -9,7 +9,7 @@ type AnthropicResponse = { content?: Array<{ type?: string; text?: string }>; er
 
 const resultSchema = z
   .object({
-    summary: z.string().min(40).max(2_500),
+    summary: z.string().min(40).max(600),
     hypothesizedNeeds: z.array(z.string().min(3).max(240)).length(3),
     reflectOn: z.array(z.string().min(3).max(280)).min(1).max(4),
     talkAbout: z.array(z.string().min(3).max(280)).min(1).max(6),
@@ -28,6 +28,8 @@ Security boundary:
 - Use only supplied facts. Never invent owners, staffing, revenue, vendors, equipment, outages, prices, contracts, serviceability, or current providers.
 - FCC rows are provider filings. exact_location is FCC Location ID evidence; nearby_area is only nearby market context and never address-level availability.
 - Category operations are hypotheses, not facts about this business.
+- Do not mention PAI Places, Overture, OpenStreetMap, map contributors, backing datasets, or provider snapshot dates in assessment, outreach, or email copy.
+- Keep the assessment to 2-3 concise sentences containing only supplied public business facts. Keep FCC material out of the assessment and sales angle; it has a separate availability view.
 - Do not alter or opine on business eligibility.
 - Do not claim affiliation, approval, endorsement, or legal approval.
 
@@ -50,7 +52,7 @@ function cleanJson(content: string) {
 
 function containsUnsupportedClaim(brief: AiBriefResult) {
   const text = JSON.stringify(brief);
-  return /\b(?:currently uses|current provider is|is serviceable|guaranteed|approved by|endorsed by|contract expires|pays \$)\b/i.test(text);
+  return /\b(?:currently uses|current provider is|is serviceable|guaranteed|approved by|endorsed by|contract expires|pays \$|openstreetmap|overture maps|pai places|map contributors)\b/i.test(text);
 }
 
 function parseResult(content: string): AiBriefResult {

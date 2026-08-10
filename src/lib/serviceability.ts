@@ -50,11 +50,19 @@ function copyForTier(
   tier: ServiceabilityTier,
   providerLabel: string | null,
   asOfDate: string | null,
+  matchQuality: FccLookupResponse["matchQuality"],
 ): Pick<ServiceabilitySignal, "shortLabel" | "detail"> {
   const asOf = asOfDate
     ? new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" }).format(new Date(asOfDate))
     : null;
   const brand = providerLabel || "The configured provider";
+
+  if (matchQuality === "user_supplied_location_id") {
+    return {
+      shortLabel: "Supplied FCC location ID",
+      detail: "Manually entered. Filing rows were found for that ID, but the ID was not verified against the searched address.",
+    };
+  }
 
   if (tier === "reported_exact") {
     return {
@@ -87,7 +95,7 @@ export function classifyServiceability(
   if (["not_configured", "unavailable", "error"].includes(fcc.status)) tier = "data_unavailable";
   else if (providerRows.length) tier = exactMatch ? "reported_exact" : "reported_area";
 
-  const copy = copyForTier(tier, providerLabel, fcc.asOfDate);
+  const copy = copyForTier(tier, providerLabel, fcc.asOfDate, fcc.matchQuality);
   return {
     tier,
     providerLabel,

@@ -3,9 +3,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { BorderBeam } from "border-beam";
-import { ChevronDown, ChevronRight, CircleAlert, MapPin, Search } from "lucide-react";
+import { ChevronDown, CircleAlert, MapPin, RotateCcw, Search } from "lucide-react";
 
+import { DataAttribution } from "@/components/data-attribution";
 import { ProspectHeader } from "@/components/prospect-header";
+import { ProspectResultRow } from "@/components/prospect-result-row";
 import { SearchProgress } from "@/components/search-progress";
 import {
   beginSearch,
@@ -19,28 +21,8 @@ import type { Prospect, ResearchResponse } from "@/lib/types";
 
 type LoadState = "loading" | "success" | "error";
 
-const missingAddress = new Set(["Address not listed in public data", "Address unavailable"]);
-
 function shortAddress(value: string) {
   return value.split(",").map((item) => item.trim()).slice(0, 3).join(", ");
-}
-
-function placeLine(prospect: Prospect) {
-  return missingAddress.has(prospect.address) ? null : prospect.address;
-}
-
-function contactLine(prospect: Prospect) {
-  if (prospect.phone) return prospect.phone;
-  if (!prospect.website) return null;
-  try {
-    return new URL(prospect.website).hostname.replace(/^www\./, "");
-  } catch {
-    return null;
-  }
-}
-
-function MetaDot() {
-  return <span aria-hidden="true" className="h-[3px] w-[3px] shrink-0 rounded-full bg-[#cbcbc4]" />;
 }
 
 function diagnosticSummary(research: ResearchResponse) {
@@ -51,9 +33,32 @@ function diagnosticSummary(research: ResearchResponse) {
     eligibility.banks ? `${eligibility.banks} banks excluded` : null,
     eligibility.schools ? `${eligibility.schools} schools excluded` : null,
     eligibility.enterprises ? `${eligibility.enterprises} enterprises excluded` : null,
-    eligibility.apartmentsUnknownUnits ? `${eligibility.apartmentsUnknownUnits} apartments awaiting unit count` : null,
+    eligibility.apartmentsUnknownUnits ? `${eligibility.apartmentsUnknownUnits} apartments excluded pending unit count` : null,
     eligibility.permanentlyClosed ? `${eligibility.permanentlyClosed} closed places excluded` : null,
   ].filter(Boolean).join(" · ");
+}
+
+function diagnosticLabel(providerId: string) {
+  if (providerId === "overture") return "Local place index";
+  if (providerId === "openstreetmap") return "Public map supplement";
+  if (providerId === "commercial") return "Optional business-data source";
+  return "Additional place source";
+}
+
+function diagnosticMessage(provider: ResearchResponse["diagnostics"]["providers"][number]) {
+  if (provider.code === "PROVIDER_TIMEOUT" || provider.code.endsWith("_TIMEOUT")) return "Timed out before completing the requested search area.";
+  if (provider.code === "OVERTURE_OUTSIDE_CONFIGURED_COVERAGE") return "This search is outside the configured local data boundary.";
+  if (provider.code === "OVERTURE_PARTIAL_CONFIGURED_COVERAGE") return "Only part of the search overlaps the configured local data boundary.";
+  if (provider.status === "failed") return "The source did not complete; successful results from other sources were preserved.";
+  if (provider.status === "unavailable") return "This source is not available for the current search.";
+  if (provider.status === "partial") return "Usable results were returned before a coverage or request limit was reached.";
+  return "Search completed successfully.";
+}
+
+function coverageLabel(research: ResearchResponse) {
+  if (research.partialCoverage) return "Partial coverage";
+  const localIndex = research.diagnostics.providers.find((provider) => provider.providerId === "overture");
+  return localIndex?.coverage === "inside" ? "Configured coverage searched" : "Search completed";
 }
 
 export function BusinessResultsPage() {
@@ -65,6 +70,9 @@ export function BusinessResultsPage() {
   const [state, setState] = useState<LoadState>(() => currentSearch() ? (currentResearch() ? "success" : "loading") : "error");
   const [research, setResearch] = useState<ResearchResponse | null>(() => currentResearch());
   const [error, setError] = useState(() => currentSearch() ? "" : "This search session ended on refresh. Start a new search; no address or prospect data was stored.");
+  const [errorCode, setErrorCode] = useState(() => currentSearch() ? "" : "SESSION_ENDED");
+  const [retryable, setRetryable] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   const [category, setCategory] = useState("All");
   const [sort, setSort] = useState<"fit" | "distance" | "name">("fit");
 
@@ -88,20 +96,30 @@ export function BusinessResultsPage() {
           cache: "no-store",
           signal: controller.signal,
         });
-        const payload = (await response.json()) as ResearchResponse & { error?: string };
-        if (!response.ok || payload.error) throw new Error(payload.error || "Business search failed.");
+        const payload = (await response.json()) as ResearchResponse & { error?: string; code?: string; retryable?: boolean };
+        if (!response.ok || payload.error) {
+          const apiError = new Error(payload.error || "Business search failed.") as Error & { code?: string; retryable?: boolean };
+          apiError.code = payload.code;
+          apiError.retryable = payload.retryable;
+          throw apiError;
+        }
         setCurrentResearch(payload);
         setResearch(payload);
+        setErrorCode("");
+        setRetryable(false);
         setState("success");
       } catch (loadError) {
         if (controller.signal.aborted) return;
         setError(loadError instanceof Error ? loadError.message : "Business search failed.");
+        const responseError = loadError as Error & { code?: string; retryable?: boolean };
+        setErrorCode(responseError.code ?? "SEARCH_FAILED");
+        setRetryable(responseError.retryable ?? true);
         setState("error");
       }
     }
     void load();
     return () => controller.abort();
-  }, [request]);
+  }, [request, attempt]);
 
   const categories = useMemo(
     () => research ? [...new Set(research.prospects.map((item) => item.category))].sort() : [],
@@ -121,15 +139,26 @@ export function BusinessResultsPage() {
   function searchAgain(event: React.FormEvent) {
     event.preventDefault();
     const radiusMiles = Number(queryRadius);
-    if (queryAddress.trim().length < 6 || ![0.25, 0.5, 1, 2, 5].includes(radiusMiles)) return;
+    if (queryAddress.trim().length < 6 || ![0.25, 0.5, 1, 2, 3, 5].includes(radiusMiles)) return;
     const next = { address: queryAddress.trim(), radiusMiles };
     beginSearch(next);
     setRequest(next);
     setState("loading");
     setResearch(null);
     setError("");
+    setErrorCode("");
+    setRetryable(false);
     setCategory("All");
     router.replace("/search");
+  }
+
+  function retrySearch() {
+    if (!request) return;
+    setState("loading");
+    setError("");
+    setErrorCode("");
+    setRetryable(false);
+    setAttempt((value) => value + 1);
   }
 
   function openBusiness(prospect: Prospect) {
@@ -164,7 +193,7 @@ export function BusinessResultsPage() {
                 <label className="relative flex h-11 items-center sm:w-[120px]">
                   <span className="sr-only">Search radius</span>
                   <select value={queryRadius} onChange={(event) => setQueryRadius(event.target.value)} className="h-full w-full appearance-none rounded-full border border-[#e8e8e3] bg-[#f7f7f4] pl-3.5 pr-8 text-xs font-semibold text-[#292926] outline-none focus-visible:ring-2 focus-visible:ring-[#898983]">
-                    <option value="0.25">0.25 mi</option><option value="0.5">0.5 mi</option><option value="1">1 mi</option><option value="2">2 mi</option><option value="5">5 mi</option>
+                    <option value="0.25">0.25 mi</option><option value="0.5">0.5 mi</option><option value="1">1 mi</option><option value="2">2 mi</option><option value="3">3 mi</option><option value="5">5 mi</option>
                   </select>
                   <ChevronDown size={13} aria-hidden className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[#8a8a84]" />
                 </label>
@@ -177,18 +206,21 @@ export function BusinessResultsPage() {
         {state === "error" ? (
           <section className="flex min-h-[520px] items-center justify-center text-center">
             <div className="max-w-md">
-              <p className="text-[13px] font-medium text-[#8b8b85]">Search</p>
-              <h1 className="mt-3 text-[28px] font-semibold tracking-[-0.04em] text-[#191916]">The search did not complete.</h1>
+              <p className="text-[13px] font-medium text-[#8b8b85]">{errorCode === "PLACES_PROVIDER_UNAVAILABLE" ? "Business discovery unavailable" : "Search"}</p>
+              <h1 className="mt-3 text-[28px] font-semibold tracking-[-0.04em] text-[#191916]">{errorCode === "PLACES_PROVIDER_UNAVAILABLE" ? "The place sources did not respond." : "The search did not complete."}</h1>
               <p className="mt-4 text-sm leading-6 text-[#777771]">{error}</p>
-              <button type="button" onClick={() => router.push("/")} className="mt-7 h-11 rounded-full bg-[#171715] px-5 text-xs font-semibold text-white">Start a new search</button>
+              <div className="mt-7 flex flex-wrap justify-center gap-2">
+                {retryable && request && <button type="button" onClick={retrySearch} className="inline-flex h-11 items-center gap-2 rounded-full bg-[#171715] px-5 text-xs font-semibold text-white"><RotateCcw size={13} aria-hidden /> Retry</button>}
+                <button type="button" onClick={() => router.push("/")} className="h-11 rounded-full border border-[#d9d9d3] bg-white px-5 text-xs font-semibold text-[#33332f]">Start a new search</button>
+              </div>
             </div>
           </section>
         ) : research ? (
           <div className="animate-enter">
             <header className="mt-10 sm:mt-14">
               <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold">
-                <span className={research.partialCoverage ? "text-[#8a6613]" : "text-[#17653f]"}>{research.partialCoverage ? "Partial coverage" : "Coverage complete within configured sources"}</span>
-                <MetaDot />
+                <span className={research.partialCoverage ? "text-[#8a6613]" : "text-[#17653f]"}>{coverageLabel(research)}</span>
+                <span aria-hidden="true" className="h-[3px] w-[3px] shrink-0 rounded-full bg-[#cbcbc4]" />
                 <span className="text-[#777771]">{research.radiusMiles} mi radius</span>
               </div>
               <h1 className="mt-3.5 max-w-[820px] text-[34px] font-semibold leading-[1.04] tracking-[-0.05em] text-[#141412] sm:text-[46px]">
@@ -198,14 +230,13 @@ export function BusinessResultsPage() {
             </header>
 
             <details className="mt-7 rounded-[14px] border border-[#dfdfd9] bg-white/55 px-4 py-3 text-xs text-[#666660]">
-              <summary className="cursor-pointer list-none font-semibold text-[#33332f] focus-visible:outline-2">Search diagnostics and sources</summary>
+              <summary className="cursor-pointer list-none font-semibold text-[#33332f] focus-visible:outline-2">Search details</summary>
               <div className="mt-3 grid gap-3 sm:grid-cols-2">
                 {research.diagnostics.providers.map((provider) => (
                   <div key={provider.providerId} className="border-t border-[#e4e4df] pt-2.5">
-                    <div className="flex items-center justify-between gap-3"><span className="font-semibold text-[#393935]">{provider.label}</span><span className="capitalize">{provider.status}</span></div>
-                    <p className="mt-1 leading-5">{provider.message}</p>
-                    {provider.setupHint && <p className="mt-1 font-medium text-[#8a6613]">{provider.setupHint}</p>}
-                    {provider.attributionUrl && <a href={provider.attributionUrl} target="_blank" rel="noreferrer" className="mt-1 inline-block underline underline-offset-2">Attribution</a>}
+                    <div className="flex items-center justify-between gap-3"><span className="font-semibold text-[#393935]">{diagnosticLabel(provider.providerId)}</span><span className="capitalize">{provider.status}</span></div>
+                    <p className="mt-1 leading-5">{diagnosticMessage(provider)}</p>
+                    <p className="mt-1 text-[10px] text-[#8a8a84]">{provider.recordCount} records · {provider.durationMs} ms{provider.coverage ? ` · ${provider.coverage} local coverage` : ""}</p>
                   </div>
                 ))}
               </div>
@@ -219,37 +250,23 @@ export function BusinessResultsPage() {
               </label>
               <label className="inline-flex h-10 items-center gap-2 rounded-[10px] px-2.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#777771]">
                 Sort
-                <span className="relative inline-flex items-center"><select value={sort} onChange={(event) => setSort(event.target.value as typeof sort)} className="appearance-none bg-transparent pr-4 text-[12px] font-semibold normal-case tracking-normal text-[#22221f] outline-none"><option value="fit">Research heuristic</option><option value="distance">Closest</option><option value="name">Name</option></select><ChevronDown size={12} aria-hidden className="pointer-events-none absolute right-0 text-[#777771]" /></span>
+                <span className="relative inline-flex items-center"><select value={sort} onChange={(event) => setSort(event.target.value as typeof sort)} className="appearance-none bg-transparent pr-4 text-[12px] font-semibold normal-case tracking-normal text-[#22221f] outline-none"><option value="fit">Prospect fit</option><option value="distance">Closest</option><option value="name">Name</option></select><ChevronDown size={12} aria-hidden className="pointer-events-none absolute right-0 text-[#777771]" /></span>
               </label>
             </div>
 
             <section>
               {visible.length ? (
                 <ul className="border-b border-[#e5e5e0]">
-                  {visible.map((prospect, index) => {
-                    const place = placeLine(prospect);
-                    const contact = contactLine(prospect);
-                    return (
-                      <li key={prospect.id} className="animate-enter border-t border-[#e5e5e0] first:border-t-0" style={{ animationDelay: `${Math.min(index, 10) * 45}ms` }}>
-                        <button type="button" onClick={() => openBusiness(prospect)} className="group relative block w-full py-4 text-left focus-visible:outline-2 focus-visible:outline-offset-2 sm:py-[18px]">
-                          <span className="pointer-events-none absolute -inset-x-3 -inset-y-px rounded-[16px] border border-[#e6e6e0] bg-white/90 opacity-0 shadow-[0_14px_36px_rgba(20,20,16,0.07)] transition-opacity duration-200 group-hover:opacity-100 group-focus-visible:opacity-100 sm:-inset-x-5" />
-                          <span className="relative flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-6">
-                            <span className="min-w-0 flex-1 transition-transform duration-200 group-hover:translate-x-[3px]">
-                              <span className="flex flex-wrap items-baseline gap-2.5"><span className="truncate text-[16px] font-semibold tracking-[-0.02em] text-[#1a1a17] sm:text-[17px]">{prospect.name}</span><span className="text-[9px] font-bold uppercase tracking-[0.12em] text-[#7b7b75]">{prospect.priority}</span></span>
-                              <span className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11.5px] leading-4 text-[#777771]"><span className="font-medium text-[#5f5f59]">{prospect.category}</span>{prospect.operatingStatus === "Temporarily closed" && <><MetaDot /><span className="font-semibold text-[#8a6613]">Temporarily closed</span></>}{place && <><MetaDot /><span className="max-w-full truncate">{place}</span></>}{contact && <><MetaDot /><span className="truncate tabular-nums">{contact}</span></>}<MetaDot /><span>{prospect.dataConfidence} confidence</span><MetaDot /><span>{prospect.sources.map((source) => source.label).join(" + ")}</span></span>
-                            </span>
-                            <span className="flex items-center justify-between gap-5 sm:justify-end sm:gap-6"><span className="text-[12px] font-medium tabular-nums text-[#5f5f59]">{prospect.distanceMiles.toFixed(2)} mi</span><span className="text-[11px] text-[#777771]">Heuristic <strong className="text-[#1f1f1c]">{prospect.score}</strong></span><ChevronRight size={16} aria-hidden className="text-[#9a9a93] transition group-hover:translate-x-1" /></span>
-                          </span>
-                        </button>
-                      </li>
-                    );
-                  })}
+                  {visible.map((prospect, index) => <ProspectResultRow key={prospect.id} prospect={prospect} index={index} onOpen={openBusiness} />)}
                 </ul>
               ) : (
                 <div className="flex min-h-[280px] flex-col items-center justify-center px-6 text-center"><span className="flex h-11 w-11 items-center justify-center rounded-full border border-[#e4e4de] bg-white/80"><MapPin size={17} aria-hidden className="text-[#777771]" /></span><p className="mt-5 text-[17px] font-semibold text-[#22221f]">No eligible nearby businesses found.</p><p className="mt-2 max-w-[400px] text-[13px] leading-6 text-[#6f6f69]">{research.warnings[0] || "Widen the radius or review source diagnostics. Missing results do not prove no businesses exist."}</p></div>
               )}
             </section>
-            <p className="mt-5 text-[10px] leading-5 text-[#777771]">Verify business facts before outreach. Results stay in memory and clear on refresh.</p>
+            <div className="mt-5 flex flex-col gap-2">
+              <p className="text-[10px] leading-5 text-[#777771]">Verify business facts before outreach. Results stay in memory and clear on refresh.</p>
+              <DataAttribution providers={research.diagnostics.providers} />
+            </div>
           </div>
         ) : null}
       </div>

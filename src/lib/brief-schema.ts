@@ -2,8 +2,6 @@ import { z } from "zod";
 
 import type { BroadbandObservation, Prospect } from "@/lib/types";
 
-const sourceFactSchema = z.object({ label: z.string().min(1).max(160), updatedAt: z.string().max(80).nullable() }).strict();
-
 export const briefRequestSchema = z
   .object({
     business: z
@@ -14,7 +12,7 @@ export const briefRequestSchema = z
         operatingStatus: z.enum(["Open", "Temporarily closed", "Permanently closed", "Unknown"]),
         phoneAvailable: z.boolean(),
         websiteAvailable: z.boolean(),
-        sourceFacts: z.array(sourceFactSchema).max(8),
+        publicFactDates: z.array(z.string().max(80)).max(8),
         confidence: z.enum(["High", "Medium", "Low"]),
         evidenceCompleteness: z.number().int().min(0).max(100),
       })
@@ -23,7 +21,6 @@ export const briefRequestSchema = z
       .array(
         z
           .object({
-            provider: z.string().min(1).max(200),
             technology: z.string().min(1).max(160),
             downloadMbps: z.number().nonnegative().nullable(),
             uploadMbps: z.number().nonnegative().nullable(),
@@ -39,6 +36,9 @@ export const briefRequestSchema = z
 export type BriefRequest = z.infer<typeof briefRequestSchema>;
 
 export function buildBriefRequest(prospect: Prospect, broadband: BroadbandObservation[]): BriefRequest {
+  if (prospect.eligibility.status !== "eligible") {
+    throw new Error("Research briefs are only available for eligible prospects.");
+  }
   return {
     business: {
       name: prospect.name,
@@ -47,12 +47,14 @@ export function buildBriefRequest(prospect: Prospect, broadband: BroadbandObserv
       operatingStatus: prospect.operatingStatus,
       phoneAvailable: Boolean(prospect.phone),
       websiteAvailable: Boolean(prospect.website),
-      sourceFacts: prospect.sources.slice(0, 8).map((source) => ({ label: source.label, updatedAt: source.updatedAt })),
+      publicFactDates: prospect.sources
+        .map((source) => source.updatedAt)
+        .filter((value): value is string => Boolean(value))
+        .slice(0, 8),
       confidence: prospect.dataConfidence,
       evidenceCompleteness: prospect.evidenceCompleteness,
     },
     broadband: broadband.slice(0, 30).map((item) => ({
-      provider: item.provider,
       technology: item.technology,
       downloadMbps: item.downloadMbps,
       uploadMbps: item.uploadMbps,

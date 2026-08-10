@@ -14,6 +14,7 @@ const radii = [
   { value: "0.5", label: "0.5 mi" },
   { value: "1", label: "1 mi" },
   { value: "2", label: "2 mi" },
+  { value: "3", label: "3 mi" },
   { value: "5", label: "5 mi" },
 ];
 

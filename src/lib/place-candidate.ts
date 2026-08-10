@@ -125,16 +125,21 @@ function priorityFor(
   if (eligibility.status === "unknown") return "Eligibility unknown";
   if (score >= 65 && dataConfidence !== "Low") return "Strong prospect";
   if (score >= 48) return "Worth checking";
-  return "Thin evidence";
+  return "Lower priority";
 }
 
-export function buildProspect(candidate: PlaceCandidate, target: Coordinates, retrievedAt: string): Prospect {
+export function buildProspect(
+  candidate: PlaceCandidate,
+  target: Coordinates,
+  retrievedAt: string,
+  eligibilityOverride?: Prospect["eligibility"],
+): Prospect {
   const distance = distanceMiles(target, candidate.coordinates);
   const category = candidate.category || "Other/Unknown";
   const needs = NEEDS_BY_CATEGORY[category] ?? NEEDS_BY_CATEGORY["Other/Unknown"];
   const dataConfidence = candidateDataConfidence(candidate);
   const completeness = evidenceCompleteness(candidate);
-  const eligibility = classifyEligibility(candidate);
+  const eligibility = eligibilityOverride ?? classifyEligibility(candidate);
   const { total, breakdown } = scoreProspect({
     distanceMiles: distance,
     category,

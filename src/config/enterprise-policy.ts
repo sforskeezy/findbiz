@@ -1,4 +1,4 @@
-export const ENTERPRISE_POLICY_VERSION = "2026-08-01.v1";
+export const ENTERPRISE_POLICY_VERSION = "2026-08-09.v2";
 
 export type EnterprisePolicyEntry = {
   id: string;
@@ -42,7 +42,7 @@ export const ENTERPRISE_POLICY: EnterprisePolicyEntry[] = [
   },
   {
     id: "lowes",
-    names: ["lowe's", "lowes"],
+    names: ["lowe's", "lowes", "lowe's home improvement", "lowes home improvement"],
     domains: ["lowes.com"],
     brands: ["lowe's", "lowes"],
     treatment: "exclude",
@@ -55,6 +55,78 @@ export const ENTERPRISE_POLICY: EnterprisePolicyEntry[] = [
     brands: ["starbucks"],
     treatment: "exclude",
     rationale: "Configured national enterprise brand.",
+  },
+  {
+    id: "target",
+    names: ["target", "target store"],
+    domains: ["target.com"],
+    brands: ["target"],
+    treatment: "exclude",
+    rationale: "Configured national enterprise retailer.",
+  },
+  {
+    id: "costco",
+    names: ["costco", "costco wholesale"],
+    domains: ["costco.com"],
+    brands: ["costco", "costco wholesale"],
+    treatment: "exclude",
+    rationale: "Configured national enterprise retailer.",
+  },
+  {
+    id: "best-buy",
+    names: ["best buy"],
+    domains: ["bestbuy.com"],
+    brands: ["best buy"],
+    treatment: "exclude",
+    rationale: "Configured national enterprise retailer.",
+  },
+  {
+    id: "cvs",
+    names: ["cvs", "cvs pharmacy"],
+    domains: ["cvs.com"],
+    brands: ["cvs", "cvs pharmacy"],
+    treatment: "exclude",
+    rationale: "Configured national enterprise pharmacy.",
+  },
+  {
+    id: "walgreens",
+    names: ["walgreens", "walgreen pharmacy"],
+    domains: ["walgreens.com"],
+    brands: ["walgreens"],
+    treatment: "exclude",
+    rationale: "Configured national enterprise pharmacy.",
+  },
+  {
+    id: "dollar-stores",
+    names: ["dollar general", "dollar general market", "dollar tree", "family dollar"],
+    domains: ["dollargeneral.com", "dollartree.com", "familydollar.com"],
+    brands: ["dollar general", "dollar tree", "family dollar"],
+    treatment: "exclude",
+    rationale: "Configured national enterprise discount retailer.",
+  },
+  {
+    id: "aldi-whole-foods",
+    names: ["aldi", "aldi food market", "whole foods", "whole foods market"],
+    domains: ["aldi.us", "wholefoodsmarket.com"],
+    brands: ["aldi", "whole foods", "whole foods market"],
+    treatment: "exclude",
+    rationale: "Configured national enterprise grocer.",
+  },
+  {
+    id: "tractor-supply",
+    names: ["tractor supply", "tractor supply co", "tractor supply company"],
+    domains: ["tractorsupply.com"],
+    brands: ["tractor supply", "tractor supply company"],
+    treatment: "exclude",
+    rationale: "Configured national enterprise retailer.",
+  },
+  {
+    id: "harbor-freight",
+    names: ["harbor freight", "harbor freight tools"],
+    domains: ["harborfreight.com"],
+    brands: ["harbor freight", "harbor freight tools"],
+    treatment: "exclude",
+    rationale: "Configured national enterprise retailer.",
   },
   {
     id: "franchise-brands",

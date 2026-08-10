@@ -62,7 +62,7 @@ export type Eligibility = {
   policyVersion: string;
 };
 
-export type ProspectPriority = "Strong prospect" | "Worth checking" | "Thin evidence" | "Eligibility unknown";
+export type ProspectPriority = "Strong prospect" | "Worth checking" | "Lower priority" | "Eligibility unknown";
 export type DataConfidence = "High" | "Medium" | "Low";
 
 export type ScoreBreakdown = {
@@ -133,6 +133,7 @@ export type ProviderDiagnostic = {
   message: string;
   attributionUrl: string | null;
   setupHint?: string;
+  coverage?: "inside" | "partial" | "outside" | "unknown";
 };
 
 export type EligibilityCounts = {

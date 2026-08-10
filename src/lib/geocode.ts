@@ -47,6 +47,29 @@ const STREET_EXPAND: Record<string, string> = {
   rte: "route", route: "rte",
 };
 
+const DIRECTION_EXPAND: Record<string, string> = {
+  n: "north", north: "n",
+  s: "south", south: "s",
+  e: "east", east: "e",
+  w: "west", west: "w",
+  ne: "northeast", northeast: "ne",
+  nw: "northwest", northwest: "nw",
+  se: "southeast", southeast: "se",
+  sw: "southwest", southwest: "sw",
+};
+
+const DIRECTION_CANONICAL: Record<string, string> = {
+  n: "n", north: "n", s: "s", south: "s", e: "e", east: "e", w: "w", west: "w",
+  ne: "ne", northeast: "ne", nw: "nw", northwest: "nw", se: "se", southeast: "se", sw: "sw", southwest: "sw",
+};
+
+const STREET_CANONICAL: Record<string, string> = {
+  rd: "rd", road: "rd", st: "st", street: "st", ave: "ave", avenue: "ave",
+  blvd: "blvd", boulevard: "blvd", dr: "dr", drive: "dr", ln: "ln", lane: "ln",
+  ct: "ct", court: "ct", cir: "cir", circle: "cir", hwy: "hwy", highway: "hwy",
+  pkwy: "pkwy", parkway: "pkwy", rte: "rte", route: "rte",
+};
+
 const geocodeCache = new Map<string, { value: GeocodeResult; expiresAt: number }>();
 let lastNominatimRequest = 0;
 
@@ -94,13 +117,41 @@ function highwayVariants(street: string, state: string | null) {
 
 function streetVariants(street: string, state: string | null = null) {
   const base = collapse(street);
-  const tokens = base.split(/\s+/);
-  const last = tokens[tokens.length - 1]?.toLowerCase().replace(/\./g, "");
   const variants = new Set<string>([base, ...highwayVariants(base, state)]);
-  if (last && STREET_EXPAND[last]) {
-    variants.add([...tokens.slice(0, -1), STREET_EXPAND[last]].join(" "));
+  for (const current of [...variants]) {
+    const tokens = current.split(/\s+/);
+    const last = tokens[tokens.length - 1]?.toLowerCase().replace(/\./g, "");
+    if (last && STREET_EXPAND[last]) {
+      variants.add([...tokens.slice(0, -1), STREET_EXPAND[last]].join(" "));
+    }
+  }
+  for (const current of [...variants]) {
+    const tokens = current.split(/\s+/);
+    tokens.forEach((token, index) => {
+      const normalized = token.toLowerCase().replace(/\./g, "");
+      const replacement = DIRECTION_EXPAND[normalized];
+      if (replacement) variants.add(tokens.map((item, itemIndex) => itemIndex === index ? replacement : item).join(" "));
+    });
   }
   return [...variants];
+}
+
+export function normalizeStreetForComparison(value: string) {
+  return normalizeToken(value)
+    .split(" ")
+    .map((token) => {
+      return DIRECTION_CANONICAL[token] ?? STREET_CANONICAL[token] ?? token;
+    })
+    .join(" ");
+}
+
+function resolvesRequestedStreet(candidate: Candidate, parsed: ParsedAddress) {
+  if (!parsed.street) return true;
+  const formatted = normalizeStreetForComparison(candidate.formattedAddress);
+  const street = normalizeStreetForComparison(parsed.street);
+  if (!formatted.includes(street)) return false;
+  if (!parsed.housenumber) return true;
+  return formatted.split(" ").includes(normalizeToken(parsed.housenumber));
 }
 
 export function parseUsAddress(input: string): ParsedAddress {
@@ -415,8 +466,9 @@ export async function geocodeAddress(inputAddress: string): Promise<GeocodeResul
     }
   }
 
-  candidates.sort((a, b) => b.score - a.score);
-  const best = candidates[0];
+  const addressCandidates = parsed.street ? candidates.filter((candidate) => resolvesRequestedStreet(candidate, parsed)) : candidates;
+  addressCandidates.sort((a, b) => b.score - a.score);
+  const best = addressCandidates[0];
   if (!best || best.score < 25) {
     throw new Error("That address could not be located. Try a full street address with ZIP code.");
   }

@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { z } from "zod";
 
+import type { Bounds } from "@/lib/types";
 import type { PlaceSearchRequest, PlaceSearchResult, PlaceProvider } from "@/lib/place-provider";
 import { distanceMiles, normalizeCategory, type PlaceCandidate } from "@/lib/place-candidate";
 import { redactError } from "@/lib/request-safety";
@@ -47,6 +48,58 @@ function configuredDatasetPath() {
   return path.resolve(configured);
 }
 
+export type OvertureCoverageRelation = "inside" | "partial" | "outside" | "unknown";
+
+export type OvertureReadiness = {
+  configured: boolean;
+  ready: boolean;
+  code:
+    | "OVERTURE_NOT_CONFIGURED"
+    | "OVERTURE_FILE_MISSING"
+    | "OVERTURE_SCHEMA_INVALID"
+    | "OVERTURE_READY";
+  coverageBoundaryConfigured: boolean;
+};
+
+let readinessCache: { fingerprint: string; value: OvertureReadiness } | null = null;
+
+export function parseOvertureCoverageBbox(value = process.env.OVERTURE_COVERAGE_BBOX): Bounds | null {
+  if (!value?.trim()) return null;
+  const coordinates = value.split(",").map((item) => Number(item.trim()));
+  if (
+    coordinates.length !== 4 ||
+    coordinates.some((item) => !Number.isFinite(item)) ||
+    coordinates[0] < -180 || coordinates[2] > 180 ||
+    coordinates[1] < -90 || coordinates[3] > 90 ||
+    coordinates[0] >= coordinates[2] || coordinates[1] >= coordinates[3]
+  ) {
+    return null;
+  }
+  const [west, south, east, north] = coordinates;
+  return { west, south, east, north };
+}
+
+export function overtureCoverageRelation(search: Bounds, coverage: Bounds | null): OvertureCoverageRelation {
+  if (!coverage) return "unknown";
+  const intersects =
+    search.west < coverage.east && search.east > coverage.west &&
+    search.south < coverage.north && search.north > coverage.south;
+  if (!intersects) return "outside";
+  const contained =
+    search.west >= coverage.west && search.east <= coverage.east &&
+    search.south >= coverage.south && search.north <= coverage.north;
+  return contained ? "inside" : "partial";
+}
+
+function intersectBounds(search: Bounds, coverage: Bounds): Bounds {
+  return {
+    west: Math.max(search.west, coverage.west),
+    east: Math.min(search.east, coverage.east),
+    south: Math.max(search.south, coverage.south),
+    north: Math.min(search.north, coverage.north),
+  };
+}
+
 function parquetReadPath(configured: string) {
   return statSync(/* turbopackIgnore: true */ configured).isDirectory()
     ? path.join(configured, "**", "*.parquet")
@@ -57,9 +110,53 @@ export function overtureConfigurationStatus() {
   const configured = configuredDatasetPath();
   if (!configured) return { configured: false, code: "OVERTURE_NOT_CONFIGURED" } as const;
   if (!existsSync(/* turbopackIgnore: true */ configured)) {
-    return { configured: false, code: "OVERTURE_DATASET_NOT_FOUND" } as const;
+    return { configured: false, code: "OVERTURE_FILE_MISSING" } as const;
   }
   return { configured: true, code: "OVERTURE_READY" } as const;
+}
+
+async function validateOvertureSchema(parquetPath: string) {
+  const { DuckDBInstance } = await import("@duckdb/node-api");
+  const instance = await DuckDBInstance.create(":memory:", { threads: "1", memory_limit: "256MB" });
+  const connection = await instance.connect();
+  try {
+    await connection.runAndReadAll(
+      `SELECT
+        id,
+        names.primary,
+        categories.primary,
+        bbox.xmin,
+        bbox.ymin,
+        operating_status
+      FROM read_parquet($parquet_path, union_by_name = true)
+      LIMIT 0`,
+      { parquet_path: parquetPath },
+    );
+  } finally {
+    connection.closeSync();
+  }
+}
+
+export async function inspectOvertureReadiness(): Promise<OvertureReadiness> {
+  const configured = configuredDatasetPath();
+  const coverageBoundaryConfigured = Boolean(parseOvertureCoverageBbox());
+  if (!configured) return { configured: false, ready: false, code: "OVERTURE_NOT_CONFIGURED", coverageBoundaryConfigured };
+  if (!existsSync(/* turbopackIgnore: true */ configured)) {
+    return { configured: true, ready: false, code: "OVERTURE_FILE_MISSING", coverageBoundaryConfigured };
+  }
+  const stats = statSync(/* turbopackIgnore: true */ configured);
+  const fingerprint = `${configured}:${stats.size}:${stats.mtimeMs}:${process.env.OVERTURE_COVERAGE_BBOX ?? ""}`;
+  if (readinessCache?.fingerprint === fingerprint) return readinessCache.value;
+  try {
+    await validateOvertureSchema(parquetReadPath(configured));
+    const value = { configured: true, ready: true, code: "OVERTURE_READY", coverageBoundaryConfigured } as const;
+    readinessCache = { fingerprint, value };
+    return value;
+  } catch {
+    const value = { configured: true, ready: false, code: "OVERTURE_SCHEMA_INVALID", coverageBoundaryConfigured } as const;
+    readinessCache = { fingerprint, value };
+    return value;
+  }
 }
 
 export async function queryOvertureRows({
@@ -208,12 +305,15 @@ export function normalizeOvertureRow(input: unknown): PlaceCandidate | null {
 export class OverturePlaceProvider implements PlaceProvider {
   readonly id = "overture";
 
-  constructor(private readonly query: OvertureQuery = queryOvertureRows) {}
+  constructor(
+    private readonly query: OvertureQuery = queryOvertureRows,
+    private readonly inspect: () => Promise<OvertureReadiness> = inspectOvertureReadiness,
+  ) {}
 
   async searchNearby(request: PlaceSearchRequest): Promise<PlaceSearchResult> {
     const started = performance.now();
-    const status = overtureConfigurationStatus();
-    if (!status.configured) {
+    const status = await this.inspect();
+    if (!status.ready) {
       return {
         providerId: this.id,
         places: [],
@@ -233,10 +333,35 @@ export class OverturePlaceProvider implements PlaceProvider {
       };
     }
 
+    const coverage = parseOvertureCoverageBbox();
+    const relation = overtureCoverageRelation(request.bounds, coverage);
+    if (relation === "outside") {
+      return {
+        providerId: this.id,
+        places: [],
+        completedCellIds: [],
+        diagnostic: {
+          providerId: this.id,
+          label: OVERTURE_ATTRIBUTION,
+          status: "unavailable",
+          code: "OVERTURE_OUTSIDE_CONFIGURED_COVERAGE",
+          recordCount: 0,
+          requestCount: 0,
+          durationMs: Math.round(performance.now() - started),
+          message: "The search is outside the configured local Overture extract.",
+          attributionUrl: OVERTURE_ATTRIBUTION_URL,
+          coverage: relation,
+        },
+      };
+    }
+
     try {
       const configured = configuredDatasetPath();
       if (!configured) throw new Error("Overture dataset configuration changed during the request.");
-      const rows = await this.query({ parquetPath: parquetReadPath(configured), request });
+      const boundedRequest = relation === "partial" && coverage
+        ? { ...request, bounds: intersectBounds(request.bounds, coverage) }
+        : request;
+      const rows = await this.query({ parquetPath: parquetReadPath(configured), request: boundedRequest });
       const places = rows
         .map(normalizeOvertureRow)
         .filter((place): place is PlaceCandidate => Boolean(place))
@@ -244,22 +369,38 @@ export class OverturePlaceProvider implements PlaceProvider {
         .filter((place) => distanceMiles(request.center, place.coordinates) <= request.radiusMiles)
         .slice(0, request.budget.maxRecords);
       const capped = rows.length >= request.budget.maxRecords;
+      const completedCellIds = relation === "partial" && coverage
+        ? request.cells
+            .filter((cell) => overtureCoverageRelation(cell.bounds, coverage) !== "outside")
+            .map((cell) => cell.id)
+        : request.cells.map((cell) => cell.id);
       return {
         providerId: this.id,
         places,
-        completedCellIds: request.cells.map((cell) => cell.id),
+        completedCellIds,
         diagnostic: {
           providerId: this.id,
           label: OVERTURE_ATTRIBUTION,
-          status: capped ? "partial" : "complete",
-          code: capped ? "OVERTURE_RECORD_BUDGET_REACHED" : "OVERTURE_COMPLETE",
+          status: capped || relation === "partial" ? "partial" : "complete",
+          code: capped
+            ? "OVERTURE_RECORD_BUDGET_REACHED"
+            : relation === "partial"
+              ? "OVERTURE_PARTIAL_CONFIGURED_COVERAGE"
+              : relation === "unknown"
+                ? "OVERTURE_COMPLETE_COVERAGE_UNKNOWN"
+                : "OVERTURE_COMPLETE",
           recordCount: places.length,
           requestCount: 1,
           durationMs: Math.round(performance.now() - started),
           message: capped
-            ? "Overture reached the configured record budget; results are partial."
-            : "Local Overture Places search completed.",
+            ? "The local place index reached its record budget; results are partial."
+            : relation === "partial"
+              ? "The search overlaps only part of the configured local extract."
+              : relation === "unknown"
+                ? "The local place search completed, but no coverage boundary is configured."
+                : "The local place search completed inside its configured coverage.",
           attributionUrl: OVERTURE_ATTRIBUTION_URL,
+          coverage: relation,
         },
       };
     } catch (error) {
@@ -277,6 +418,7 @@ export class OverturePlaceProvider implements PlaceProvider {
           durationMs: Math.round(performance.now() - started),
           message: redactError(error, "Overture query failed."),
           attributionUrl: OVERTURE_ATTRIBUTION_URL,
+          coverage: relation,
         },
       };
     }

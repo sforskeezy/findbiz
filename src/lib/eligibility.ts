@@ -22,6 +22,11 @@ const SCHOOL_CATEGORIES = new Set([
   "college",
   "university",
   "community_college",
+  "kindergarten",
+  "preschool",
+  "language_school",
+  "music_school",
+  "driving_school",
 ]);
 
 const APARTMENT_CATEGORIES = new Set([
@@ -33,10 +38,14 @@ const APARTMENT_CATEGORIES = new Set([
 ]);
 
 const GOVERNMENT_CATEGORIES = new Set([
+  "government",
   "government_office",
+  "public_building",
   "courthouse",
   "police_station",
   "fire_station",
+  "post_office",
+  "public_library",
   "prison",
   "military_base",
   "townhall",
@@ -68,9 +77,14 @@ function enterpriseEntry(candidate: PlaceCandidate): EnterprisePolicyEntry | nul
   const websiteDomain = domain(candidate.website);
   return (
     ENTERPRISE_POLICY.find((entry) => {
-      const exactName = entry.names.some((value) => normalize(value) === name);
+      const exactName = entry.names.some((value) => {
+        const alias = normalize(value);
+        if (alias === name) return true;
+        const suffix = name.slice(alias.length).trim();
+        return name.startsWith(`${alias} `) && /^(?:store|market|pharmacy|supercenter|wholesale|location|no|number)?\s*\d+[a-z]?$/i.test(suffix);
+      });
       const exactBrand = Boolean(brand) && entry.brands.some((value) => normalize(value) === brand);
-      const exactDomain = Boolean(websiteDomain) && entry.domains.some((value) => value === websiteDomain);
+      const exactDomain = Boolean(websiteDomain) && entry.domains.some((value) => websiteDomain === value || websiteDomain?.endsWith(`.${value}`));
       return exactName || exactBrand || exactDomain;
     }) ?? null
   );
@@ -102,7 +116,7 @@ export function classifyEligibility(candidate: PlaceCandidate): Eligibility {
   }
   if ([...categories].some((category) => APARTMENT_CATEGORIES.has(category))) {
     if (candidate.apartmentUnits === null) {
-      return result("unknown", "apartment_units_unknown", "Apartment units need verification");
+      return result("excluded", "apartment_units_unknown", "Apartment units need verification");
     }
     if (candidate.apartmentUnits > 9) {
       return result("excluded", "apartment_over_nine_units", "Apartment property over nine units");

@@ -52,4 +52,5 @@ child.on("exit", (code) => {
   }
   console.log(`Prepared ${resolvedOutput}`);
   console.log(`Set OVERTURE_PLACES_PATH=${output}`);
+  console.log(`Set OVERTURE_COVERAGE_BBOX=${bbox}`);
 });

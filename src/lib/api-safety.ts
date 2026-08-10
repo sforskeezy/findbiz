@@ -11,7 +11,7 @@ export const NO_STORE_HEADERS = {
 export const placeSearchRequestSchema = z
   .object({
     address: z.string().trim().min(6).max(300),
-    radiusMiles: z.union([z.literal(0.25), z.literal(0.5), z.literal(1), z.literal(2), z.literal(5)]),
+    radiusMiles: z.union([z.literal(0.25), z.literal(0.5), z.literal(1), z.literal(2), z.literal(3), z.literal(5)]),
   })
   .strict();
 

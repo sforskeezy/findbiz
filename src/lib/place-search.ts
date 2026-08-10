@@ -1,5 +1,5 @@
 import { CommercialPlaceProvider } from "@/lib/commercial-provider";
-import { addEligibilityCount, emptyEligibilityCounts } from "@/lib/eligibility";
+import { addEligibilityCount, classifyEligibility, emptyEligibilityCounts } from "@/lib/eligibility";
 import { OpenStreetMapPlaceProvider } from "@/lib/openstreetmap";
 import { OverturePlaceProvider } from "@/lib/overture";
 import {
@@ -9,7 +9,7 @@ import {
   type PlaceSearchRequest,
   type PlaceSearchResult,
 } from "@/lib/place-provider";
-import { buildProspect, dedupeCandidates } from "@/lib/place-candidate";
+import { buildProspect, dedupeCandidates, distanceMiles } from "@/lib/place-candidate";
 import { coalesceRequest, redactError } from "@/lib/request-safety";
 import type { Coordinates, Prospect, ProviderDiagnostic, SearchDiagnostics } from "@/lib/types";
 
@@ -18,6 +18,16 @@ export type PlaceSearchAggregate = {
   eligibilityUnknown: Prospect[];
   diagnostics: SearchDiagnostics;
 };
+
+export class PlaceSearchUnavailableError extends Error {
+  readonly code = "PLACES_PROVIDER_UNAVAILABLE";
+  readonly retryable = true;
+
+  constructor(readonly diagnostics: SearchDiagnostics) {
+    super("Business discovery providers are temporarily unavailable. Retry the search.");
+    this.name = "PlaceSearchUnavailableError";
+  }
+}
 
 type SearchOptions = {
   providers?: PlaceProvider[];
@@ -43,7 +53,12 @@ function providerBudget(providerId: string, now: number) {
   return { maxRequests: 1, maxRecords: 250, deadline: now + 5_000, timeout: 6_000 };
 }
 
-function isolatedFailure(provider: PlaceProvider, error: unknown, durationMs: number): PlaceSearchResult {
+function isolatedFailure(
+  provider: PlaceProvider,
+  error: unknown,
+  durationMs: number,
+  timedOut: boolean,
+): PlaceSearchResult {
   return {
     providerId: provider.id,
     places: [],
@@ -52,11 +67,13 @@ function isolatedFailure(provider: PlaceProvider, error: unknown, durationMs: nu
       providerId: provider.id,
       label: provider.id,
       status: "failed",
-      code: "PROVIDER_ISOLATED_FAILURE",
+      code: timedOut ? "PROVIDER_TIMEOUT" : "PROVIDER_ISOLATED_FAILURE",
       recordCount: 0,
       requestCount: 0,
       durationMs,
-      message: redactError(error, "Provider failed without affecting other sources."),
+      message: timedOut
+        ? "The provider timed out before completing a search area."
+        : redactError(error, "Provider failed without affecting other sources."),
       attributionUrl: null,
     },
   };
@@ -88,7 +105,12 @@ async function runProvider(
     });
     return await Promise.race([providerPromise, aborted]);
   } catch (error) {
-    return isolatedFailure(provider, error, Math.round(performance.now() - started));
+    return isolatedFailure(
+      provider,
+      error,
+      Math.round(performance.now() - started),
+      controller.signal.aborted && !parent?.aborted,
+    );
   } finally {
     clearTimeout(timer);
   }
@@ -121,17 +143,20 @@ export async function searchPlaces(
       providers.map((provider) => runProvider(provider, base, options.signal, options.providerTimeoutMs)),
     );
     const rawCandidates = results.flatMap((result) => result.places);
-    const merged = dedupeCandidates(rawCandidates);
+    const deduped = dedupeCandidates(rawCandidates);
+    const merged = deduped.filter((candidate) => distanceMiles(center, candidate.coordinates) <= radiusMiles);
     const retrievedAt = new Date().toISOString();
     const eligibility = emptyEligibilityCounts();
     const included: Prospect[] = [];
     const unknown: Prospect[] = [];
 
     for (const candidate of merged) {
-      const prospect = buildProspect(candidate, center, retrievedAt);
-      addEligibilityCount(eligibility, prospect.eligibility);
-      if (prospect.eligibility.status === "eligible") included.push(prospect);
-      else if (prospect.eligibility.status === "unknown") unknown.push(prospect);
+      const eligibilityResult = classifyEligibility(candidate);
+      addEligibilityCount(eligibility, eligibilityResult);
+      if (eligibilityResult.status === "excluded") continue;
+      const prospect = buildProspect(candidate, center, retrievedAt, eligibilityResult);
+      if (eligibilityResult.status === "eligible") included.push(prospect);
+      else unknown.push(prospect);
     }
 
     included.sort((a, b) => b.score - a.score || a.distanceMiles - b.distanceMiles);
@@ -151,7 +176,7 @@ export async function searchPlaces(
     const diagnostics: SearchDiagnostics = {
       partialCoverage,
       rawRecords: rawCandidates.length,
-      duplicatesMerged: rawCandidates.length - merged.length,
+      duplicatesMerged: rawCandidates.length - deduped.length,
       eligibleProspects: included.length,
       eligibilityUnknown: unknown.length,
       excludedRecords: merged.length - included.length - unknown.length,
@@ -163,6 +188,12 @@ export async function searchPlaces(
       eligibility,
       providers: providersDiagnostics,
     };
+    const hasCompletedProvider = results.some(
+      (result) =>
+        result.diagnostic.status === "complete" ||
+        (result.diagnostic.status === "partial" && (result.places.length > 0 || result.completedCellIds.length > 0)),
+    );
+    if (!hasCompletedProvider) throw new PlaceSearchUnavailableError(diagnostics);
     const value = { prospects: included, eligibilityUnknown: unknown, diagnostics };
     if (options.useCache !== false) memoryCache.set(key, { value, expiresAt: Date.now() + 2 * 60_000 });
     return value;

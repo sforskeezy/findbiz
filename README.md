@@ -53,9 +53,10 @@ Then configure:
 
 ```dotenv
 OVERTURE_PLACES_PATH=data/overture/places.parquet
+OVERTURE_COVERAGE_BBOX=-75.175,39.945,-75.145,39.965
 ```
 
-`OVERTURE_PLACES_PATH` may name one GeoParquet file or a directory of `.parquet` files. Queries use Overture's current `bbox`, `names`, `categories`, `addresses`, `websites`, `phones`, `brand`, `operating_status`, `confidence`, and `sources` fields. A missing or incompatible dataset does not crash the search: the response marks Overture unavailable and continues with successful sources without exposing the local path.
+`OVERTURE_PLACES_PATH` may name one GeoParquet file or a directory of `.parquet` files. `OVERTURE_COVERAGE_BBOX` must match the exact boundary used for the extract; without it, status reports coverage as unknown rather than claiming the region is complete. At readiness time the application verifies that the file exists and that required Places fields can be queried. Searches are classified as inside, outside, or partially inside the configured boundary. A missing or incompatible dataset does not crash the search: PAI Places records `OVERTURE_FILE_MISSING` or `OVERTURE_SCHEMA_INVALID` and continues with successful supplemental sources without exposing the local path.
 
 Official references:
 
@@ -74,7 +75,7 @@ Configure an operator contact and optionally one preferred endpoint:
 
 ```dotenv
 OSM_CONTACT_EMAIL=
-OVERPASS_API_URL=https://overpass-api.de/api/interpreter
+OVERPASS_API_URL=https://overpass.private.coffee/api/interpreter
 OVERPASS_MAX_REQUESTS=8
 ```
 

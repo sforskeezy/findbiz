@@ -200,10 +200,16 @@ export async function lookupFccAvailability(input: FccLookupInput): Promise<FccL
     if (input.locationId && /^\d+$/.test(input.locationId)) {
       const rows = availabilityRows(database, "location_id", input.locationId);
       if (rows.length) {
+        const observations = rowsToObservations(rows, asOfDate, datasetVintage, `FCC Location ID ${input.locationId}`, "fcc_location_id")
+          .map((observation) => ({
+            ...observation,
+            confidence: "Manually entered" as const,
+            note: "Supplied FCC location ID. Manually entered and not verified against the searched address.",
+          }));
         return {
           status: "available",
-          observations: rowsToObservations(rows, asOfDate, datasetVintage, `FCC Location ID ${input.locationId}`, "fcc_location_id"),
-          message: "Current BDC filings were found for the supplied FCC Location ID. This is not a serviceability guarantee.",
+          observations,
+          message: "Current BDC filings were found for the supplied FCC Location ID. The manually entered ID was not verified against the searched address.",
           sourceUrl: FCC_MAP_URL,
           asOfDate,
           datasetVintage,

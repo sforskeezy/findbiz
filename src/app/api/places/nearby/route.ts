@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { NO_STORE_HEADERS, checkRateLimit, parseBoundedJson, placeSearchRequestSchema, validationMessage } from "@/lib/api-safety";
 import { PAI_PLACES_LABEL, paiNearby } from "@/lib/pai-places";
+import { PlaceSearchUnavailableError } from "@/lib/place-search";
 import { redactError } from "@/lib/request-safety";
 
 function json(body: unknown, status = 200, headers: Record<string, string> = {}) {
@@ -42,6 +43,18 @@ export async function POST(request: Request) {
       retrievedAt: result.retrievedAt,
     });
   } catch (error) {
+    if (error instanceof PlaceSearchUnavailableError) {
+      return json(
+        {
+          error: error.message,
+          code: error.code,
+          retryable: true,
+          diagnostics: error.diagnostics,
+        },
+        503,
+        { "Retry-After": "5" },
+      );
+    }
     const message = redactError(error, "Places lookup failed.");
     const notFound = error instanceof Error && error.message.includes("could not be located");
     return json({ error: message, code: notFound ? "LOCATION_NOT_FOUND" : "PLACES_FAILED", retryable: !notFound }, notFound ? 422 : 502);

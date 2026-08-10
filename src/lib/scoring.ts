@@ -88,5 +88,5 @@ export function describeScore(
     `${completeness}% evidence completeness`,
   ];
   if (breakdown.broadbandOpportunity === 0) reasons.push("FCC context is not used to decide business eligibility");
-  return `Prospect-research heuristic ${score}/100: ${reasons.join(", ")}. It is not a probability of sale.`;
+  return `${reasons.join(", ")}. The ${score}/100 fit score helps prioritize public leads; it is not a probability of sale.`;
 }

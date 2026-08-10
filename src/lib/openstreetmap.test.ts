@@ -21,6 +21,8 @@ describe("OpenStreetMap provider", () => {
     const cells = buildSearchCells(center, 5);
     expect(cells.length).toBeGreaterThan(1);
     expect(buildOverpassQuery(cells[0], "core")).toContain('["shop"]');
+    expect(buildOverpassQuery(cells[0], "core")).not.toContain("around:");
+    expect(buildOverpassQuery(cells[0], "core")).toContain(String(cells[0].bounds.south));
     expect(buildOverpassQuery(cells[0], "extended")).toContain('["landuse"');
     const provider = new OpenStreetMapPlaceProvider(async () => []);
     const result = await provider.searchNearby({ center, radiusMiles: 5, bounds: boundsForRadius(center, 5), cells, budget: { maxRequests: 1, maxRecords: 500, deadline: Date.now() + 1000 } });

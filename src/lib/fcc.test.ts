@@ -56,7 +56,9 @@ describe("current FCC BDC handling", () => {
     process.env.FCC_AVAILABILITY_DB_PATH = exactFixture.file;
     const exact = await lookupFccAvailability({ address: "100 Public Sq, Public City, PA 19000", locationId: "9001" });
     expect(exact).toMatchObject({ status: "available", matchQuality: "user_supplied_location_id" });
-    expect(exact.observations[0]).toMatchObject({ scope: "exact_location", matchMethod: "fcc_location_id", datasetVintage: "BDC 2026-06-30" });
+    expect(exact.observations[0]).toMatchObject({ scope: "exact_location", matchMethod: "fcc_location_id", datasetVintage: "BDC 2026-06-30", confidence: "Manually entered" });
+    expect(classifyServiceability(exact)).toMatchObject({ shortLabel: "Supplied FCC location ID" });
+    expect(classifyServiceability(exact).detail).toContain("not verified against the searched address");
 
     const areaFixture = await databaseFixture();
     const h3 = latLngToCell(40, -75, 8);

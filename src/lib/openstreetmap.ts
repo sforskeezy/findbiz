@@ -13,9 +13,9 @@ export const OSM_ATTRIBUTION = "OpenStreetMap contributors";
 export const OSM_ATTRIBUTION_URL = "https://www.openstreetmap.org/copyright";
 
 const DEFAULT_OVERPASS_ENDPOINTS = [
+  "https://overpass.private.coffee/api/interpreter",
   "https://overpass-api.de/api/interpreter",
-  "https://overpass.kumi.systems/api/interpreter",
-  "https://lz4.overpass-api.de/api/interpreter",
+  "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
 ];
 
 type OsmTags = Record<string, string | undefined>;
@@ -93,29 +93,28 @@ const BUILDING_BUSINESS = "commercial|farm|farm_auxiliary|greenhouse|industrial|
 export type OsmCategoryPass = "core" | "extended";
 
 export function buildOverpassQuery(cell: SearchCell, pass: OsmCategoryPass, limit = 450) {
-  const radiusMeters = Math.round(cell.radiusMiles * 1609.344);
-  const around = `around:${radiusMeters},${cell.center.lat},${cell.center.lng}`;
+  const bbox = `${cell.bounds.south},${cell.bounds.west},${cell.bounds.north},${cell.bounds.east}`;
   const selectors =
     pass === "core"
       ? [
-          `nwr(${around})["name"]["shop"]["shop"!="vacant"]`,
-          `nwr(${around})["name"]["office"]["office"!="government"]`,
-          `nwr(${around})["name"]["craft"]`,
-          `nwr(${around})["name"]["company"]`,
-          `nwr(${around})["name"]["industrial"]`,
-          `nwr(${around})["name"]["healthcare"]`,
-          `nwr(${around})["name"]["amenity"~"^(${AMENITY_BUSINESS})$"]`,
-          `nwr(${around})["name"]["tourism"~"^(hotel|motel|guest_house|hostel|resort|camp_site)$"]`,
+          `nwr(${bbox})["name"]["shop"]["shop"!="vacant"]`,
+          `nwr(${bbox})["name"]["office"]["office"!="government"]`,
+          `nwr(${bbox})["name"]["craft"]`,
+          `nwr(${bbox})["name"]["company"]`,
+          `nwr(${bbox})["name"]["industrial"]`,
+          `nwr(${bbox})["name"]["healthcare"]`,
+          `nwr(${bbox})["name"]["amenity"~"^(${AMENITY_BUSINESS})$"]`,
+          `nwr(${bbox})["name"]["tourism"~"^(hotel|motel|guest_house|hostel|resort|camp_site)$"]`,
         ]
       : [
-          `nwr(${around})["name"]["leisure"~"^(${LEISURE_BUSINESS})$"]`,
-          `nwr(${around})["name"]["landuse"~"^(commercial|retail|industrial|farmyard|quarry)$"]`,
-          `nwr(${around})["name"]["building"~"^(${BUILDING_BUSINESS})$"]`,
-          `nwr(${around})["name"]["man_made"="works"]`,
-          `nwr(${around})["name"]["club"]`,
-          `nwr(${around})["operator"]["craft"]`,
-          `nwr(${around})["operator"]["industrial"]`,
-          `nwr(${around})["operator"]["office"]`,
+          `nwr(${bbox})["name"]["leisure"~"^(${LEISURE_BUSINESS})$"]`,
+          `nwr(${bbox})["name"]["landuse"~"^(commercial|retail|industrial|farmyard|quarry)$"]`,
+          `nwr(${bbox})["name"]["building"~"^(${BUILDING_BUSINESS})$"]`,
+          `nwr(${bbox})["name"]["man_made"="works"]`,
+          `nwr(${bbox})["name"]["club"]`,
+          `nwr(${bbox})["operator"]["craft"]`,
+          `nwr(${bbox})["operator"]["industrial"]`,
+          `nwr(${bbox})["operator"]["office"]`,
         ];
   return `[out:json][timeout:18];\n(\n  ${selectors.join(";\n  ")};\n);\nout center meta qt ${limit};`;
 }
@@ -153,7 +152,7 @@ export async function sequentialOverpassFetch(
   return coalesceRequest(`overpass:${queryKey}`, async () => {
     const fetchImpl = options.fetchImpl ?? fetch;
     const failures: Error[] = [];
-    const availableEndpoints = (options.endpoints ?? endpoints()).slice(0, 2);
+    const availableEndpoints = (options.endpoints ?? endpoints()).slice(0, 3);
     for (const [endpointIndex, endpoint] of availableEndpoints.entries()) {
       for (let attempt = 0; attempt <= (options.retries ?? 0); attempt += 1) {
         const signal = createTimeoutSignal(options.timeoutMs ?? 8_000, options.signal);
@@ -270,7 +269,7 @@ export function normalizeOsmElement(element: OverpassElement): PlaceCandidate | 
         providerId,
         providerRecordId: recordId,
         label: OSM_ATTRIBUTION,
-        url: `https://www.openstreetmap.org/${recordId}`,
+        url: OSM_ATTRIBUTION_URL,
         updatedAt,
         confidence: null,
         dataset: "OpenStreetMap",
@@ -359,6 +358,10 @@ export class OpenStreetMapPlaceProvider implements PlaceProvider {
     }
 
     const failed = places.size === 0 && completedCellIds.length === 0 && Boolean(lastError);
+    const timedOut = failed && (
+      request.signal?.aborted ||
+      (lastError instanceof Error && /timed?\s*out|timeout|abort/i.test(`${lastError.name} ${lastError.message}`))
+    );
     return {
       providerId: this.id,
       places: [...places.values()],
@@ -367,7 +370,7 @@ export class OpenStreetMapPlaceProvider implements PlaceProvider {
         providerId: this.id,
         label: OSM_ATTRIBUTION,
         status: failed ? "failed" : partial || completedCellIds.length < request.cells.length ? "partial" : "complete",
-        code: failed ? "OVERPASS_UNAVAILABLE" : partial ? "OVERPASS_PARTIAL" : "OVERPASS_COMPLETE",
+        code: failed ? (timedOut ? "OVERPASS_TIMEOUT" : "OVERPASS_UNAVAILABLE") : partial ? "OVERPASS_PARTIAL" : "OVERPASS_COMPLETE",
         recordCount: places.size,
         requestCount,
         durationMs: Math.round(performance.now() - started),
