@@ -9,21 +9,24 @@ afterEach(() => delete process.env.OVERPASS_API_URL);
 describe("OpenStreetMap provider", () => {
   it("falls back to mirrors sequentially without racing", async () => {
     const calls: string[] = [];
-    const fetchImpl = vi.fn(async (url: URL | RequestInfo) => {
-      calls.push(String(url));
+    const methods: Array<string | undefined> = [];
+    const fetchImpl = vi.fn(async (url: URL | RequestInfo, init?: RequestInit) => {
+      calls.push(String(url).split("?")[0]);
+      methods.push(init?.method);
       if (String(url).includes("first")) return new Response("no", { status: 503 });
       return Response.json({ elements: [{ type: "node", id: 1, lat: 40, lon: -75, tags: { name: "Repair Shop", shop: "car_repair" } }] });
     }) as typeof fetch;
     const result = await sequentialOverpassFetch("unique sequential query", { endpoints: ["https://first.example", "https://second.example"], retries: 0, fetchImpl, timeoutMs: 2_000 });
     expect(result).toHaveLength(1);
     expect(calls).toEqual(["https://first.example", "https://second.example"]);
+    expect(methods).toEqual(["GET", "GET"]);
   });
 
   it("keeps known mirrors in reviewed health order despite a stale deploy preference", async () => {
     process.env.OVERPASS_API_URL = "https://overpass.private.coffee/api/interpreter";
     const calls: string[] = [];
     const fetchImpl = vi.fn(async (url: URL | RequestInfo) => {
-      calls.push(String(url));
+      calls.push(String(url).split("?")[0]);
       return Response.json({ elements: [] });
     }) as typeof fetch;
     await sequentialOverpassFetch("known mirror health order query", { fetchImpl });
@@ -33,9 +36,10 @@ describe("OpenStreetMap provider", () => {
   it("opens a short circuit for a hanging fallback so later cells do not keep waiting", async () => {
     const calls: string[] = [];
     const fetchImpl = vi.fn(async (url: URL | RequestInfo, init?: RequestInit) => {
-      calls.push(String(url));
-      if (String(url).includes("primary")) return new Response("busy", { status: 503 });
-      if (String(url).includes("hanging")) {
+      const endpoint = String(url).split("?")[0];
+      calls.push(endpoint);
+      if (endpoint.includes("primary")) return new Response("busy", { status: 503 });
+      if (endpoint.includes("hanging")) {
         return await new Promise<Response>((_resolve, reject) => {
           init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
         });

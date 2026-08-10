@@ -191,14 +191,17 @@ export async function sequentialOverpassFetch(
         const signal = createTimeoutSignal(timeoutMs, options.signal);
         try {
           await overpassLimiter.wait(signal);
-          const response = await fetchImpl(endpoint, {
-            method: "POST",
+          const encodedQuery = new URLSearchParams({ data: query });
+          const getUrl = `${endpoint}${endpoint.includes("?") ? "&" : "?"}${encodedQuery}`;
+          const useGet = getUrl.length <= 7_000;
+          const response = await fetchImpl(useGet ? getUrl : endpoint, {
+            method: useGet ? "GET" : "POST",
             headers: {
-              "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+              ...(!useGet && { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" }),
               "User-Agent": userAgent(),
               Accept: "application/json",
             },
-            body: new URLSearchParams({ data: query }),
+            body: useGet ? undefined : encodedQuery,
             cache: "no-store",
             signal,
           });
