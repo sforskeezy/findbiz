@@ -75,7 +75,7 @@ Configure an operator contact and optionally one preferred endpoint:
 
 ```dotenv
 OSM_CONTACT_EMAIL=
-OVERPASS_API_URL=https://overpass.private.coffee/api/interpreter
+OVERPASS_API_URL=https://overpass-api.de/api/interpreter
 OVERPASS_MAX_REQUESTS=8
 ```
 

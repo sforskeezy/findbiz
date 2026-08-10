@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type { PlaceProvider, PlaceSearchRequest, PlaceSearchResult, SearchCell } from "@/lib/place-provider";
 import { distanceMiles, normalizeCategory, type PlaceCandidate } from "@/lib/place-candidate";
 import {
+  CircuitBreaker,
   ProviderRateLimiter,
   coalesceRequest,
   createTimeoutSignal,
@@ -13,10 +14,12 @@ export const OSM_ATTRIBUTION = "OpenStreetMap contributors";
 export const OSM_ATTRIBUTION_URL = "https://www.openstreetmap.org/copyright";
 
 const DEFAULT_OVERPASS_ENDPOINTS = [
-  "https://overpass.private.coffee/api/interpreter",
   "https://overpass-api.de/api/interpreter",
+  "https://overpass.private.coffee/api/interpreter",
   "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
 ];
+
+const DEFAULT_ENDPOINT_TIMEOUTS_MS = [5_000, 3_000, 3_000];
 
 type OsmTags = Record<string, string | undefined>;
 
@@ -32,8 +35,18 @@ export type OverpassElement = {
 
 type FetchLike = typeof fetch;
 
-const overpassLimiter = new ProviderRateLimiter(350);
+const overpassLimiter = new ProviderRateLimiter(1_000);
 const responseCache = new Map<string, { expiresAt: number; elements: OverpassElement[] }>();
+const endpointCircuits = new Map<string, CircuitBreaker>();
+
+function endpointCircuit(endpoint: string, failureThreshold: number) {
+  const current = endpointCircuits.get(endpoint);
+  if (current) return current;
+  // A slow mirror must not consume the same live search budget cell after cell.
+  const circuit = new CircuitBreaker(failureThreshold, 2 * 60_000);
+  endpointCircuits.set(endpoint, circuit);
+  return circuit;
+}
 
 function endpoints() {
   return [process.env.OVERPASS_API_URL?.trim(), ...DEFAULT_OVERPASS_ENDPOINTS].filter(
@@ -92,31 +105,35 @@ const BUILDING_BUSINESS = "commercial|farm|farm_auxiliary|greenhouse|industrial|
 
 export type OsmCategoryPass = "core" | "extended";
 
-export function buildOverpassQuery(cell: SearchCell, pass: OsmCategoryPass, limit = 450) {
+export function buildOverpassQuery(
+  cell: SearchCell,
+  pass: OsmCategoryPass,
+  limit = 450,
+  elementTypes: Array<"node" | "way"> = ["node", "way"],
+) {
   const bbox = `${cell.bounds.south},${cell.bounds.west},${cell.bounds.north},${cell.bounds.east}`;
-  const selectors =
+  // Business relations are rare and dramatically increase public Overpass
+  // execution time. Named nodes and building ways provide the useful local
+  // prospect records without letting relation expansion sink the search.
+  const selectors = elementTypes.flatMap((elementType) =>
     pass === "core"
       ? [
-          `nwr(${bbox})["name"]["shop"]["shop"!="vacant"]`,
-          `nwr(${bbox})["name"]["office"]["office"!="government"]`,
-          `nwr(${bbox})["name"]["craft"]`,
-          `nwr(${bbox})["name"]["company"]`,
-          `nwr(${bbox})["name"]["industrial"]`,
-          `nwr(${bbox})["name"]["healthcare"]`,
-          `nwr(${bbox})["name"]["amenity"~"^(${AMENITY_BUSINESS})$"]`,
-          `nwr(${bbox})["name"]["tourism"~"^(hotel|motel|guest_house|hostel|resort|camp_site)$"]`,
+          `${elementType}(${bbox})["name"][~"^(shop|office|craft|company|industrial|healthcare)$"~"."]`,
+          `${elementType}(${bbox})["name"]["amenity"~"^(${AMENITY_BUSINESS})$"]`,
+          `${elementType}(${bbox})["name"]["tourism"~"^(hotel|motel|guest_house|hostel|resort|camp_site)$"]`,
         ]
       : [
-          `nwr(${bbox})["name"]["leisure"~"^(${LEISURE_BUSINESS})$"]`,
-          `nwr(${bbox})["name"]["landuse"~"^(commercial|retail|industrial|farmyard|quarry)$"]`,
-          `nwr(${bbox})["name"]["building"~"^(${BUILDING_BUSINESS})$"]`,
-          `nwr(${bbox})["name"]["man_made"="works"]`,
-          `nwr(${bbox})["name"]["club"]`,
-          `nwr(${bbox})["operator"]["craft"]`,
-          `nwr(${bbox})["operator"]["industrial"]`,
-          `nwr(${bbox})["operator"]["office"]`,
-        ];
-  return `[out:json][timeout:18];\n(\n  ${selectors.join(";\n  ")};\n);\nout center meta qt ${limit};`;
+          `${elementType}(${bbox})["name"]["leisure"~"^(${LEISURE_BUSINESS})$"]`,
+          `${elementType}(${bbox})["name"]["landuse"~"^(commercial|retail|industrial|farmyard|quarry)$"]`,
+          `${elementType}(${bbox})["name"]["building"~"^(${BUILDING_BUSINESS})$"]`,
+          `${elementType}(${bbox})["name"]["man_made"="works"]`,
+          `${elementType}(${bbox})["name"]["club"]`,
+          `${elementType}(${bbox})["operator"]["craft"]`,
+          `${elementType}(${bbox})["operator"]["industrial"]`,
+          `${elementType}(${bbox})["operator"]["office"]`,
+        ],
+  );
+  return `[out:json][timeout:12];\n(\n  ${selectors.join(";\n  ")};\n);\nout center tags qt ${limit};`;
 }
 
 async function backoff(attempt: number, signal: AbortSignal) {
@@ -154,8 +171,17 @@ export async function sequentialOverpassFetch(
     const failures: Error[] = [];
     const availableEndpoints = (options.endpoints ?? endpoints()).slice(0, 3);
     for (const [endpointIndex, endpoint] of availableEndpoints.entries()) {
+      const circuit = endpointCircuit(endpoint, endpointIndex === 0 ? 4 : 1);
+      try {
+        circuit.assertAvailable();
+      } catch (error) {
+        failures.push(error instanceof Error ? error : new Error("Overpass mirror circuit is open."));
+        continue;
+      }
+      let endpointSucceeded = false;
       for (let attempt = 0; attempt <= (options.retries ?? 0); attempt += 1) {
-        const signal = createTimeoutSignal(options.timeoutMs ?? 8_000, options.signal);
+        const timeoutMs = options.timeoutMs ?? DEFAULT_ENDPOINT_TIMEOUTS_MS[endpointIndex] ?? 5_000;
+        const signal = createTimeoutSignal(timeoutMs, options.signal);
         try {
           await overpassLimiter.wait(signal);
           const response = await fetchImpl(endpoint, {
@@ -172,6 +198,8 @@ export async function sequentialOverpassFetch(
           if (!response.ok) throw new Error(`Overpass returned HTTP ${response.status}.`);
           const payload = (await response.json()) as { elements?: OverpassElement[] };
           const elements = payload.elements ?? [];
+          endpointSucceeded = true;
+          circuit.success();
           responseCache.set(queryKey, { elements, expiresAt: Date.now() + 5 * 60_000 });
           return elements;
         } catch (error) {
@@ -180,6 +208,7 @@ export async function sequentialOverpassFetch(
           if (attempt < (options.retries ?? 0)) await backoff(attempt, options.signal ?? new AbortController().signal);
         }
       }
+      if (!endpointSucceeded) circuit.failure();
       if (endpointIndex < availableEndpoints.length - 1) {
         await backoff(0, options.signal ?? new AbortController().signal);
       }
@@ -291,6 +320,11 @@ export function normalizeOsmElement(element: OverpassElement): PlaceCandidate | 
   };
 }
 
+export function clearOverpassRuntimeForTests() {
+  responseCache.clear();
+  endpointCircuits.clear();
+}
+
 export class OpenStreetMapPlaceProvider implements PlaceProvider {
   readonly id = "openstreetmap";
 
@@ -305,55 +339,104 @@ export class OpenStreetMapPlaceProvider implements PlaceProvider {
     const started = performance.now();
     const places = new Map<string, PlaceCandidate>();
     const completedCellIds: string[] = [];
+    const completedCoreCellIds = new Set<string>();
     let requestCount = 0;
     let partial = false;
     let lastError: unknown = null;
+    const queryLimit = Math.min(450, request.budget.maxRecords);
+    const overviewCell: SearchCell = {
+      id: "overview",
+      center: request.center,
+      radiusMiles: request.radiusMiles,
+      bounds: request.bounds,
+    };
 
-    for (const cell of request.cells) {
+    function collect(elements: OverpassElement[]) {
+      for (const element of elements) {
+        const candidate = normalizeOsmElement(element);
+        if (!candidate || distanceMiles(request.center, candidate.coordinates) > request.radiusMiles) continue;
+        places.set(candidate.id, candidate);
+        if (places.size >= request.budget.maxRecords) break;
+      }
+    }
+
+    // Start with one bounded overview. Sparse and rural searches usually
+    // complete in one request; dense capped searches fall through to cells.
+    let coreCoverageComplete = false;
+    let coreOverviewTypesCompleted = 0;
+    let coreOverviewCapped = false;
+    for (const elementType of ["node", "way"] as const) {
       if (requestCount >= request.budget.maxRequests || Date.now() >= request.budget.deadline) {
         partial = true;
         break;
       }
-      let coreCount = 0;
       try {
         requestCount += 1;
-        const elements = await this.requestElements(buildOverpassQuery(cell, "core"), { signal: request.signal });
-        for (const element of elements) {
-          const candidate = normalizeOsmElement(element);
-          if (!candidate || distanceMiles(request.center, candidate.coordinates) > request.radiusMiles) continue;
-          places.set(candidate.id, candidate);
-          coreCount += 1;
-          if (places.size >= request.budget.maxRecords) break;
+        const elements = await this.requestElements(
+          buildOverpassQuery(overviewCell, "core", queryLimit, [elementType]),
+          { signal: request.signal },
+        );
+        collect(elements);
+        coreOverviewTypesCompleted += 1;
+        if (elements.length >= queryLimit) {
+          coreOverviewCapped = true;
+          partial = true;
         }
       } catch (error) {
         lastError = error;
         partial = true;
-        continue;
       }
+    }
+    if (coreOverviewTypesCompleted > 0) {
+      completedCellIds.push(...request.cells.map((cell) => cell.id));
+    }
+    coreCoverageComplete = coreOverviewTypesCompleted === 2 && !coreOverviewCapped;
 
-      if (coreCount < 20 && places.size < request.budget.maxRecords) {
+    // Cover as many geographic cells as possible with the high-yield pass
+    // when a dense overview reaches its record cap or the overview fails.
+    if (!coreCoverageComplete) {
+      for (const cell of request.cells) {
         if (requestCount >= request.budget.maxRequests || Date.now() >= request.budget.deadline) {
           partial = true;
-        } else {
-          try {
-            requestCount += 1;
-            const elements = await this.requestElements(buildOverpassQuery(cell, "extended"), { signal: request.signal });
-            for (const element of elements) {
-              const candidate = normalizeOsmElement(element);
-              if (!candidate || distanceMiles(request.center, candidate.coordinates) > request.radiusMiles) continue;
-              places.set(candidate.id, candidate);
-              if (places.size >= request.budget.maxRecords) break;
-            }
-          } catch (error) {
-            lastError = error;
-            partial = true;
-          }
+          break;
+        }
+        try {
+          requestCount += 1;
+          const elements = await this.requestElements(buildOverpassQuery(cell, "core", queryLimit), { signal: request.signal });
+          collect(elements);
+          completedCoreCellIds.add(cell.id);
+          if (!completedCellIds.includes(cell.id)) completedCellIds.push(cell.id);
+        } catch (error) {
+          lastError = error;
+          partial = true;
+          continue;
+        }
+        if (places.size >= request.budget.maxRecords) {
+          partial = true;
+          break;
         }
       }
-      completedCellIds.push(cell.id);
-      if (places.size >= request.budget.maxRecords) {
-        partial = true;
-        break;
+      coreCoverageComplete = completedCoreCellIds.size === request.cells.length;
+    }
+
+    if (coreCoverageComplete && places.size < request.budget.maxRecords) {
+      for (const elementType of ["node", "way"] as const) {
+        if (requestCount >= request.budget.maxRequests || Date.now() >= request.budget.deadline) {
+          partial = true;
+          break;
+        }
+        try {
+          requestCount += 1;
+          const elements = await this.requestElements(
+            buildOverpassQuery(overviewCell, "extended", queryLimit, [elementType]),
+            { signal: request.signal },
+          );
+          collect(elements);
+          if (elements.length >= queryLimit) partial = true;
+        } catch (error) {
+          lastError = error;
+          partial = true;
+        }
       }
     }
 
