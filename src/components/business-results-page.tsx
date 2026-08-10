@@ -1,138 +1,125 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { BorderBeam } from "border-beam";
-import { ChevronDown, ChevronRight, Download, MapPin, Search } from "lucide-react";
+import { ChevronDown, CircleAlert, MapPin, RotateCcw, Search } from "lucide-react";
 
+import { DataAttribution } from "@/components/data-attribution";
 import { ProspectHeader } from "@/components/prospect-header";
+import { ProspectResultRow } from "@/components/prospect-result-row";
 import { SearchProgress } from "@/components/search-progress";
-import { scoreTone } from "@/components/ui";
+import {
+  beginSearch,
+  currentResearch,
+  currentSearch,
+  selectProspect,
+  setCurrentResearch,
+  type InMemorySearch,
+} from "@/lib/client-session";
 import type { Prospect, ResearchResponse } from "@/lib/types";
 
 type LoadState = "loading" | "success" | "error";
 
-const missingAddress = new Set([
-  "Address not listed in public data",
-  "Address not listed in OpenStreetMap",
-  "Address unavailable",
-]);
-
 function shortAddress(value: string) {
-  const parts = value.split(",").map((item) => item.trim());
-  return parts.slice(0, 3).join(", ");
+  return value.split(",").map((item) => item.trim()).slice(0, 3).join(", ");
 }
 
-// Source records often carry a placeholder instead of a street, which reads as noise in the list.
-function placeLine(prospect: Prospect) {
-  return missingAddress.has(prospect.address) ? null : prospect.address;
+function diagnosticSummary(research: ResearchResponse) {
+  const { eligibility } = research.diagnostics;
+  return [
+    `${eligibility.eligible} eligible`,
+    `${research.diagnostics.duplicatesMerged} duplicates merged`,
+    eligibility.banks ? `${eligibility.banks} banks excluded` : null,
+    eligibility.schools ? `${eligibility.schools} schools excluded` : null,
+    eligibility.enterprises ? `${eligibility.enterprises} enterprises excluded` : null,
+    eligibility.apartmentsUnknownUnits ? `${eligibility.apartmentsUnknownUnits} apartments excluded pending unit count` : null,
+    eligibility.permanentlyClosed ? `${eligibility.permanentlyClosed} closed places excluded` : null,
+  ].filter(Boolean).join(" · ");
 }
 
-function contactLine(prospect: Prospect) {
-  if (prospect.phone) return prospect.phone;
-  if (!prospect.website) return null;
-  try {
-    return new URL(prospect.website).hostname.replace(/^www\./, "");
-  } catch {
-    return null;
-  }
+function diagnosticLabel(providerId: string) {
+  if (providerId === "overture") return "Local place index";
+  if (providerId === "openstreetmap") return "Public map supplement";
+  if (providerId === "commercial") return "Optional business-data source";
+  return "Additional place source";
 }
 
-function MetaDot() {
-  return <span aria-hidden="true" className="h-[3px] w-[3px] shrink-0 rounded-full bg-[#cbcbc4]" />;
+function diagnosticMessage(provider: ResearchResponse["diagnostics"]["providers"][number]) {
+  if (provider.code === "PROVIDER_TIMEOUT" || provider.code.endsWith("_TIMEOUT")) return "Timed out before completing the requested search area.";
+  if (provider.code === "OVERTURE_OUTSIDE_CONFIGURED_COVERAGE") return "This search is outside the configured local data boundary.";
+  if (provider.code === "OVERTURE_PARTIAL_CONFIGURED_COVERAGE") return "Only part of the search overlaps the configured local data boundary.";
+  if (provider.status === "failed") return "The source did not complete; successful results from other sources were preserved.";
+  if (provider.status === "unavailable") return "This source is not available for the current search.";
+  if (provider.status === "partial") return "Usable results were returned before a coverage or request limit was reached.";
+  return "Search completed successfully.";
 }
 
-function csvCell(value: string | number | null) {
-  if (value === null || value === undefined) return "";
-  let text = String(value).replace(/\r?\n/g, " ");
-  if (/^[=+\-@]/.test(text)) text = `'${text}`;
-  return `"${text.replace(/"/g, '""')}"`;
-}
-
-function exportResults(prospects: Prospect[]) {
-  const rows = [
-    ["Initial fit", "Business", "Category", "Distance miles", "Address", "Phone", "Website", "Source"],
-    ...prospects.map((item) => [item.score, item.name, item.category, item.distanceMiles.toFixed(2), item.address, item.phone, item.website, item.source]),
-  ];
-  const csv = rows.map((row) => row.map(csvCell).join(",")).join("\r\n");
-  const url = URL.createObjectURL(new Blob(["\ufeff", csv], { type: "text/csv;charset=utf-8" }));
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = `prospectiq-nearby-${new Date().toISOString().slice(0, 10)}.csv`;
-  anchor.click();
-  URL.revokeObjectURL(url);
+function coverageLabel(research: ResearchResponse) {
+  if (research.partialCoverage) return "Partial coverage";
+  const localIndex = research.diagnostics.providers.find((provider) => provider.providerId === "overture");
+  return localIndex?.coverage === "inside" ? "Configured coverage searched" : "Search completed";
 }
 
 export function BusinessResultsPage() {
   const router = useRouter();
-  const params = useSearchParams();
-  const address = params.get("address")?.trim() ?? "";
-  const radius = Number(params.get("radius") ?? 0.5);
-  const [queryAddress, setQueryAddress] = useState(address);
-  const [queryRadius, setQueryRadius] = useState(String(radius));
+  const [request, setRequest] = useState<InMemorySearch | null>(() => currentSearch());
+  const [queryAddress, setQueryAddress] = useState(() => currentSearch()?.address ?? "");
+  const [queryRadius, setQueryRadius] = useState(() => String(currentSearch()?.radiusMiles ?? 0.5));
   const [focused, setFocused] = useState(false);
-  const [state, setState] = useState<LoadState>("loading");
-  const [research, setResearch] = useState<ResearchResponse | null>(null);
-  const [error, setError] = useState("");
+  const [state, setState] = useState<LoadState>(() => currentSearch() ? (currentResearch() ? "success" : "loading") : "error");
+  const [research, setResearch] = useState<ResearchResponse | null>(() => currentResearch());
+  const [error, setError] = useState(() => currentSearch() ? "" : "This search session ended on refresh. Start a new search; no address or prospect data was stored.");
+  const [errorCode, setErrorCode] = useState(() => currentSearch() ? "" : "SESSION_ENDED");
+  const [retryable, setRetryable] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   const [category, setCategory] = useState("All");
   const [sort, setSort] = useState<"fit" | "distance" | "name">("fit");
 
   useEffect(() => {
-    let cancelled = false;
+    if (!request) {
+      return;
+    }
+    const activeRequest = request;
+    const cached = currentResearch();
+    if (cached?.target.inputAddress === activeRequest.address && cached.radiusMiles === activeRequest.radiusMiles) {
+      return;
+    }
+
+    const controller = new AbortController();
     async function load() {
-      if (address.length < 6 || ![0.25, 0.5, 1, 2, 5].includes(radius)) {
-        if (!cancelled) {
-          setError("Enter a complete address and supported radius.");
-          setState("error");
-        }
-        return;
-      }
-      try {
-        const cached = JSON.parse(window.sessionStorage.getItem("prospectiq.currentResearch") || "null") as ResearchResponse | null;
-        const age = cached ? Date.now() - new Date(cached.retrievedAt).getTime() : Number.POSITIVE_INFINITY;
-        const fromPaiPlaces = cached?.sources?.some((source) =>
-          (source.label || "").toLowerCase().includes("pai places"),
-        );
-        if (
-          cached?.target.inputAddress === address &&
-          cached.radiusMiles === radius &&
-          fromPaiPlaces &&
-          age < 15 * 60 * 1_000
-        ) {
-          if (!cancelled) {
-            setResearch(cached);
-            setState("success");
-          }
-          return;
-        }
-        // Drop stale third-party / OSM-only session results so PAI Places is always used.
-        window.sessionStorage.removeItem("prospectiq.currentResearch");
-      } catch {
-        window.sessionStorage.removeItem("prospectiq.currentResearch");
-      }
       try {
         const response = await fetch("/api/research", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ address, radiusMiles: radius }),
+          body: JSON.stringify({ address: activeRequest.address, radiusMiles: activeRequest.radiusMiles }),
+          cache: "no-store",
+          signal: controller.signal,
         });
-        const payload = (await response.json()) as ResearchResponse & { error?: string };
-        if (!response.ok || payload.error) throw new Error(payload.error || "Business search failed.");
-        if (!cancelled) {
-          setResearch(payload);
-          setState("success");
-          window.sessionStorage.setItem("prospectiq.currentResearch", JSON.stringify(payload));
+        const payload = (await response.json()) as ResearchResponse & { error?: string; code?: string; retryable?: boolean };
+        if (!response.ok || payload.error) {
+          const apiError = new Error(payload.error || "Business search failed.") as Error & { code?: string; retryable?: boolean };
+          apiError.code = payload.code;
+          apiError.retryable = payload.retryable;
+          throw apiError;
         }
+        setCurrentResearch(payload);
+        setResearch(payload);
+        setErrorCode("");
+        setRetryable(false);
+        setState("success");
       } catch (loadError) {
-        if (!cancelled) {
-          setError(loadError instanceof Error ? loadError.message : "Business search failed.");
-          setState("error");
-        }
+        if (controller.signal.aborted) return;
+        setError(loadError instanceof Error ? loadError.message : "Business search failed.");
+        const responseError = loadError as Error & { code?: string; retryable?: boolean };
+        setErrorCode(responseError.code ?? "SEARCH_FAILED");
+        setRetryable(responseError.retryable ?? true);
+        setState("error");
       }
     }
     void load();
-    return () => { cancelled = true; };
-  }, [address, radius]);
+    return () => controller.abort();
+  }, [request, attempt]);
 
   const categories = useMemo(
     () => research ? [...new Set(research.prospects.map((item) => item.category))].sort() : [],
@@ -151,27 +138,36 @@ export function BusinessResultsPage() {
 
   function searchAgain(event: React.FormEvent) {
     event.preventDefault();
-    if (queryAddress.trim().length < 6) return;
+    const radiusMiles = Number(queryRadius);
+    if (queryAddress.trim().length < 6 || ![0.25, 0.5, 1, 2, 3, 5].includes(radiusMiles)) return;
+    const next = { address: queryAddress.trim(), radiusMiles };
+    beginSearch(next);
+    setRequest(next);
     setState("loading");
     setResearch(null);
     setError("");
+    setErrorCode("");
+    setRetryable(false);
     setCategory("All");
-    router.push(`/search?address=${encodeURIComponent(queryAddress.trim())}&radius=${queryRadius}`);
+    router.replace("/search");
+  }
+
+  function retrySearch() {
+    if (!request) return;
+    setState("loading");
+    setError("");
+    setErrorCode("");
+    setRetryable(false);
+    setAttempt((value) => value + 1);
   }
 
   function openBusiness(prospect: Prospect) {
-    window.sessionStorage.setItem("prospectiq.selectedProspect", JSON.stringify(prospect));
-    const query = new URLSearchParams({ address, radius: String(radius) });
-    router.push(`/business/${encodeURIComponent(prospect.id)}?${query.toString()}`);
+    selectProspect(prospect);
+    router.push(`/business/${encodeURIComponent(prospect.id)}`);
   }
 
   if (state === "loading") {
-    return (
-      <main className="min-h-screen bg-[#f5f5f2]">
-        <ProspectHeader backHref="/" backLabel="Change address" />
-        <SearchProgress />
-      </main>
-    );
+    return <main className="min-h-screen bg-[#f5f5f2]"><ProspectHeader backHref="/" backLabel="Change address" /><SearchProgress /></main>;
   }
 
   return (
@@ -186,49 +182,22 @@ export function BusinessResultsPage() {
 
       <div className="relative z-10 mx-auto w-full max-w-[1040px] px-5 pb-24 pt-5 sm:px-8 sm:pt-10">
         <form onSubmit={searchAgain}>
-          <BorderBeam
-            size="md"
-            colorVariant="ocean"
-            theme="light"
-            active={focused || Boolean(queryAddress)}
-            duration={2.4}
-            brightness={1.05}
-            strength={focused ? 1 : 0.65}
-            borderRadius={18}
-            className="w-full"
-          >
+          <BorderBeam size="md" colorVariant="ocean" theme="light" active={focused || Boolean(queryAddress)} duration={2.4} brightness={1.05} strength={focused ? 1 : 0.65} borderRadius={18} className="w-full">
             <div className="rounded-[18px] border border-white/80 bg-white/80 p-2 shadow-[0_16px_50px_rgba(20,20,16,0.07)] backdrop-blur-2xl">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                 <label className="flex h-12 min-w-0 flex-1 items-center gap-3 px-3">
-                  <Search size={16} className="shrink-0 text-[#777771]" />
+                  <Search size={16} aria-hidden className="shrink-0 text-[#777771]" />
                   <span className="sr-only">Search address</span>
-                  <input
-                    value={queryAddress}
-                    onChange={(event) => setQueryAddress(event.target.value)}
-                    onFocus={() => setFocused(true)}
-                    onBlur={() => setFocused(false)}
-                    className="min-w-0 flex-1 bg-transparent text-sm text-[#282825] outline-none ring-0 focus:outline-none focus:ring-0 focus-visible:outline-none"
-                    placeholder="Street address or street + ZIP"
-                  />
+                  <input value={queryAddress} onChange={(event) => setQueryAddress(event.target.value)} onFocus={() => setFocused(true)} onBlur={() => setFocused(false)} className="min-w-0 flex-1 bg-transparent text-sm text-[#282825] outline-none focus-visible:ring-2 focus-visible:ring-[#898983]" placeholder="Street address or street + ZIP" />
                 </label>
                 <label className="relative flex h-11 items-center sm:w-[120px]">
                   <span className="sr-only">Search radius</span>
-                  <select
-                    value={queryRadius}
-                    onChange={(event) => setQueryRadius(event.target.value)}
-                    className="h-full w-full appearance-none rounded-full border border-[#e8e8e3] bg-[#f7f7f4] pl-3.5 pr-8 text-xs font-semibold text-[#292926] outline-none"
-                  >
-                    <option value="0.25">0.25 mi</option>
-                    <option value="0.5">0.5 mi</option>
-                    <option value="1">1 mi</option>
-                    <option value="2">2 mi</option>
-                    <option value="5">5 mi</option>
+                  <select value={queryRadius} onChange={(event) => setQueryRadius(event.target.value)} className="h-full w-full appearance-none rounded-full border border-[#e8e8e3] bg-[#f7f7f4] pl-3.5 pr-8 text-xs font-semibold text-[#292926] outline-none focus-visible:ring-2 focus-visible:ring-[#898983]">
+                    <option value="0.25">0.25 mi</option><option value="0.5">0.5 mi</option><option value="1">1 mi</option><option value="2">2 mi</option><option value="3">3 mi</option><option value="5">5 mi</option>
                   </select>
-                  <ChevronDown size={13} className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[#8a8a84]" />
+                  <ChevronDown size={13} aria-hidden className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[#8a8a84]" />
                 </label>
-                <button type="submit" className="h-11 rounded-full bg-[#171715] px-5 text-xs font-semibold text-white hover:bg-black">
-                  Search
-                </button>
+                <button type="submit" className="h-11 rounded-full bg-[#171715] px-5 text-xs font-semibold text-white hover:bg-black focus-visible:outline-2 focus-visible:outline-offset-2">Search</button>
               </div>
             </div>
           </BorderBeam>
@@ -237,171 +206,67 @@ export function BusinessResultsPage() {
         {state === "error" ? (
           <section className="flex min-h-[520px] items-center justify-center text-center">
             <div className="max-w-md">
-              <p className="text-[13px] font-medium tracking-[-0.01em] text-[#8b8b85]">Search</p>
-              <p className="mt-3 text-[28px] font-semibold leading-[1.1] tracking-[-0.04em] text-[#191916]">The search did not complete.</p>
+              <p className="text-[13px] font-medium text-[#8b8b85]">{errorCode === "PLACES_PROVIDER_UNAVAILABLE" ? "Business discovery unavailable" : "Search"}</p>
+              <h1 className="mt-3 text-[28px] font-semibold tracking-[-0.04em] text-[#191916]">{errorCode === "PLACES_PROVIDER_UNAVAILABLE" ? "The place sources did not respond." : "The search did not complete."}</h1>
               <p className="mt-4 text-sm leading-6 text-[#777771]">{error}</p>
-              <button type="button" onClick={() => window.location.reload()} className="mt-7 rounded-full bg-[#171715] px-5 py-2.5 text-xs font-semibold text-white transition hover:bg-black">Try again</button>
+              <div className="mt-7 flex flex-wrap justify-center gap-2">
+                {retryable && request && <button type="button" onClick={retrySearch} className="inline-flex h-11 items-center gap-2 rounded-full bg-[#171715] px-5 text-xs font-semibold text-white"><RotateCcw size={13} aria-hidden /> Retry</button>}
+                <button type="button" onClick={() => router.push("/")} className="h-11 rounded-full border border-[#d9d9d3] bg-white px-5 text-xs font-semibold text-[#33332f]">Start a new search</button>
+              </div>
             </div>
           </section>
         ) : research ? (
           <div className="animate-enter">
             <header className="mt-10 sm:mt-14">
-              <p className="text-[13px] font-medium tracking-[-0.01em] text-[#777771]">
-                Nearby businesses · {radius} mi radius
-              </p>
+              <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold">
+                <span className={research.partialCoverage ? "text-[#8a6613]" : "text-[#17653f]"}>{coverageLabel(research)}</span>
+                <span aria-hidden="true" className="h-[3px] w-[3px] shrink-0 rounded-full bg-[#cbcbc4]" />
+                <span className="text-[#777771]">{research.radiusMiles} mi radius</span>
+              </div>
               <h1 className="mt-3.5 max-w-[820px] text-[34px] font-semibold leading-[1.04] tracking-[-0.05em] text-[#141412] sm:text-[46px]">
-                {research.prospects.length} businesses{" "}
-                <span className="text-shimmer-once text-[#a6a69e]">
-                  near {shortAddress(research.target.formattedAddress)}
-                </span>
+                {research.prospects.length} eligible businesses <span className="text-shimmer-once text-[#a6a69e]">near {shortAddress(research.target.formattedAddress)}</span>
               </h1>
+              <p className="mt-4 text-xs leading-5 text-[#777771]">{diagnosticSummary(research)}</p>
             </header>
 
-            {research.demoMode && (
-              <p className="mt-6 border-l-2 border-[#e2c78a] py-1 pl-4 text-xs leading-5 text-[#8a6613]">
-                Sample businesses are being shown and are not related to this address.
-              </p>
-            )}
+            <details className="mt-7 rounded-[14px] border border-[#dfdfd9] bg-white/55 px-4 py-3 text-xs text-[#666660]">
+              <summary className="cursor-pointer list-none font-semibold text-[#33332f] focus-visible:outline-2">Search details</summary>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                {research.diagnostics.providers.map((provider) => (
+                  <div key={provider.providerId} className="border-t border-[#e4e4df] pt-2.5">
+                    <div className="flex items-center justify-between gap-3"><span className="font-semibold text-[#393935]">{diagnosticLabel(provider.providerId)}</span><span className="capitalize">{provider.status}</span></div>
+                    <p className="mt-1 leading-5">{diagnosticMessage(provider)}</p>
+                    <p className="mt-1 text-[10px] text-[#8a8a84]">{provider.recordCount} records · {provider.durationMs} ms{provider.coverage ? ` · ${provider.coverage} local coverage` : ""}</p>
+                  </div>
+                ))}
+              </div>
+              {research.eligibilityUnknown.length > 0 && <p className="mt-3 flex items-center gap-2 border-t border-[#e4e4df] pt-3"><CircleAlert size={13} aria-hidden /> {research.eligibilityUnknown.length} eligibility-unknown record(s) are hidden from the primary list.</p>}
+            </details>
 
             <div className="mt-9 flex flex-wrap items-center gap-x-1 gap-y-2 border-b border-[#e0e0da] pb-3">
-              <label className="-ml-2.5 inline-flex h-8 items-center gap-2 rounded-[10px] px-2.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#9a9a93] transition hover:bg-white/70">
+              <label className="-ml-2.5 inline-flex h-10 items-center gap-2 rounded-[10px] px-2.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#777771]">
                 Category
-                <span className="relative inline-flex items-center">
-                  <select
-                    value={category}
-                    onChange={(event) => setCategory(event.target.value)}
-                    className="max-w-[170px] appearance-none truncate bg-transparent pr-4 text-[12px] font-semibold normal-case tracking-normal text-[#22221f] outline-none"
-                  >
-                    <option>All</option>{categories.map((item) => <option key={item}>{item}</option>)}
-                  </select>
-                  <ChevronDown size={12} className="pointer-events-none absolute right-0 text-[#a3a39c]" />
-                </span>
+                <span className="relative inline-flex items-center"><select value={category} onChange={(event) => setCategory(event.target.value)} className="max-w-[170px] appearance-none truncate bg-transparent pr-4 text-[12px] font-semibold normal-case tracking-normal text-[#22221f] outline-none"><option>All</option>{categories.map((item) => <option key={item}>{item}</option>)}</select><ChevronDown size={12} aria-hidden className="pointer-events-none absolute right-0 text-[#777771]" /></span>
               </label>
-              <label className="inline-flex h-8 items-center gap-2 rounded-[10px] px-2.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#9a9a93] transition hover:bg-white/70">
+              <label className="inline-flex h-10 items-center gap-2 rounded-[10px] px-2.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#777771]">
                 Sort
-                <span className="relative inline-flex items-center">
-                  <select
-                    value={sort}
-                    onChange={(event) => setSort(event.target.value as typeof sort)}
-                    className="appearance-none bg-transparent pr-4 text-[12px] font-semibold normal-case tracking-normal text-[#22221f] outline-none"
-                  >
-                    <option value="fit">Best fit</option><option value="distance">Closest</option><option value="name">Name</option>
-                  </select>
-                  <ChevronDown size={12} className="pointer-events-none absolute right-0 text-[#a3a39c]" />
-                </span>
+                <span className="relative inline-flex items-center"><select value={sort} onChange={(event) => setSort(event.target.value as typeof sort)} className="appearance-none bg-transparent pr-4 text-[12px] font-semibold normal-case tracking-normal text-[#22221f] outline-none"><option value="fit">Prospect fit</option><option value="distance">Closest</option><option value="name">Name</option></select><ChevronDown size={12} aria-hidden className="pointer-events-none absolute right-0 text-[#777771]" /></span>
               </label>
-              {category !== "All" && (
-                <span className="px-2 text-[11px] tabular-nums text-[#9a9a93]">
-                  {visible.length} of {research.prospects.length}
-                </span>
-              )}
-              <button
-                type="button"
-                onClick={() => exportResults(visible)}
-                disabled={!visible.length}
-                className="ml-auto inline-flex h-8 items-center gap-2 rounded-full border border-[#dcdcd6] bg-white/70 px-3.5 text-[11px] font-semibold text-[#55554f] backdrop-blur transition hover:border-[#c6c6c0] hover:bg-white hover:text-[#1c1c19] disabled:opacity-40"
-              >
-                <Download size={12} /> Export
-              </button>
             </div>
 
             <section>
               {visible.length ? (
                 <ul className="border-b border-[#e5e5e0]">
-                  {visible.map((prospect, index) => {
-                    const place = placeLine(prospect);
-                    const contact = contactLine(prospect);
-                    const delay = `${Math.min(index, 10) * 45}ms`;
-                    return (
-                      <li
-                        key={prospect.id}
-                        className="animate-enter border-t border-[#e5e5e0] first:border-t-0"
-                        style={{ animationDelay: delay }}
-                      >
-                        <button
-                          type="button"
-                          onClick={() => openBusiness(prospect)}
-                          className="group relative block w-full py-4 text-left sm:py-[18px]"
-                        >
-                          <span className="pointer-events-none absolute -inset-x-3 -inset-y-px rounded-[16px] border border-[#e6e6e0] bg-white/90 opacity-0 shadow-[0_14px_36px_rgba(20,20,16,0.07)] backdrop-blur-sm transition-opacity duration-200 group-hover:opacity-100 group-focus-visible:opacity-100 sm:-inset-x-5" />
-
-                          <span className="relative flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-6">
-                            <span className="min-w-0 flex-1 transition-transform duration-200 group-hover:translate-x-[3px]">
-                              <span className="flex items-baseline gap-2.5">
-                                <span className="truncate text-[16px] font-semibold tracking-[-0.02em] text-[#1a1a17] sm:text-[17px]">
-                                  {prospect.name}
-                                </span>
-                                {sort === "fit" && index === 0 && (
-                                  <span className="hidden shrink-0 text-[9px] font-bold uppercase tracking-[0.14em] text-[#a4a49d] sm:inline">
-                                    Top fit
-                                  </span>
-                                )}
-                              </span>
-                              <span className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11.5px] leading-4 text-[#85857f]">
-                                <span className="font-medium text-[#6d6d67]">{prospect.category}</span>
-                                {place && (
-                                  <>
-                                    <MetaDot />
-                                    <span className="min-w-0 max-w-full truncate">{place}</span>
-                                  </>
-                                )}
-                                {contact && (
-                                  <>
-                                    <MetaDot />
-                                    <span className="truncate tabular-nums">{contact}</span>
-                                  </>
-                                )}
-                              </span>
-                            </span>
-
-                            <span className="flex items-center justify-between gap-5 sm:justify-end sm:gap-6">
-                              <span className="text-[12px] font-medium tabular-nums text-[#6c6c66] sm:w-[62px] sm:text-right">
-                                {prospect.distanceMiles.toFixed(2)} mi
-                              </span>
-                              <span className="flex items-center gap-2.5 sm:w-[112px]">
-                                <span className="text-[9px] font-bold uppercase tracking-[0.14em] text-[#a4a49d]">Fit</span>
-                                <span className="text-[14px] font-semibold tabular-nums text-[#1f1f1c]">{prospect.score}</span>
-                                <span className="h-[3px] w-9 shrink-0 overflow-hidden rounded-full bg-[#e3e3dd]">
-                                  <span
-                                    className="fit-bar block h-full rounded-full"
-                                    style={{
-                                      width: `${prospect.score}%`,
-                                      backgroundColor: scoreTone(prospect.score),
-                                      animationDelay: delay,
-                                    }}
-                                  />
-                                </span>
-                              </span>
-                              <ChevronRight
-                                size={16}
-                                className="shrink-0 text-[#b9b9b2] transition duration-200 group-hover:translate-x-1 group-hover:text-[#1f1f1c]"
-                              />
-                            </span>
-                          </span>
-                        </button>
-                      </li>
-                    );
-                  })}
+                  {visible.map((prospect, index) => <ProspectResultRow key={prospect.id} prospect={prospect} index={index} onOpen={openBusiness} />)}
                 </ul>
               ) : (
-                <div className="flex min-h-[280px] flex-col items-center justify-center px-6 text-center">
-                  <span className="flex h-11 w-11 items-center justify-center rounded-full border border-[#e4e4de] bg-white/80">
-                    <MapPin size={17} strokeWidth={1.7} className="text-[#9a9a93]" />
-                  </span>
-                  <p className="mt-5 text-[17px] font-semibold tracking-[-0.025em] text-[#22221f]">
-                    {category === "All" ? "No nearby businesses found." : "No businesses in this category."}
-                  </p>
-                  <p className="mt-2 max-w-[340px] text-[13px] leading-6 text-[#7d7d77]">
-                    {category === "All"
-                      ? research.warnings?.[0] ||
-                        "OpenStreetMap may have no businesses mapped here. Widen the radius or add entries to data/places-cache.json."
-                      : "Clear the category filter or widen the search radius."}
-                  </p>
-                </div>
+                <div className="flex min-h-[280px] flex-col items-center justify-center px-6 text-center"><span className="flex h-11 w-11 items-center justify-center rounded-full border border-[#e4e4de] bg-white/80"><MapPin size={17} aria-hidden className="text-[#777771]" /></span><p className="mt-5 text-[17px] font-semibold text-[#22221f]">No eligible nearby businesses found.</p><p className="mt-2 max-w-[400px] text-[13px] leading-6 text-[#6f6f69]">{research.warnings[0] || "Widen the radius or review source diagnostics. Missing results do not prove no businesses exist."}</p></div>
               )}
             </section>
-
-            <p className="mt-5 text-[10px] leading-5 text-[#9d9d96]">Verify business facts before outreach.</p>
+            <div className="mt-5 flex flex-col gap-2">
+              <p className="text-[10px] leading-5 text-[#777771]">Verify business facts before outreach. Results stay in memory and clear on refresh.</p>
+              <DataAttribution providers={research.diagnostics.providers} />
+            </div>
           </div>
         ) : null}
       </div>

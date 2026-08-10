@@ -1,4 +1,3 @@
-import { findCharterSpectrumObservations } from "@/lib/serviceability";
 import type { AiBriefResult, BroadbandObservation, Prospect } from "@/lib/types";
 
 /**
@@ -78,60 +77,15 @@ const CATEGORY_STAKES: Record<string, CategoryStakes> = {
     breaks: "the whole office goes idle at the same moment",
     growth: "headcount and device count creeping up quietly",
   },
+  "Other/Unknown": {
+    pressure: "whatever connected systems the operation actually uses",
+    breaks: "the call must establish the operational impact instead of guessing it",
+    growth: "new staff, devices, software, or locations",
+  },
 };
 
 export function categoryStakes(category: string): CategoryStakes {
-  return CATEGORY_STAKES[category] ?? CATEGORY_STAKES["Professional services"];
-}
-
-function speedLabel(observation: BroadbandObservation) {
-  const parts = [
-    observation.downloadMbps !== null ? `${observation.downloadMbps.toLocaleString()} Mbps down` : null,
-    observation.uploadMbps !== null ? `${observation.uploadMbps.toLocaleString()} Mbps up` : null,
-  ].filter(Boolean);
-  return parts.length ? parts.join(" / ") : null;
-}
-
-/**
- * Availability rows are the only sourced numbers in the brief, so the sales
- * angle is built deterministically here rather than left to the model.
- */
-export function measurableOpportunity(fallbackOpportunity: string, broadband: BroadbandObservation[]) {
-  const spectrum = findCharterSpectrumObservations(broadband)[0];
-  if (!spectrum) return fallbackOpportunity;
-
-  const speeds = speedLabel(spectrum);
-  if (!speeds) {
-    return "FCC records list Spectrum as available at this location, but without usable speed figures. Confirm the exact address, then win the conversation on reliability, support, and contract terms instead of a speed number.";
-  }
-
-  const qualifier = spectrum.confidence === "Verified" ? "" : " (estimated)";
-  const lead = `FCC records list Spectrum as available here at ${speeds}${qualifier}`;
-  const alternatives = broadband.filter((item) => item.id !== spectrum.id);
-  const strongestDownload = alternatives
-    .filter((item) => item.downloadMbps !== null)
-    .sort((a, b) => (b.downloadMbps ?? 0) - (a.downloadMbps ?? 0))[0];
-  const strongestUpload = alternatives
-    .filter((item) => item.uploadMbps !== null)
-    .sort((a, b) => (b.uploadMbps ?? 0) - (a.uploadMbps ?? 0))[0];
-
-  if (
-    spectrum.uploadMbps !== null &&
-    strongestUpload?.uploadMbps != null &&
-    strongestUpload.uploadMbps > spectrum.uploadMbps
-  ) {
-    return `${lead}, while ${strongestUpload.provider} reports a higher ${strongestUpload.uploadMbps.toLocaleString()} Mbps upload. Avoid leading on upload — make it about download headroom, uptime, support, and terms, and verify the exact address.`;
-  }
-
-  if (
-    spectrum.downloadMbps !== null &&
-    strongestDownload?.downloadMbps != null &&
-    spectrum.downloadMbps > strongestDownload.downloadMbps
-  ) {
-    return `${lead}, above the ${strongestDownload.downloadMbps.toLocaleString()} Mbps download reported by ${strongestDownload.provider}. Verify the exact address, then find out whether that extra headroom actually changes their day.`;
-  }
-
-  return `${lead}, with no clear speed edge over the other reported providers. Verify the exact address and make the case on reliability, support, and contract terms.`;
+  return CATEGORY_STAKES[category] ?? CATEGORY_STAKES["Other/Unknown"];
 }
 
 function publicSignalPhrase(prospect: Prospect) {
@@ -148,26 +102,13 @@ function publicSignalPhrase(prospect: Prospect) {
   return `${bits.slice(0, -1).join(", ")} and ${bits[bits.length - 1]}`;
 }
 
-function availabilitySentence(broadband: BroadbandObservation[]) {
-  const spectrum = findCharterSpectrumObservations(broadband)[0];
-  if (spectrum) {
-    const speeds = speedLabel(spectrum);
-    return speeds
-      ? `FCC filings report Spectrum as available in this area at ${speeds}, which is availability context only — it says nothing about who they buy from today.`
-      : "FCC filings report Spectrum as available in this area without usable speed figures, so treat it as context only — it says nothing about who they buy from today.";
-  }
-  if (broadband.length) {
-    return `FCC filings list ${broadband.length} reported provider${broadband.length === 1 ? "" : "s"} for this area and no Spectrum row, so verify the exact address before you frame any options.`;
-  }
-  return "No FCC availability rows came back for this address, so keep provider questions genuinely open and verify the address before quoting anything.";
-}
-
 /**
  * Deterministic, source-bounded brief used whenever profile generation is
  * unavailable. It stays in the same master-rep voice as the generated version
  * so the Research tab never degrades into a stub.
  */
 export function buildFallbackBrief(prospect: Prospect, broadband: BroadbandObservation[]): AiBriefResult {
+  void broadband;
   const stakes = categoryStakes(prospect.category);
   const category = prospect.category.toLowerCase();
   const signals = publicSignalPhrase(prospect);
@@ -184,13 +125,9 @@ export function buildFallbackBrief(prospect: Prospect, broadband: BroadbandObser
     : "Public data on this one is thin, so plan to learn the operation on the call instead of pitching from desk research.";
 
   const summary = [
-    `${prospect.name} is a ${category} operation about ${prospect.distanceMiles.toFixed(2)} miles from the address you searched.`,
-    `Businesses like this live on ${stakes.pressure}, and that load is what really decides how their day goes.`,
-    `When the connection slows or drops, ${stakes.breaks} — that is the version of the problem worth talking about, not megabits.`,
+    `${prospect.name} is a ${category} approximately ${prospect.distanceMiles.toFixed(2)} miles from the searched address.`,
     signalSentence,
     statusSentence,
-    availabilitySentence(broadband),
-    "Open on how the day actually runs, get them describing the busiest hour, and earn the right to talk options from there.",
   ].join(" ");
 
   const reflectOn = [
@@ -220,12 +157,17 @@ export function buildFallbackBrief(prospect: Prospect, broadband: BroadbandObser
 
   return {
     summary,
-    hypothesizedNeeds: prospect.hypothesizedNeeds.slice(0, 5),
+    hypothesizedNeeds: prospect.hypothesizedNeeds.slice(0, 3),
     reflectOn,
     talkAbout,
-    topOpportunity: measurableOpportunity(prospect.topOpportunity, broadband),
-    discoveryQuestions,
+    topOpportunity: prospect.topOpportunity,
+    discoveryQuestions: discoveryQuestions.slice(0, 3),
     callOpener: prospect.callOpener,
+    unsupportedClaimsToAvoid: [
+      "Do not claim a current internet provider or contract status.",
+      "Do not claim serviceability, pricing, speed, or installation timing.",
+      "Do not present category-based operational possibilities as known facts.",
+    ],
     followUpEmail: prospect.followUpEmail,
   };
 }

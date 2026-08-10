@@ -23,10 +23,12 @@ const categoryAngles: Record<string, string> = {
     "Plan files, field coordination, and cloud project tools punish slow uploads; jobsite teams feel every connectivity gap.",
   "Professional services":
     "Cloud apps, VoIP, and video are table stakes — reps should qualify how many people and devices the network has to carry every day.",
+  "Other/Unknown":
+    "Public category detail is limited. Use the first conversation to learn which connected tools, if any, matter to the operation.",
 };
 
 export function salesAngleForCategory(category: string) {
-  return categoryAngles[category] ?? categoryAngles["Professional services"];
+  return categoryAngles[category] ?? categoryAngles["Other/Unknown"];
 }
 
 export function buildSalesSummary(input: {
@@ -63,5 +65,5 @@ export function buildSalesSummary(input: {
 }
 
 export function buildSalesOpportunity(category: string) {
-  return `Lead with how ${category.toLowerCase()} teams feel connectivity pain day to day, then walk the FCC availability picture and ask what happens when the network slows or drops.`;
+  return `Treat connected operations as a hypothesis for this ${category.toLowerCase()} business, then ask which tools matter most and what happens when the connection slows or drops.`;
 }

@@ -1,20 +1,22 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "next/navigation";
 import { Copy, ExternalLink } from "lucide-react";
 import { ThinkingOrb } from "thinking-orbs";
 
+import { DataAttribution } from "@/components/data-attribution";
+import { ProspectFit } from "@/components/prospect-fit";
 import { ProspectHeader } from "@/components/prospect-header";
 import { cn } from "@/components/ui";
 import { buildFallbackBrief } from "@/lib/brief-fallback";
-import { classifyServiceability, displayServiceability, isCharterSpectrumProvider } from "@/lib/serviceability";
+import { buildBriefRequest } from "@/lib/brief-schema";
+import { currentProspect, currentSearch } from "@/lib/client-session";
+import { classifyServiceability, displayServiceability, isCharterSpectrumObservation } from "@/lib/serviceability";
 import type {
   AiBriefResult,
   BroadbandObservation,
   FccLookupResponse,
   Prospect,
-  ResearchResponse,
   ServiceabilitySignal,
 } from "@/lib/types";
 
@@ -23,73 +25,8 @@ type Tab = "research" | "availability" | "outreach";
 
 const MISSING_ADDRESS = new Set([
   "Address not listed in public data",
-  "Address not listed in OpenStreetMap",
   "Address unavailable",
 ]);
-
-function verdict(score: number) {
-  if (score >= 70) return "Prioritize this call";
-  if (score >= 55) return "Worth the conversation";
-  return "Qualify carefully";
-}
-
-function verdictDetail(score: number) {
-  if (score >= 70) {
-    return "Public signals are strong enough to open with confidence and push for a discovery meeting.";
-  }
-  if (score >= 55) {
-    return "Enough signal to call — lead with their likely connectivity pressure, then confirm what the network has to carry.";
-  }
-  return "Thin public signal. Keep the first touch short, learn the operation, and use FCC availability as supporting context only.";
-}
-
-// `used` is shared across the paragraphs of one assessment so each term is marked once.
-function highlightSummary(summary: string, prospect: Prospect, used: Set<string>) {
-  const needles = [prospect.name, prospect.category].filter(Boolean);
-  const unique = [...new Set(needles.map((item) => item.trim()).filter((item) => item.length > 2))];
-  if (!unique.length) return summary;
-  unique.sort((a, b) => b.length - a.length);
-
-  const pattern = new RegExp(`(${unique.map((item) => item.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`, "gi");
-  const parts = summary.split(pattern);
-
-  return parts.map((part, index) => {
-    const term = part.toLowerCase();
-    const matched = unique.some((needle) => needle.toLowerCase() === term) && !used.has(term);
-    if (!matched) return <span key={`${part}-${index}`}>{part}</span>;
-    used.add(term);
-    return (
-      <mark key={`${part}-${index}`} className="assessment-highlight">
-        {part}
-      </mark>
-    );
-  });
-}
-
-// A short opening line carries the verdict; the remaining sentences stay together so the
-// assessment reads as a brief rather than a stack of disconnected statements.
-function splitAssessment(summary: string) {
-  const sentences = summary.trim().split(/(?<=[.!?])\s+/).filter(Boolean);
-  if (sentences.length < 2) return { lead: summary.trim(), body: "" };
-
-  let lead = sentences[0];
-  let next = 1;
-  // Longer Opus assessments get a two-sentence lead when the opener is short.
-  while ((lead.length < 70 || next < 2) && next < Math.min(3, sentences.length - 1)) {
-    lead = `${lead} ${sentences[next]}`;
-    next += 1;
-  }
-  return { lead, body: sentences.slice(next).join(" ") };
-}
-
-function SectionHeading({ label, hint }: { label: string; hint: string }) {
-  return (
-    <div className="flex items-baseline justify-between gap-4 border-b border-[#dedad3] pb-3">
-      <p className="text-[13px] font-medium tracking-[-0.01em] text-[#777771]">{label}</p>
-      <p className="text-[11px] font-medium tracking-[-0.005em] text-[#a1a19a]">{hint}</p>
-    </div>
-  );
-}
 
 function briefToPlainText(brief: AiBriefResult, prospect: Prospect) {
   return [
@@ -98,17 +35,13 @@ function briefToPlainText(brief: AiBriefResult, prospect: Prospect) {
     "",
     brief.summary,
     "",
-    "Reflect on",
-    ...brief.reflectOn.map((item, index) => `${index + 1}. ${item}`),
-    "",
-    "Talk about",
-    ...brief.talkAbout.map((item) => `- ${item}`),
-    "",
     "Working hypotheses",
-    ...brief.hypothesizedNeeds.map((item) => `- ${item}`),
+    ...brief.hypothesizedNeeds.slice(0, 3).map((item) => `- ${item}`),
     "",
     "Sales angle",
     brief.topOpportunity,
+    "",
+    "Public data is context only. Confirm the business's needs, current setup, and service availability directly.",
   ].join("\n");
 }
 
@@ -118,10 +51,6 @@ function formatDate(value: string | null) {
 }
 
 export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
-  const params = useSearchParams();
-  const address = params.get("address") ?? "";
-  const radius = Number(params.get("radius") ?? 0.5);
-  const backQuery = new URLSearchParams({ address, radius: String(radius) }).toString();
   const [prospect, setProspect] = useState<Prospect | null>(null);
   const [brief, setBrief] = useState<AiBriefResult | null>(null);
   const [broadband, setBroadband] = useState<BroadbandObservation[]>([]);
@@ -136,23 +65,9 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
     let cancelled = false;
     async function researchBusiness() {
       try {
-        let selected: Prospect | undefined;
-        const stored = window.sessionStorage.getItem("prospectiq.selectedProspect");
-        if (stored) {
-          const parsed = JSON.parse(stored) as Prospect;
-          if (parsed.id === prospectId) selected = parsed;
-        }
-        if (!selected) {
-          const response = await fetch("/api/research", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ address, radiusMiles: radius }),
-          });
-          const payload = (await response.json()) as ResearchResponse & { error?: string };
-          if (!response.ok) throw new Error(payload.error || "Could not reload the business search.");
-          selected = payload.prospects.find((item) => item.id === prospectId);
-        }
-        if (!selected) throw new Error("This business was not found in the current search.");
+        const selected = currentProspect(prospectId);
+        const search = currentSearch();
+        if (!selected || !search) throw new Error("This in-memory research session ended. Return to the search page and start a new search.");
         if (cancelled) return;
         setProspect(selected);
         setStep("fcc");
@@ -163,10 +78,10 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              address: MISSING_ADDRESS.has(selected.address) ? address : selected.address,
+              address: MISSING_ADDRESS.has(selected.address) ? search.address : selected.address,
               coordinates: selected.coordinates,
-              businessId: selected.id,
             }),
+            cache: "no-store",
           });
           const fccPayload = (await fccResponse.json()) as FccLookupResponse;
           const nextSignal = fccPayload.serviceability ?? classifyServiceability(fccPayload);
@@ -183,6 +98,7 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
               message: "The FCC lookup failed. No provider claim was generated.",
               sourceUrl: "https://broadbandmap.fcc.gov/home",
               asOfDate: null,
+              datasetVintage: null,
               matchedLocationId: null,
               matchQuality: "none",
             };
@@ -198,7 +114,8 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
           const aiResponse = await fetch("/api/brief", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ prospect: selected, broadband: observations }),
+            body: JSON.stringify(buildBriefRequest(selected, observations)),
+            cache: "no-store",
           });
           const aiPayload = (await aiResponse.json()) as { brief?: AiBriefResult; error?: string };
           if (!aiResponse.ok || !aiPayload.brief) {
@@ -221,7 +138,7 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
     return () => {
       cancelled = true;
     };
-  }, [address, prospectId, radius]);
+  }, [prospectId]);
 
   useEffect(() => {
     if (!toast) return;
@@ -236,26 +153,6 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
     return "Building a profile on this business";
   }, [step]);
 
-  const assessment = useMemo(() => {
-    if (!brief || !prospect) return null;
-    const { lead, body } = splitAssessment(brief.summary);
-    const used = new Set<string>();
-    const bodyParagraphs = body
-      ? body
-          .split(/(?<=[.!?])\s+/)
-          .reduce<string[][]>((groups, sentence, index) => {
-            if (index % 2 === 0) groups.push([sentence]);
-            else groups[groups.length - 1]?.push(sentence);
-            return groups;
-          }, [])
-          .map((group) => group.join(" "))
-      : [];
-    return {
-      lead: highlightSummary(lead, prospect, used),
-      bodyParagraphs: bodyParagraphs.map((paragraph) => highlightSummary(paragraph, prospect, used)),
-    };
-  }, [brief, prospect]);
-
   const displayedSignal = useMemo(() => {
     if (!signal) return null;
     // Status is derived from FCC filings automatically — no manual rep notes.
@@ -265,6 +162,10 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
   const providerChart = useMemo(() => {
     return [...broadband].sort((a, b) => (b.downloadMbps ?? 0) - (a.downloadMbps ?? 0));
   }, [broadband]);
+  const uniqueProviderCount = useMemo(
+    () => new Set(broadband.map((item) => item.providerId || item.provider)).size,
+    [broadband],
+  );
 
   async function copy(value: string, label: string) {
     await navigator.clipboard.writeText(value);
@@ -274,7 +175,7 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
   if (error || (step === "complete" && !prospect)) {
     return (
       <main className="min-h-screen bg-[#f5f5f2]">
-        <ProspectHeader backHref={`/search?${backQuery}`} backLabel="Back to results" />
+        <ProspectHeader backHref="/search" backLabel="Back to results" />
         <div className="mx-auto flex min-h-[600px] max-w-lg items-center justify-center px-5 text-center">
           <div>
             <h1 className="text-2xl font-semibold text-[#22221f]">Research could not be completed.</h1>
@@ -287,13 +188,13 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
 
   return (
     <main className="min-h-screen bg-[#f5f5f2]">
-      <ProspectHeader backHref={`/search?${backQuery}`} backLabel="Back to results" />
+      <ProspectHeader backHref="/search" backLabel="Back to results" />
 
       <div className="mx-auto w-full max-w-[940px] px-5 pb-24 pt-6 sm:px-8 sm:pt-12">
         {prospect ? (
           <>
             <header className="border-b border-[#dcdcd7] pb-8 sm:pb-10">
-              <div className="flex flex-col justify-between gap-6 sm:flex-row sm:items-end">
+              <div>
                 <div className="min-w-0">
                   <p className="text-[13px] font-medium tracking-[-0.01em] text-[#777771]">{prospect.category}</p>
                   <h1 className="mt-3 text-[38px] font-semibold leading-[1.05] tracking-[-0.05em] text-[#141412] sm:text-[56px]">
@@ -304,6 +205,7 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                       prospect.address,
                       `${prospect.distanceMiles.toFixed(2)} miles from the search address`,
                       prospect.phone,
+                      prospect.operatingStatus === "Temporarily closed" ? "Temporarily closed" : null,
                     ]
                       .filter(Boolean)
                       .join(" · ")}
@@ -314,27 +216,21 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                         Website <ExternalLink size={11} />
                       </a>
                     )}
-                    {prospect.directoryUrl && (
-                      <a href={prospect.directoryUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 hover:text-[#171715]">
-                        Source record <ExternalLink size={11} />
-                      </a>
-                    )}
+                    <a
+                      href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${prospect.name} ${MISSING_ADDRESS.has(prospect.address) ? "" : prospect.address}`.trim())}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1.5 hover:text-[#171715]"
+                    >
+                      Verify on Google Maps <ExternalLink size={11} />
+                    </a>
                   </div>
-                </div>
-                <div className="shrink-0 text-right">
-                  <p className="text-[9px] font-bold uppercase tracking-[0.14em] text-[#969690]">Initial fit</p>
-                  <p className="mt-1 text-2xl font-semibold tabular-nums text-[#20201d]">
-                    {prospect.score}
-                    <span className="ml-1 text-xs font-medium text-[#85857f]">/ 100</span>
-                  </p>
-                  {displayedSignal && (
-                    <p className={cn("mt-2 text-[11px] font-semibold", displayedSignal.toneClass)}>
-                      {displayedSignal.shortLabel}
-                    </p>
-                  )}
+                  <div className="mt-3"><DataAttribution sources={prospect.sources} /></div>
                 </div>
               </div>
             </header>
+
+            <div className="mt-6"><ProspectFit prospect={prospect} /></div>
 
             {step !== "complete" ? (
               <section className="flex flex-col items-center py-16 text-center sm:py-24">
@@ -368,7 +264,7 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
 
                 {tab === "research" && (
                   <section className="py-10">
-                    <div className="max-w-[760px]">
+                    <div className="max-w-[720px]">
                       <div className="flex items-start justify-between gap-6">
                         <p className="text-[13px] font-medium tracking-[-0.01em] text-[#777771]">Assessment</p>
                         <button
@@ -379,68 +275,18 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                           <Copy size={11} /> Copy assessment
                         </button>
                       </div>
-                      <h2 className="mt-4 max-w-[16ch] text-[40px] font-semibold leading-[1.05] tracking-[-0.05em] text-[#141412] sm:text-[52px]">
-                        {verdict(prospect.score)}
-                      </h2>
-                      <p className="mt-4 max-w-[36rem] text-[15px] leading-7 text-[#6e6e68]">{verdictDetail(prospect.score)}</p>
-
-                      {assessment && (
-                        <div className="mt-10 max-w-[42rem]">
-                          <p className="text-[20px] font-medium leading-[1.45] tracking-[-0.022em] text-[#1c1c19] sm:text-[22px] sm:leading-[1.4]">
-                            {assessment.lead}
-                          </p>
-                          {assessment.bodyParagraphs.length > 0 && (
-                            <div className="mt-5 space-y-4 text-[16px] leading-8 tracking-[-0.012em] text-[#5d5d57]">
-                              {assessment.bodyParagraphs.map((paragraph, index) => (
-                                <p key={index}>{paragraph}</p>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      )}
-
-                      {brief.reflectOn.length > 0 && (
-                        <div className="mt-14 max-w-[42rem]">
-                          <SectionHeading label="Reflect on" hint="Before you dial" />
-                          <ol className="mt-6 space-y-5">
-                            {brief.reflectOn.map((item, index) => (
-                              <li key={item} className="flex gap-5">
-                                <span className="w-7 shrink-0 border-t border-[#c9c9c2] pt-2 text-[11px] font-semibold tabular-nums text-[#a4a49d]">
-                                  {String(index + 1).padStart(2, "0")}
-                                </span>
-                                <p className="text-[16px] font-medium leading-7 tracking-[-0.015em] text-[#252522]">
-                                  {item}
-                                </p>
-                              </li>
-                            ))}
-                          </ol>
-                        </div>
-                      )}
-
-                      {brief.talkAbout.length > 0 && (
-                        <div className="mt-14 max-w-[42rem]">
-                          <SectionHeading label="Talk about" hint="On the call" />
-                          <ul className="mt-2 divide-y divide-[#e6e6e1]">
-                            {brief.talkAbout.map((item) => (
-                              <li key={item} className="flex gap-3.5 py-4">
-                                <span aria-hidden className="mt-[11px] h-[5px] w-[5px] shrink-0 rounded-full bg-[#b6b6ae]" />
-                                <p className="text-[15px] leading-7 tracking-[-0.012em] text-[#33332f]">{item}</p>
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
+                      <p className="mt-5 text-[17px] leading-8 tracking-[-0.015em] text-[#30302c]">{brief.summary}</p>
 
                       {brief.hypothesizedNeeds.length > 0 && (
-                        <div className="mt-14 max-w-[42rem]">
-                          <SectionHeading label="Working hypotheses" hint="Test, never assume" />
-                          <ul className="mt-5 flex flex-wrap gap-2">
-                            {brief.hypothesizedNeeds.map((need) => (
+                        <div className="mt-12 border-t border-[#dedad3] pt-6">
+                          <div className="flex items-baseline justify-between gap-4"><p className="text-[13px] font-medium text-[#777771]">Working hypotheses</p><p className="text-[11px] text-[#a1a19a]">Questions to test</p></div>
+                          <ul className="mt-5 grid gap-2 sm:grid-cols-3">
+                            {brief.hypothesizedNeeds.slice(0, 3).map((need) => (
                               <li
                                 key={need}
-                                className="rounded-full border border-[#dcdcd5] bg-white px-3.5 py-1.5 text-[13px] font-medium tracking-[-0.01em] text-[#4a4a44]"
+                                className="rounded-[14px] border border-[#dcdcd5] bg-white/75 px-4 py-3 text-[13px] font-medium leading-5 tracking-[-0.01em] text-[#4a4a44]"
                               >
-                                {need}
+                                {need.replace(/^Hypothesis(?: to test)?:\s*/i, "")}
                               </li>
                             ))}
                           </ul>
@@ -448,7 +294,7 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                       )}
 
                       {brief.topOpportunity && (
-                        <div className="mt-14 max-w-[42rem] rounded-2xl bg-[#171715] px-7 py-7 shadow-[0_18px_50px_rgba(20,20,16,0.16)]">
+                        <div className="mt-10 rounded-2xl bg-[#171715] px-6 py-6 shadow-[0_18px_50px_rgba(20,20,16,0.14)]">
                           <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#8f8f86]">Sales angle</p>
                           <p className="mt-3.5 text-[17px] font-medium leading-[1.65] tracking-[-0.015em] text-[#f3f3ed]">
                             {brief.topOpportunity}
@@ -456,10 +302,6 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                         </div>
                       )}
 
-                      <p className="mt-6 max-w-[42rem] text-[11px] leading-5 text-[#9a9a93]">
-                        Availability figures come from public FCC provider filings for this address or area — not a
-                        subscription, quote, or serviceability guarantee. Confirm in the official tool before quoting.
-                      </p>
                     </div>
                   </section>
                 )}
@@ -474,10 +316,10 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                           displayedSignal?.toneClass ?? "text-[#141412]",
                         )}
                       >
-                        {displayedSignal?.shortLabel ?? "Checking availability"}
+                        {displayedSignal?.tier === "data_unavailable" ? "Broadband data unavailable" : displayedSignal?.shortLabel ?? "Checking availability"}
                       </h2>
                       <p className="mt-4 max-w-[36rem] text-[15px] leading-7 text-[#6e6e68]">
-                        {displayedSignal?.detail ?? "Looking up FCC provider-reported availability for this address."}
+                        {displayedSignal?.detail ?? "Looking up current FCC Broadband Data Collection filing context."}
                       </p>
                       {fcc?.asOfDate && (
                         <p className="mt-3 text-xs text-[#85857f]">FCC data as of {formatDate(fcc.asOfDate)}</p>
@@ -492,21 +334,23 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                               Broadband Facts
                             </p>
                             <p className="mt-1.5 text-[12px] font-bold leading-snug">
-                              {fcc?.matchQuality === "exact" || fcc?.matchedLocationId
+                              {fcc?.matchQuality === "exact"
                                 ? "Provider-reported speeds at this location"
-                                : "Provider-reported speeds for this area"}
+                                : fcc?.matchQuality === "user_supplied_location_id"
+                                  ? "Provider-reported speeds for the supplied FCC location ID"
+                                  : "Provider-reported speeds for this area"}
                             </p>
                           </div>
 
                           <div className="border-b-4 border-black px-3.5 py-2">
                             <div className="flex items-end justify-between gap-3">
                               <p className="text-[11px] font-bold uppercase tracking-[0.04em]">
-                                Serving this census block
+                                Unique providers in loaded evidence
                               </p>
                               <p className="text-[13px] font-black tabular-nums">
-                                {providerChart.length}{" "}
+                                {uniqueProviderCount}{" "}
                                 <span className="text-[11px] font-bold">
-                                  {providerChart.length === 1 ? "provider" : "providers"}
+                                  {uniqueProviderCount === 1 ? "provider" : "providers"}
                                 </span>
                               </p>
                             </div>
@@ -525,7 +369,7 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
 
                           <ul>
                             {providerChart.map((item, index) => {
-                              const isSpectrum = isCharterSpectrumProvider(item.provider);
+                              const isSpectrum = isCharterSpectrumObservation(item);
                               return (
                                 <li
                                   key={item.id}
@@ -542,7 +386,7 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                                       </p>
                                       {isSpectrum && (
                                         <p className="mt-1 text-[10px] font-black uppercase tracking-[0.08em] text-[#17653f]">
-                                          Spectrum / Charter match
+                                          Configured provider identifier match
                                         </p>
                                       )}
                                     </div>
@@ -559,7 +403,7 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                                       </span>
                                     </div>
                                     <div className="flex items-baseline justify-between gap-3 border-t border-dotted border-black/35 pt-1">
-                                      <span className="font-semibold">Typical download speed</span>
+                                      <span className="font-semibold">Maximum advertised download</span>
                                       <span className="font-black tabular-nums">
                                         {item.downloadMbps != null
                                           ? `${item.downloadMbps.toLocaleString()} Mbps`
@@ -567,7 +411,7 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                                       </span>
                                     </div>
                                     <div className="flex items-baseline justify-between gap-3 border-t border-dotted border-black/35 pt-1">
-                                      <span className="font-semibold">Typical upload speed</span>
+                                      <span className="font-semibold">Maximum advertised upload</span>
                                       <span className="font-black tabular-nums">
                                         {item.uploadMbps != null
                                           ? `${item.uploadMbps.toLocaleString()} Mbps`
@@ -575,6 +419,9 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                                       </span>
                                     </div>
                                   </div>
+                                  <p className="mt-2 border-t border-dotted border-black/35 pt-2 text-[10px] font-medium leading-4">
+                                    {fcc?.matchQuality === "user_supplied_location_id" ? "Supplied FCC location ID · Manually entered" : item.scope === "exact_location" ? "Exact FCC Location ID evidence" : "Nearby market context—not availability at this address"} · {item.matchMethod} · vintage {item.datasetVintage}
+                                  </p>
                                 </li>
                               );
                             })}
@@ -582,8 +429,8 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
 
                           <div className="border-t-4 border-black px-3.5 py-2.5">
                             <p className="text-[10px] font-medium leading-4">
-                              Speeds shown are FCC provider filings for the matched area — not a quote,
-                              subscription claim, or orderability guarantee.
+                              Maximum advertised speed pairs are preserved exactly as filed. Residential or nearby
+                              evidence does not prove business availability at this address.
                             </p>
                             <a
                               href={fcc?.sourceUrl || "https://broadbandmap.fcc.gov/home"}
@@ -599,7 +446,7 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                         <div className="border-[3px] border-black bg-white px-3.5 py-4 text-black shadow-[6px_6px_0_#171715]">
                           <p className="text-[28px] font-black leading-none tracking-[-0.04em]">Broadband Facts</p>
                           <div className="mt-3 border-t-4 border-black pt-3">
-                            <p className="text-sm font-black">No FCC provider records were returned.</p>
+                            <p className="text-sm font-black">{displayedSignal?.tier === "data_unavailable" ? "Broadband data unavailable" : "No FCC provider records were returned."}</p>
                             <p className="mt-2 text-[12px] font-medium leading-5">
                               {fcc?.message ?? "The FCC lookup did not return availability for this location."}
                             </p>
@@ -661,6 +508,10 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                     </div>
                   </section>
                 )}
+
+                <aside className="mb-10 border-t border-[#dcdcd7] pt-5 text-[11px] leading-5 text-[#777771]">
+                  Public data is context only. Confirm the business’s needs, current setup, and service availability directly.
+                </aside>
               </div>
             ) : null}
           </>

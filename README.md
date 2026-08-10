@@ -1,103 +1,144 @@
-# PAI / ProspectIQ
+# PAI Places / FindBiz
 
-Independent, open-source business prospect research helper.
+Independent, open-source local-business discovery and public-fact research.
 
-**Not affiliated with Charter Communications, Spectrum, or Spectrum Business.**
+**Not affiliated with, endorsed by, or connected to Charter Communications, Spectrum, or any employer system.** The application uses public or separately licensed external data only.
 
-1. Enter an address.
-2. Choose a nearby business from public/licensed directory data.
-3. Review a public-business brief, official FCC broadband availability observations, and optional outreach draft.
+## What changed in PAI Places v2
 
-There is no map dashboard and **no connection to any Spectrum internal system**.
+PAI Places is the product name, not a claim that FindBiz owns an independent business database. Every result exposes its actual contributing sources and field provenance.
 
-- Public repo purpose: full transparency if a manager, compliance reviewer, or auditor asks what the tool is.
-- Compliance statement: [`COMPLIANCE.md`](./COMPLIANCE.md)
-- Legal notices: [`NOTICE`](./NOTICE) · [`LICENSE`](./LICENSE) (MIT)
+Discovery order:
 
-> This product uses the FCC Data API but is not endorsed or certified by the FCC.
+1. A bounded local [Overture Maps Places](https://docs.overturemaps.org/guides/places/) GeoParquet dataset queried with DuckDB.
+2. Supplemental OpenStreetMap data through conservative, sequential Overpass requests.
+3. An optional generic commercial adapter that stays disabled until its contract is reviewed and acknowledged.
+4. Optional request-scoped manual entries in memory only.
+
+Results are deduplicated across sources, filtered for eligibility, ranked with an explained research heuristic, and returned with coverage/exclusion diagnostics. Permanently closed places, banks/ATMs, traditional schools, configured enterprises, government-only facilities, and confirmed apartment properties over nine units are removed from the primary list. Apartments with unknown unit counts are hidden in an eligibility-unknown group.
+
+Google Maps is not scraped or ingested. A result can open a normal external “Verify on Google Maps” search for manual verification.
 
 ## Run locally
 
-```powershell
-npm install
+Node 22 LTS is the supported runtime.
+
+```bash
+nvm use
+npm ci
 npm run dev
 ```
 
-Open `http://localhost:3000`. No API key is required for business discovery.
+Open `http://localhost:3000`. Copy `.env.example` to `.env.local` for optional sources.
 
-Copy `.env.example` to `.env.local` and fill only the keys you are licensed to use. Optional profile/outreach drafting uses Claude Opus 5 by default (`RESEARCH_MODEL=claude-opus-5`) via the Anthropic Messages API (`RESEARCH_BASE_URL=https://api.anthropic.com/v1`) or any OpenAI-compatible proxy that serves the same model. Deterministic application code owns the numeric fit score.
+## Configure Overture Places
 
-## PAI Places — our own discovery API
+Large Overture datasets are deliberately ignored by Git. The official `overturemaps` Python client reads the latest release from Overture's STAC catalog and transfers only a requested bounding box.
 
-Nearby-business discovery runs through **PAI Places**, a first-party API owned by this app. It needs no third-party key and calls no commercial map provider.
+For a bounded public commercial area (this example covers part of Center City Philadelphia):
 
-| Endpoint | Body | Returns |
-| --- | --- | --- |
-| `POST /api/places/geocode` | `{ address }` | Coordinates from the US Census geocoder, Photon, or Nominatim |
-| `POST /api/places/nearby` | `{ address, radiusMiles }` | Nearby businesses, their distances, and source attribution |
-
-`POST /api/research` uses PAI Places as its primary provider and adds scoring and outreach drafting on top.
-
-Discovery sources, in priority order:
-
-1. **Your local cache** — `data/places-cache.json`, businesses you enter yourself.
-2. **OpenStreetMap** via Overpass, queried across shop, craft, office, healthcare, industrial, farmyard, commercial-landuse, named commercial buildings, and operator tags.
-
-Geocoding uses the US Census geocoder first, then Photon and Nominatim.
-
-**Be aware of the coverage limit.** OpenStreetMap is volunteer-mapped and thin in rural areas. A business that appears on a commercial map may simply not exist in OSM, in which case PAI Places cannot invent it. When a radius comes back empty, the response reports how far away the nearest mapped business is instead of silently returning nothing.
-
-Check coverage for any address before assuming a bug:
-
-```powershell
-npm run places:probe -- "46 Carina Ln, Lugoff, SC 29078" 1
+```bash
+npm run overture:prepare -- \
+  --bbox=-75.175,39.945,-75.145,39.965 \
+  --output=data/overture/places.parquet
 ```
 
-### Adding businesses PAI Places cannot find
+The script uses `uvx` when available. Otherwise install the official client first:
 
-Copy `data/places-cache.example.json` to `data/places-cache.json` and add your own entries. Only `name` is required; supply `lat`/`lng` for exact placement, or just an `address` and PAI Places geocodes it at request time. Cached entries outrank map data during dedupe and are labeled "Manually entered" in the UI. The file is gitignored.
-
-Record businesses you verified yourself. Do not paste listing data copied out of a commercial map provider.
-
-### Deprecated providers
-
-Google Places and RapidAPI Maps Data remain in the tree for reference but are **off by default** and are **not used** by `/api/research` or `/api/places/*`. Setting `ENABLE_GOOGLE_PLACES=true` / `ENABLE_RAPIDAPI_PLACES=true` does not change the live discovery path — PAI Places is always primary. `GET /api/status` reports the live mode.
-
-## Real FCC data
-
-The supported FCC public API provides bulk downloads, not a documented per-address lookup endpoint. ProspectIQ therefore queries a local SQLite index built from official fixed-availability CSV downloads. It never scrapes the public map or treats availability as proof of a current subscription.
-
-Get an FCC account email and API token from the National Broadband Map's **Manage API Access** screen, download the required state fixed-availability ZIPs, unzip the CSVs, then import them:
-
-```powershell
-npm run fcc:import -- --db data/fcc.sqlite --as-of 2025-12-31 --fabric-vintage 202512 C:\path\to\fixed-availability.csv
+```bash
+python3 -m pip install overturemaps
 ```
 
-Use the actual FCC data date and corresponding six-digit Fabric vintage. Then configure:
+Then configure:
+
+```dotenv
+OVERTURE_PLACES_PATH=data/overture/places.parquet
+OVERTURE_COVERAGE_BBOX=-75.175,39.945,-75.145,39.965
+```
+
+`OVERTURE_PLACES_PATH` may name one GeoParquet file or a directory of `.parquet` files. `OVERTURE_COVERAGE_BBOX` must match the exact boundary used for the extract; without it, status reports coverage as unknown rather than claiming the region is complete. At readiness time the application verifies that the file exists and that required Places fields can be queried. Searches are classified as inside, outside, or partially inside the configured boundary. A missing or incompatible dataset does not crash the search: PAI Places records `OVERTURE_FILE_MISSING` or `OVERTURE_SCHEMA_INVALID` and continues with successful supplemental sources without exposing the local path.
+
+Official references:
+
+- [Overture Python client](https://docs.overturemaps.org/getting-data/overturemaps-py/)
+- [DuckDB access](https://docs.overturemaps.org/getting-data/duckdb/)
+- [Places schema](https://docs.overturemaps.org/schema/reference/places/place/)
+- [Attribution and licensing](https://docs.overturemaps.org/attribution/)
+
+Display attribution is `Overture Maps Foundation`; upstream source requirements remain applicable. Overture source/update metadata is retained on normalized records when present.
+
+## OpenStreetMap supplement
+
+OSM requests use one Overpass endpoint at a time, bounded timeouts, sequential mirror fallback, retry/backoff, cancellation, coalescing, short memory caching, and an explicit request budget. Larger radiuses are split into controlled geographic cells. Core business categories run first; an extended commercial/industrial/agricultural pass runs when useful and budget permits. A capped search is labeled partial.
+
+Configure an operator contact and optionally one preferred endpoint:
+
+```dotenv
+OSM_CONTACT_EMAIL=
+OVERPASS_API_URL=https://overpass-api.de/api/interpreter
+OVERPASS_MAX_REQUESTS=8
+```
+
+Follow the [Nominatim usage policy](https://operations.osmfoundation.org/policies/nominatim/), [Overpass public instance guidance](https://wiki.openstreetmap.org/wiki/Overpass_API), and display [OpenStreetMap attribution](https://www.openstreetmap.org/copyright). A record is not labeled freshly updated when OSM provides no timestamp.
+
+## Optional licensed commercial source
+
+The generic server-side adapter is disabled unless all configuration is present and `COMMERCIAL_PROVIDER_LICENSE_ACK` is set to the exact value below after contract review:
+
+```dotenv
+COMMERCIAL_PROVIDER_LICENSE_ACK=business-discovery-and-sales-prospecting-permitted
+```
+
+The reviewed contract must expressly permit business discovery and the intended sales-prospecting use. It must also define attribution, export, display, lead-generation, retention, directory, and storage rules. The adapter requests minimal fields, keeps its key server-side, rate-limits calls, uses timeouts and a circuit breaker, and cannot break Overture or OSM results. See `.env.example` for required metadata. No commercial provider has been approved by this repository.
+
+## Current FCC Broadband Data Collection only
+
+There is no Form 477 fallback. If a current local BDC index is missing, the UI says `Data unavailable`. Missing rows never prove that a provider cannot serve an address.
+
+Import unzipped current fixed-availability CSVs downloaded through the official FCC process:
+
+```bash
+npm run fcc:import -- \
+  --db data/fcc.sqlite \
+  --as-of 2026-06-30 \
+  --fabric-vintage 202606 \
+  --dataset-vintage "BDC 2026-06-30" \
+  /path/to/current-fixed-availability.csv
+```
+
+Use the actual dates from the files you download, then set:
 
 ```dotenv
 FCC_AVAILABILITY_DB_PATH=data/fcc.sqlite
 ```
 
-With only the official index, ProspectIQ returns provider-reported business availability from the business coordinate's FCC H3 resolution-8 area and labels it as area-level, not exact-address evidence.
+The application preserves filed maximum-advertised download/upload pairs. It distinguishes exact FCC Location ID evidence, CostQuest full-address matches, nearby H3-area evidence, no report in loaded data, and data unavailable. Nearby evidence is labeled `Nearby market context—not availability at this address`. Exact Fabric address matching requires a separate CostQuest license and server-side token.
 
-Exact matching additionally requires a commercial CostQuest Fabric/API license:
+## Zero retention
 
-```dotenv
-COSTQUEST_API_TOKEN=
-COSTQUEST_MATCH_MIN_SIMILARITY=0.95
-```
+- Searches use POST bodies; searched addresses are not placed in application URLs.
+- Prospects, selected businesses, notes, searches, and briefs are not written to browser storage or a database.
+- Refresh clears the in-memory research session.
+- Sensitive routes return `Cache-Control: no-store`.
+- Prospect CSV export is disabled.
+- Application code does not log addresses, coordinates, phone numbers, prospect payloads, or briefs.
+- Short-lived server memory caching and request coalescing are used only to protect upstream services.
 
-Exact results are accepted only for one full-address match above the configured threshold and queried by the numeric FCC Location ID from the same vintage. If the index or address-matching credential is absent, the Broadband tab says so and generates no provider claim.
+Third-party retention depends on each provider's own policy; this project does not claim otherwise.
 
-Official references: [FCC National Broadband Map](https://broadbandmap.fcc.gov/home), [FCC public data API specification](https://us-fcc.app.box.com/v/bdc-public-data-api-spec), [FCC API Terms of Service](https://www.fcc.gov/reports-research/developers/api-terms-service), and [CostQuest Match API](https://apidocs.costquest.com/guides/match/).
+## Coverage benchmark and verification
 
-## Verification
+The repeatable benchmark uses synthetic fixtures representing downtown, suburban, industrial, and rural public-commercial scenarios. It never calls live APIs or uses Google Maps data.
 
-```powershell
+```bash
 npm run lint
 npm run typecheck
+npm test
 npm run build
+npm audit --omit=dev
+npm run coverage:benchmark
 ```
 
-Saved businesses remain in browser `localStorage`; selected search state uses `sessionStorage`. Secrets and local FCC indexes are ignored by Git.
+## Compliance
+
+Read [COMPLIANCE.md](./COMPLIANCE.md) before use. This repository does not provide legal or employer approval, automate outreach, connect to internal systems, or establish serviceability.

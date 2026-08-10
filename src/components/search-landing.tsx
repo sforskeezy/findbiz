@@ -7,12 +7,14 @@ import { ChevronDown, Search } from "lucide-react";
 
 import { ProspectHeader } from "@/components/prospect-header";
 import { cn } from "@/components/ui";
+import { beginSearch } from "@/lib/client-session";
 
 const radii = [
   { value: "0.25", label: "0.25 mi" },
   { value: "0.5", label: "0.5 mi" },
   { value: "1", label: "1 mi" },
   { value: "2", label: "2 mi" },
+  { value: "3", label: "3 mi" },
   { value: "5", label: "5 mi" },
 ];
 
@@ -32,7 +34,8 @@ export function SearchLanding() {
     }
     setError("");
     setLeaving(true);
-    router.push(`/search?address=${encodeURIComponent(address.trim())}&radius=${radius}`);
+    beginSearch({ address: address.trim(), radiusMiles: Number(radius) });
+    router.push("/search");
   }
 
   return (

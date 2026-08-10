@@ -1,25 +1,29 @@
 import { NextResponse } from "next/server";
 
+import { NO_STORE_HEADERS, checkRateLimit, parseBoundedJson, validationMessage } from "@/lib/api-safety";
+import { briefRequestSchema } from "@/lib/brief-schema";
 import { generateResearchBrief, researchBriefConfigured } from "@/lib/research-brief";
-import type { BroadbandObservation, Prospect } from "@/lib/types";
+
+function json(body: unknown, status = 200, headers: Record<string, string> = {}) {
+  return NextResponse.json(body, { status, headers: { ...NO_STORE_HEADERS, ...headers } });
+}
 
 export async function POST(request: Request) {
-  if (!researchBriefConfigured()) {
-    return NextResponse.json(
-      { error: "Profile generation is not configured." },
-      { status: 503 },
-    );
-  }
-
+  const rate = checkRateLimit(request, "brief", 12);
+  if (!rate.allowed) return json({ error: "Too many brief requests.", code: "RATE_LIMITED" }, 429, { "Retry-After": String(rate.retryAfterSeconds) });
+  if (!researchBriefConfigured()) return json({ error: "Profile generation is not configured.", code: "BRIEF_NOT_CONFIGURED" }, 503);
+  let raw: unknown;
   try {
-    const body = (await request.json()) as { prospect?: Prospect; broadband?: BroadbandObservation[] };
-    if (!body.prospect) {
-      return NextResponse.json({ error: "A prospect payload is required." }, { status: 400 });
-    }
-
-    return NextResponse.json({ brief: await generateResearchBrief(body.prospect, body.broadband ?? []) });
+    raw = await parseBoundedJson(request, 24_576);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Profile generation failed.";
-    return NextResponse.json({ error: message }, { status: 502 });
+    const tooLarge = error instanceof Error && error.message === "PAYLOAD_TOO_LARGE";
+    return json({ error: tooLarge ? "Request payload is too large." : "Request body must be valid JSON.", code: tooLarge ? "PAYLOAD_TOO_LARGE" : "INVALID_JSON" }, tooLarge ? 413 : 400);
+  }
+  const parsed = briefRequestSchema.safeParse(raw);
+  if (!parsed.success) return json({ error: validationMessage(parsed.error), code: "INVALID_REQUEST" }, 400);
+  try {
+    return json({ brief: await generateResearchBrief(parsed.data) });
+  } catch {
+    return json({ error: "Profile generation failed; use the deterministic fallback.", code: "BRIEF_FAILED" }, 502);
   }
 }

@@ -1,84 +1,64 @@
 # Compliance and intended use
 
-This document states what PAI / ProspectIQ is, what it is not, and how it is meant to be used. It is written so a manager, compliance reviewer, or legal reviewer can evaluate the project quickly from the public GitHub repository.
+PAI Places / FindBiz is an independent, unofficial, open-source helper for discovering local businesses and organizing public facts. It is not legal advice, employer approval, or an official product of Charter Communications, Spectrum, the FCC, Overture Maps Foundation, OpenStreetMap Foundation, or any data provider.
 
-**This is not legal advice.** Open-sourcing the code makes the project transparent; it does not by itself approve workplace use under every employer policy. If you use this at work, get written approval from your manager or compliance contact.
+## Hard boundaries
 
-## One-sentence summary
+- Use public or properly licensed external business data only.
+- Never connect to employer credentials, cookies, CRM records, internal APIs, internal serviceability systems, proprietary surveys, pricing systems, customer records, lead lists, or confidential information.
+- Never scrape or automate Spectrum websites or Google Maps.
+- Never automate calls, email, texts, or outreach.
+- Never claim affiliation, endorsement, legal approval, employer approval, serviceability, a current provider, a subscription, pricing, or contract status.
+- Never persist prospect searches, selected businesses, notes, addresses, phone numbers, provider payloads, or generated briefs.
 
-PAI / ProspectIQ is an **independent, unofficial, open-source** local research helper that uses **public business listings** and **official public FCC broadband availability data**. It has **no connection** to Spectrum/Charter internal systems, does **not** access Spectrum confidential data, and is **not** an official Spectrum Business product.
+The UI's optional outreach text is a draft for a human to review and copy. It does not send anything.
 
-## Not affiliated with Spectrum / Charter
+## Business discovery sources
 
-- Not owned, operated, endorsed, certified, or sponsored by Charter Communications, Spectrum, Spectrum Business, Spectrum Enterprise, or affiliates.
-- Does not use Spectrum logos or Spectrum trademarks as the product brand. The product brand is PAI / ProspectIQ.
-- Mentions of “Spectrum Business” in optional outreach templates exist only so an **already-authorized** Spectrum Business representative can paste language they are permitted to use. Do not use those templates if you are not authorized to represent Spectrum Business.
-- Do not present this tool as an official Spectrum system, CRM, or availability engine.
+PAI Places is a product layer over disclosed sources:
 
-## What the software does
+- Overture Maps Places: local bounded GeoParquet; display `Overture Maps Foundation` and follow the [current attribution requirements](https://docs.overturemaps.org/attribution/), including applicable upstream licenses.
+- OpenStreetMap: supplemental contributor data; display `© OpenStreetMap contributors` and follow ODbL and public-service usage policies.
+- Optional commercial provider: disabled until a written contract expressly permits business discovery and sales prospecting and its attribution, display, export, retention, directory, and lead-generation conditions are documented.
+- Optional manual entry: current in-memory request/session only, never a persisted cache.
 
-1. Accepts an address from the user.
-2. Finds nearby businesses from public/licensed directory sources configured by the operator.
-3. Shows a research brief built from those public facts.
-4. Looks up **provider-reported FCC availability** observations for the location/area.
-5. Helps draft outreach language from those public facts.
+An API returning business information does not, by itself, establish permission for this use.
 
-## What the software does not do
+Google Maps may be opened by the user in a normal browser link for manual verification. FindBiz does not ingest, parse, scrape, automate, save, or bulk-extract Google results.
 
-- Connect to any Spectrum/Charter internal network, CRM, provisioning, or inventory system.
-- Scrape Spectrum websites, portals, or employee tools.
-- Store or display Spectrum confidential customer, pricing, network, or employee data.
-- Claim that a business currently subscribes to Spectrum or any provider.
-- Guarantee that service is orderable at an address.
-- Autodial, send email, or push leads into company systems unless the user does that themselves.
-- Impersonate Spectrum systems or FCC systems.
+## Eligibility and research limits
 
-## Data sources and rules
+Structured categories and status fields drive exclusion before name keywords. The primary list excludes banks/ATMs, traditional schools, permanently closed businesses, government-only facilities, configured national enterprises, and apartment properties authoritatively confirmed above nine units.
 
-### FCC public broadband data
+Apartment unit counts are never inferred from a name, imagery, review count, rooms, bedrooms, or building count. An apartment with unknown units is hidden in an eligibility-unknown group. A chain brand does not alone prove corporate ownership; franchise-uncertain locations remain uncertain unless evidence supports exclusion.
 
-- Availability rows are official **provider-reported** public FCC records (Broadband Data Collection / related public downloads or APIs).
-- They are **availability observations**, not subscriptions and not orderability guarantees.
-- Required attribution (FCC API Terms):  
-  **“This product uses the FCC Data API but is not endorsed or certified by the FCC.”**
-- Exact rooftop Fabric matching may require a separate CostQuest commercial license. Without that license, the app must stay on the permitted public-index / area-level path and must not scrape the FCC map UI.
-- Do not modify FCC content and still claim the FCC as the source.
+Ranking is a prospect-research heuristic, not a probability of sale, need, qualification, or serviceability. Category-based operations are hypotheses to test.
 
-### FCC serviceability signal
+## FCC evidence
 
-- The in-app **FCC serviceability signal** is a confidence ladder from FCC match quality for Charter/Spectrum brand filings (exact vs area vs not reported).
-- It is **not** Spectrum’s internal or customer-facing serviceability tool, not an orderability guarantee, and not proof of an active customer.
-- **Active** and **Do not touch** colors are optional notes the user sets locally on their device. The app never infers those from FCC data and must not store Spectrum account details.
-- Absence of a Charter/Spectrum FCC row means **not reported**, not “impossible to serve.”
+Only current Broadband Data Collection information from a locally prepared official index is supported. There is no June 2021 Form 477 fallback.
 
-### Business directory / map data
+- `exact_location`: filing evidence tied to an FCC Location ID; still not orderability.
+- `nearby_area`: `Nearby market context—not availability at this address`.
+- `no_report`: no row in the loaded current dataset; not proof of unavailability.
+- `Data unavailable`: current BDC data is absent or could not be queried.
 
-- Default public discovery may use OpenStreetMap ecosystem services. Follow their usage policies, identify your client, and respect rate limits.
-- Optional Google / RapidAPI / other directory providers are **off or operator-configured**. Enable them only if your license expressly allows storage, scoring, export, and automated drafting for sales research.
-- Do not enable a directory provider whose terms forbid lead generation or persistent storage.
+Maximum-advertised download/upload pairs are preserved as filed. Residential or nearby evidence is never represented as business availability. Exact full-address Fabric matching requires a separate CostQuest license.
 
-### Generated outreach copy
+Required FCC notice: **This product uses the FCC Data API but is not endorsed or certified by the FCC.**
 
-- Drafting assistance is optional and uses only the public facts already loaded for the prospect.
-- Prompts forbid inventing missing business facts and forbid claiming a current provider relationship.
-- The numeric fit score is owned by application code, not the drafting step.
-- User remains responsible for every call, email, and representation made to a prospect.
+## Zero retention and API safety
 
-## Workplace-use checklist
+- Search inputs are sent with POST and not encoded into application URLs.
+- Browser `localStorage` and `sessionStorage` are not used for research data.
+- No prospect database schema or CSV export is included.
+- Research state lives only in memory and clears on refresh.
+- Sensitive routes use `Cache-Control: no-store`, bounded strict schemas, payload limits, timeouts, rate limits, cancellation, provider isolation, and redacted errors.
+- API keys remain server-side and status responses expose no keys or local paths.
+- Short-lived process-memory cache/coalescing is allowed only to protect providers and is not durable storage.
 
-Before using this day to day at Spectrum Business / Charter (or any employer):
+Third-party providers may retain requests under their own policies. Review those policies before configuration.
 
-1. Show this public GitHub repo and `COMPLIANCE.md` to your manager or compliance contact.
-2. Confirm you may run an independent open-source helper that uses only public data.
-3. Confirm any third-party API keys you configure are licensed for sales research use.
-4. Keep Spectrum credentials and internal data out of this app.
-5. Use outreach templates only if you are authorized to represent Spectrum Business.
-6. Treat FCC rows as public availability context, then qualify on the call.
+## Human responsibility
 
-## Why the GitHub link is on the front page
-
-The public repository exists so anyone asking “what is this?” can see the source, license, data boundaries, and non-affiliation statement without needing a private demo. Transparency is intentional.
-
-## License
-
-Source code is released under the MIT License. See `LICENSE` and `NOTICE`.
+Verify facts and eligibility before outreach. Generated text treats external business text as untrusted data, uses a strict response schema, and cannot change deterministic eligibility. A human remains responsible for every representation and communication.

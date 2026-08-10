@@ -1,10 +1,11 @@
 import type { Confidence, Coordinates } from "@/lib/types";
+import { createTimeoutSignal } from "@/lib/request-safety";
 
 export type GeocodeResult = {
   formattedAddress: string;
   coordinates: Coordinates;
   confidence: Confidence;
-  provider: "census" | "photon" | "nominatim" | "rapidapi";
+  provider: "census" | "photon" | "nominatim";
 };
 
 type ParsedAddress = {
@@ -44,6 +45,29 @@ const STREET_EXPAND: Record<string, string> = {
   hwy: "highway", highway: "hwy",
   pkwy: "parkway", parkway: "pkwy",
   rte: "route", route: "rte",
+};
+
+const DIRECTION_EXPAND: Record<string, string> = {
+  n: "north", north: "n",
+  s: "south", south: "s",
+  e: "east", east: "e",
+  w: "west", west: "w",
+  ne: "northeast", northeast: "ne",
+  nw: "northwest", northwest: "nw",
+  se: "southeast", southeast: "se",
+  sw: "southwest", southwest: "sw",
+};
+
+const DIRECTION_CANONICAL: Record<string, string> = {
+  n: "n", north: "n", s: "s", south: "s", e: "e", east: "e", w: "w", west: "w",
+  ne: "ne", northeast: "ne", nw: "nw", northwest: "nw", se: "se", southeast: "se", sw: "sw", southwest: "sw",
+};
+
+const STREET_CANONICAL: Record<string, string> = {
+  rd: "rd", road: "rd", st: "st", street: "st", ave: "ave", avenue: "ave",
+  blvd: "blvd", boulevard: "blvd", dr: "dr", drive: "dr", ln: "ln", lane: "ln",
+  ct: "ct", court: "ct", cir: "cir", circle: "cir", hwy: "hwy", highway: "hwy",
+  pkwy: "pkwy", parkway: "pkwy", rte: "rte", route: "rte",
 };
 
 const geocodeCache = new Map<string, { value: GeocodeResult; expiresAt: number }>();
@@ -93,13 +117,41 @@ function highwayVariants(street: string, state: string | null) {
 
 function streetVariants(street: string, state: string | null = null) {
   const base = collapse(street);
-  const tokens = base.split(/\s+/);
-  const last = tokens[tokens.length - 1]?.toLowerCase().replace(/\./g, "");
   const variants = new Set<string>([base, ...highwayVariants(base, state)]);
-  if (last && STREET_EXPAND[last]) {
-    variants.add([...tokens.slice(0, -1), STREET_EXPAND[last]].join(" "));
+  for (const current of [...variants]) {
+    const tokens = current.split(/\s+/);
+    const last = tokens[tokens.length - 1]?.toLowerCase().replace(/\./g, "");
+    if (last && STREET_EXPAND[last]) {
+      variants.add([...tokens.slice(0, -1), STREET_EXPAND[last]].join(" "));
+    }
+  }
+  for (const current of [...variants]) {
+    const tokens = current.split(/\s+/);
+    tokens.forEach((token, index) => {
+      const normalized = token.toLowerCase().replace(/\./g, "");
+      const replacement = DIRECTION_EXPAND[normalized];
+      if (replacement) variants.add(tokens.map((item, itemIndex) => itemIndex === index ? replacement : item).join(" "));
+    });
   }
   return [...variants];
+}
+
+export function normalizeStreetForComparison(value: string) {
+  return normalizeToken(value)
+    .split(" ")
+    .map((token) => {
+      return DIRECTION_CANONICAL[token] ?? STREET_CANONICAL[token] ?? token;
+    })
+    .join(" ");
+}
+
+function resolvesRequestedStreet(candidate: Candidate, parsed: ParsedAddress) {
+  if (!parsed.street) return true;
+  const formatted = normalizeStreetForComparison(candidate.formattedAddress);
+  const street = normalizeStreetForComparison(parsed.street);
+  if (!formatted.includes(street)) return false;
+  if (!parsed.housenumber) return true;
+  return formatted.split(" ").includes(normalizeToken(parsed.housenumber));
 }
 
 export function parseUsAddress(input: string): ParsedAddress {
@@ -215,7 +267,6 @@ function scoreCandidate(candidate: Omit<Candidate, "score">, parsed: ParsedAddre
   if (parsed.city && formatted.includes(normalizeToken(parsed.city))) score += 18;
   if (candidate.confidence === "Verified") score += 10;
   if (candidate.provider === "census") score += 6;
-  if (candidate.provider === "rapidapi") score += 5;
   return score;
 }
 
@@ -225,7 +276,7 @@ async function geocodeWithCensus(query: string): Promise<GeocodeResult | null> {
   url.searchParams.set("benchmark", "Public_AR_Current");
   url.searchParams.set("format", "json");
 
-  const response = await fetch(url, { cache: "no-store" });
+  const response = await fetch(url, { cache: "no-store", signal: createTimeoutSignal(4_500) });
   if (!response.ok) return null;
   const payload = (await response.json()) as {
     result?: {
@@ -282,6 +333,7 @@ async function geocodeWithPhoton(query: string, parsed: ParsedAddress): Promise<
   const response = await fetch(url, {
     headers: { Accept: "application/json", "User-Agent": userAgent() },
     cache: "no-store",
+    signal: createTimeoutSignal(4_500),
   });
   if (!response.ok) return [];
 
@@ -351,6 +403,7 @@ async function geocodeWithNominatim(query: string, parsed: ParsedAddress): Promi
   const response = await fetch(url, {
     headers: { "User-Agent": userAgent(), Accept: "application/json" },
     cache: "no-store",
+    signal: createTimeoutSignal(5_000),
   });
   if (!response.ok) return null;
   const results = (await response.json()) as Array<{ lat: string; lon: string; display_name: string }>;
@@ -361,63 +414,6 @@ async function geocodeWithNominatim(query: string, parsed: ParsedAddress): Promi
     confidence: "Estimated",
     provider: "nominatim",
   };
-}
-
-async function geocodeWithRapidApi(query: string, parsed: ParsedAddress): Promise<Candidate[]> {
-  if (process.env.ENABLE_RAPIDAPI_PLACES !== "true") return [];
-  const apiKey = process.env.RAPIDAPI_KEY?.trim();
-  if (!apiKey) return [];
-  const host = process.env.RAPIDAPI_HOST?.trim() || "maps-data.p.rapidapi.com";
-  const path = host.includes("maps-data") ? "/searchmaps.php" : "/search";
-
-  const url = new URL(`https://${host}${path}`);
-  url.searchParams.set("query", query);
-  url.searchParams.set("limit", "5");
-  if (host.includes("maps-data")) {
-    url.searchParams.set("lang", "en");
-    url.searchParams.set("country", "us");
-  } else {
-    url.searchParams.set("language", "en");
-    url.searchParams.set("region", "us");
-  }
-
-  const response = await fetch(url, {
-    headers: {
-      "x-rapidapi-key": apiKey,
-      "x-rapidapi-host": host,
-      Accept: "application/json",
-    },
-    cache: "no-store",
-  });
-  if (!response.ok) return [];
-
-  const payload = (await response.json()) as {
-    data?: Array<{
-      name?: string;
-      full_address?: string;
-      address?: string;
-      latitude?: number;
-      longitude?: number;
-      type?: string;
-      subtypes?: string[];
-    }>;
-  };
-
-  const out: Candidate[] = [];
-  for (const place of payload.data ?? []) {
-    if (place.latitude == null || place.longitude == null) continue;
-    const formatted = place.full_address || place.address || place.name || query;
-    const result: GeocodeResult = {
-      formattedAddress: formatted,
-      coordinates: { lat: place.latitude, lng: place.longitude },
-      confidence: "Estimated",
-      provider: "rapidapi",
-    };
-    // Prefer places that look like the address itself over random businesses.
-    const nameBonus = place.name && normalizeToken(place.name).includes("state route") ? 8 : 0;
-    out.push({ ...result, score: scoreCandidate(result, parsed) + nameBonus });
-  }
-  return out;
 }
 
 export async function geocodeAddress(inputAddress: string): Promise<GeocodeResult> {
@@ -470,20 +466,9 @@ export async function geocodeAddress(inputAddress: string): Promise<GeocodeResul
     }
   }
 
-  // RapidAPI geocoding is opt-in only (and usually quota-exhausted).
-  if (process.env.ENABLE_RAPIDAPI_PLACES === "true" && !candidates.some((item) => item.score >= 40)) {
-    for (const query of [parsed.raw, ...queries.slice(0, 1)]) {
-      try {
-        candidates.push(...(await geocodeWithRapidApi(query, parsed)));
-      } catch {
-        // Optional paid provider / monthly quota.
-      }
-      if (candidates.some((item) => item.score >= 40)) break;
-    }
-  }
-
-  candidates.sort((a, b) => b.score - a.score);
-  const best = candidates[0];
+  const addressCandidates = parsed.street ? candidates.filter((candidate) => resolvesRequestedStreet(candidate, parsed)) : candidates;
+  addressCandidates.sort((a, b) => b.score - a.score);
+  const best = addressCandidates[0];
   if (!best || best.score < 25) {
     throw new Error("That address could not be located. Try a full street address with ZIP code.");
   }
@@ -494,6 +479,6 @@ export async function geocodeAddress(inputAddress: string): Promise<GeocodeResul
     confidence: best.confidence,
     provider: best.provider,
   };
-  geocodeCache.set(key, { value, expiresAt: Date.now() + 24 * 60 * 60 * 1_000 });
+  geocodeCache.set(key, { value, expiresAt: Date.now() + 5 * 60 * 1_000 });
   return value;
 }

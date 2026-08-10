@@ -12,28 +12,39 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "coverage:benchmark": "tsx scripts/coverage-benchmark.ts",
+    "overture:prepare": "node scripts/prepare-overture.mjs",
     "fcc:import": "node scripts/import-fcc-availability.mjs",
-    "places:probe": "node scripts/probe-osm-coverage.mjs",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit"
   },
+  "engines": {
+    "node": ">=22 <25"
+  },
   "dependencies": {
+    "@duckdb/node-api": "^1.5.5-r.3",
     "border-beam": "^1.3.0",
     "h3-js": "^4.5.0",
     "lucide-react": "^1.28.0",
     "next": "^16.3.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "thinking-orbs": "^0.2.0"
+    "thinking-orbs": "^0.2.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.3.3",
     "@types/node": "^24.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "@vitest/coverage-v8": "^4.1.10",
     "eslint": "^9.0.0",
     "eslint-config-next": "^16.3.0",
     "tailwindcss": "^4.3.3",
-    "typescript": "^5.9.0"
+    "tsx": "^4.23.11",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.10"
   }
 }

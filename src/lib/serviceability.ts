@@ -7,80 +7,95 @@ import type {
 } from "@/lib/types";
 
 const DISCLAIMER =
-  "This is not Spectrum’s serviceability tool. Colors reflect public FCC filings and any note you set yourself — not orderability or an active-customer claim. Always confirm in the official tool before quoting.";
+  "Public FCC filings are market context only. They are not an internal provider system, a quote, proof of a subscription, business availability, or an orderability guarantee.";
 
-/** Known Charter/Spectrum brand and holding-company substrings in FCC filings. */
-const CHARTER_SPECTRUM_ALIASES = [
+const EXACT_CHARTER_BRAND_NAMES = new Set([
   "spectrum",
   "charter communications",
+  "charter communications inc",
   "charter spectrum",
   "charter fiberlink",
   "time warner cable",
-  "twc",
-  "bright house",
-  "brighthouse",
-];
+  "bright house networks",
+]);
 
 function normalizeProvider(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
-export function isCharterSpectrumProvider(provider: string) {
-  const normalized = normalizeProvider(provider);
-  if (!normalized) return false;
-  return CHARTER_SPECTRUM_ALIASES.some(
-    (alias) => normalized === alias || normalized.includes(alias) || alias.includes(normalized),
+function configuredProviderIds() {
+  return new Set(
+    (process.env.CHARTER_FCC_PROVIDER_IDS || "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter((value) => /^\d+$/.test(value)),
   );
 }
 
+/** Exact brand-name compatibility only; never loose substring matching. */
+export function isCharterSpectrumProvider(provider: string) {
+  return EXACT_CHARTER_BRAND_NAMES.has(normalizeProvider(provider));
+}
+
+export function isCharterSpectrumObservation(observation: BroadbandObservation) {
+  const ids = configuredProviderIds();
+  return ids.size > 0 && ids.has(observation.providerId);
+}
+
 export function findCharterSpectrumObservations(observations: BroadbandObservation[]) {
-  return observations.filter((item) => isCharterSpectrumProvider(item.provider));
+  return observations.filter(isCharterSpectrumObservation);
 }
 
 function copyForTier(
   tier: ServiceabilityTier,
   providerLabel: string | null,
   asOfDate: string | null,
+  matchQuality: FccLookupResponse["matchQuality"],
 ): Pick<ServiceabilitySignal, "shortLabel" | "detail"> {
   const asOf = asOfDate
     ? new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" }).format(new Date(asOfDate))
     : null;
-  const brand = providerLabel || "Charter/Spectrum";
+  const brand = providerLabel || "The configured provider";
+
+  if (matchQuality === "user_supplied_location_id") {
+    return {
+      shortLabel: "Supplied FCC location ID",
+      detail: "Manually entered. Filing rows were found for that ID, but the ID was not verified against the searched address.",
+    };
+  }
 
   if (tier === "reported_exact") {
     return {
-      shortLabel: "Reported at this address",
-      detail: asOf
-        ? `${brand} reported business availability at this exact FCC location as of ${asOf}. Verify before quoting.`
-        : `${brand} reported business availability at this exact FCC location. Verify before quoting.`,
+      shortLabel: "Exact FCC location evidence",
+      detail: `${brand} filed business availability for this FCC Location ID${asOf ? ` as of ${asOf}` : ""}. This still does not prove orderability.`,
     };
   }
-
   if (tier === "reported_area") {
     return {
-      shortLabel: "Reported nearby",
-      detail: `${brand} reported business availability in this area, but not matched to this exact address. A site check may be needed.`,
+      shortLabel: "Nearby market context",
+      detail: "Nearby market context—not availability at this address. A filing exists somewhere in the loaded H3 area.",
     };
   }
-
+  if (tier === "data_unavailable") {
+    return { shortLabel: "Data unavailable", detail: "Current FCC Broadband Data Collection evidence is unavailable." };
+  }
   return {
-    shortLabel: "Not reported",
-    detail:
-      "No Charter/Spectrum record in FCC data for this area. FCC data lags by months; this is not a confirmation that service is unavailable.",
+    shortLabel: "No report in loaded data",
+    detail: "No matching filing was found in the loaded current BDC data. This is not proof that service is unavailable.",
   };
 }
 
-export function classifyServiceability(fcc: Pick<FccLookupResponse, "observations" | "asOfDate" | "matchQuality">): ServiceabilitySignal {
-  const charterRows = findCharterSpectrumObservations(fcc.observations);
-  const providerLabel = charterRows[0]?.provider ?? null;
+export function classifyServiceability(
+  fcc: Pick<FccLookupResponse, "status" | "observations" | "asOfDate" | "matchQuality">,
+): ServiceabilitySignal {
+  const providerRows = findCharterSpectrumObservations(fcc.observations);
+  const providerLabel = providerRows[0]?.provider ?? null;
   const exactMatch = fcc.matchQuality === "exact" || fcc.matchQuality === "user_supplied_location_id";
-
   let tier: ServiceabilityTier = "not_reported";
-  if (charterRows.length > 0) {
-    tier = exactMatch ? "reported_exact" : "reported_area";
-  }
+  if (["not_configured", "unavailable", "error"].includes(fcc.status)) tier = "data_unavailable";
+  else if (providerRows.length) tier = exactMatch ? "reported_exact" : "reported_area";
 
-  const copy = copyForTier(tier, providerLabel, fcc.asOfDate);
+  const copy = copyForTier(tier, providerLabel, fcc.asOfDate, fcc.matchQuality);
   return {
     tier,
     providerLabel,
@@ -101,60 +116,13 @@ export type DisplayedServiceability = {
   toneClass: string;
 };
 
-export function displayServiceability(
-  signal: ServiceabilitySignal,
-  disposition: RepDisposition | null,
-): DisplayedServiceability {
+export function displayServiceability(signal: ServiceabilitySignal, disposition: RepDisposition | null): DisplayedServiceability {
   if (disposition === "customer") {
-    return {
-      kind: "disposition",
-      disposition,
-      tier: signal.tier,
-      shortLabel: "Active",
-      detail: "Your note — not from FCC data.",
-      toneClass: "text-[#17653f]",
-    };
+    return { kind: "disposition", disposition, tier: signal.tier, shortLabel: "User-marked customer", detail: "Local in-memory note, not FCC evidence.", toneClass: "text-[#17653f]" };
   }
-
   if (disposition === "do_not_contact") {
-    return {
-      kind: "disposition",
-      disposition,
-      tier: signal.tier,
-      shortLabel: "Do not touch",
-      detail: "Your note — not from FCC data.",
-      toneClass: "text-[#a63a31]",
-    };
+    return { kind: "disposition", disposition, tier: signal.tier, shortLabel: "User-marked do not contact", detail: "Local in-memory note, not FCC evidence.", toneClass: "text-[#a63a31]" };
   }
-
-  if (signal.tier === "reported_exact") {
-    return {
-      kind: "tier",
-      disposition: null,
-      tier: signal.tier,
-      shortLabel: signal.shortLabel,
-      detail: signal.detail,
-      toneClass: "text-[#17653f]",
-    };
-  }
-
-  if (signal.tier === "reported_area") {
-    return {
-      kind: "tier",
-      disposition: null,
-      tier: signal.tier,
-      shortLabel: signal.shortLabel,
-      detail: signal.detail,
-      toneClass: "text-[#8a6613]",
-    };
-  }
-
-  return {
-    kind: "tier",
-    disposition: null,
-    tier: signal.tier,
-    shortLabel: signal.shortLabel,
-    detail: signal.detail,
-    toneClass: "text-[#6e6e68]",
-  };
+  const toneClass = signal.tier === "reported_exact" ? "text-[#17653f]" : signal.tier === "reported_area" ? "text-[#8a6613]" : "text-[#6e6e68]";
+  return { kind: "tier", disposition: null, tier: signal.tier, shortLabel: signal.shortLabel, detail: signal.detail, toneClass };
 }
