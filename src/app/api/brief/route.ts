@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { generateResearchBrief, researchBriefConfigured } from "@/lib/research-brief";
-import type { BroadbandObservation, Prospect } from "@/lib/types";
+import type { BroadbandObservation, CompanyIntelligence, Prospect } from "@/lib/types";
 
 export async function POST(request: Request) {
   if (!researchBriefConfigured()) {
@@ -12,12 +12,18 @@ export async function POST(request: Request) {
   }
 
   try {
-    const body = (await request.json()) as { prospect?: Prospect; broadband?: BroadbandObservation[] };
+    const body = (await request.json()) as {
+      prospect?: Prospect;
+      broadband?: BroadbandObservation[];
+      intelligence?: CompanyIntelligence | null;
+    };
     if (!body.prospect) {
       return NextResponse.json({ error: "A prospect payload is required." }, { status: 400 });
     }
 
-    return NextResponse.json({ brief: await generateResearchBrief(body.prospect, body.broadband ?? []) });
+    return NextResponse.json({
+      brief: await generateResearchBrief(body.prospect, body.broadband ?? [], body.intelligence),
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Profile generation failed.";
     return NextResponse.json({ error: message }, { status: 502 });

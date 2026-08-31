@@ -1,5 +1,5 @@
 import { categoryStakes, measurableOpportunity } from "@/lib/brief-fallback";
-import type { AiBriefResult, BroadbandObservation, Prospect } from "@/lib/types";
+import type { AiBriefResult, BroadbandObservation, CompanyIntelligence, Prospect } from "@/lib/types";
 
 type ChatResponse = {
   choices?: Array<{ message?: { content?: string } }>;
@@ -199,6 +199,7 @@ async function requestModelContent(params: {
 export async function generateResearchBrief(
   prospect: Prospect,
   broadband: BroadbandObservation[],
+  intelligence?: CompanyIntelligence | null,
 ): Promise<AiBriefResult> {
   const apiKey = process.env.RESEARCH_API_KEY?.trim();
   const model = process.env.RESEARCH_MODEL?.trim();
@@ -228,6 +229,26 @@ export async function generateResearchBrief(
       isIllustrative: prospect.source.toLowerCase().includes("illustrative"),
     },
     deterministicScore: prospect.score,
+    publicWebResearch: intelligence
+      ? {
+          summary: intelligence.summary,
+          facts: intelligence.facts.map((fact) => ({
+            kind: fact.kind,
+            label: fact.label,
+            value: fact.value,
+            sourceUrl: fact.sourceUrl,
+            confidence: fact.confidence,
+          })),
+          indexedResults: intelligence.searchResults.map((result) => ({
+            title: result.title,
+            url: result.url,
+            snippet: result.snippet,
+            provider: result.provider,
+          })),
+          pagesScanned: intelligence.pagesScanned,
+          warnings: intelligence.warnings,
+        }
+      : null,
     broadbandAvailabilityObservations: broadband.map((item) => ({
       provider: item.provider,
       technology: item.technology,

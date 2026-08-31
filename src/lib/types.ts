@@ -90,6 +90,7 @@ export type ResearchTarget = {
 };
 
 export type ResearchResponse = {
+  schemaVersion: 3;
   target: ResearchTarget;
   radiusMiles: number;
   prospects: Prospect[];
@@ -97,6 +98,79 @@ export type ResearchResponse = {
   sources: SourceRecord[];
   retrievedAt: string;
   demoMode: boolean;
+  warnings: string[];
+};
+
+export type PublicFactKind =
+  | "address"
+  | "phone"
+  | "email"
+  | "website"
+  | "rating"
+  | "hours"
+  | "company_id"
+  | "legal_name"
+  | "founded"
+  | "team_size"
+  | "description"
+  | "social";
+
+export type PublicFact = {
+  id: string;
+  kind: PublicFactKind;
+  label: string;
+  value: string;
+  sourceUrl: string;
+  sourceLabel: string;
+  retrievedAt: string;
+  confidence: Confidence;
+  corroboratingSources?: Array<{ label: string; url: string }>;
+};
+
+export type SearchSourceKind =
+  | "official_site"
+  | "government_registry"
+  | "professional_registry"
+  | "news"
+  | "directory"
+  | "social"
+  | "other";
+
+export type WebSearchResult = {
+  id: string;
+  title: string;
+  url: string;
+  snippet: string;
+  provider: string;
+  query: string;
+  matchedQueries: string[];
+  rank: number;
+  authorityScore: number;
+  sourceKind: SearchSourceKind;
+};
+
+export type ResearchDiagnostics = {
+  engine: string;
+  providers: string[];
+  queriesPlanned: number;
+  queriesCompleted: number;
+  rawResults: number;
+  uniqueResults: number;
+  pagesSelected: number;
+  pagesRead: number;
+  failures: string[];
+  cacheHit: boolean;
+};
+
+export type CompanyIntelligence = {
+  status: "complete" | "partial" | "unavailable";
+  summary: string | null;
+  facts: PublicFact[];
+  searchResults: WebSearchResult[];
+  sources: SourceRecord[];
+  pagesScanned: number;
+  research: ResearchDiagnostics;
+  retrievedAt: string;
   warnings: string[];
 };
 

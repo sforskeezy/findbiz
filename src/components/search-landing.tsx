@@ -129,7 +129,7 @@ export function SearchLanding() {
           )}
 
           <p className="mx-auto mt-6 max-w-[520px] text-[10px] leading-5 text-[#898983]">
-            Built on open public data only — no scraping, no internal systems.{" "}
+            Built on public and operator-licensed sources — no internal systems.{" "}
             <a
               href={process.env.NEXT_PUBLIC_GITHUB_URL || "https://github.com/sforskeezy/findbiz"}
               target="_blank"

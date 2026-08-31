@@ -342,21 +342,21 @@ async function searchNearby(center: Coordinates, radiusMiles: number, inputAddre
   return [...deduped.values()];
 }
 
-/** Deprecated third-party path. Off unless ENABLE_RAPIDAPI_PLACES is explicitly "true". */
+/** Optional licensed third-party path. Off unless explicitly enabled. */
 export function hasRapidApiKey() {
   return Boolean(process.env.RAPIDAPI_KEY?.trim()) && process.env.ENABLE_RAPIDAPI_PLACES === "true";
 }
 
 /**
- * Deprecated. Not used by /api/research. Only callable when ENABLE_RAPIDAPI_PLACES=true.
- * Quota on maps-data.p.rapidapi.com is typically exhausted — prefer PAI Places.
+ * Optional source used by /api/research when ENABLE_RAPIDAPI_PLACES=true.
+ * Keep request fan-out controlled because Maps Data plans commonly have tight quotas.
  */
 export async function researchWithRapidApi(
   inputAddress: string,
   radiusMiles: number,
 ): Promise<ResearchResponse> {
   if (process.env.ENABLE_RAPIDAPI_PLACES !== "true") {
-    throw new Error("RapidAPI Maps Data is disabled. PAI Places is the supported discovery path.");
+    throw new Error("RapidAPI Maps Data is disabled. Set ENABLE_RAPIDAPI_PLACES=true to use it.");
   }
   // Clear stale cooldown from previous runaway fan-out so this request can try.
   if (rapidApiCooldownUntil && Date.now() < rapidApiCooldownUntil) {
@@ -385,6 +385,7 @@ export async function researchWithRapidApi(
   }
 
   return {
+    schemaVersion: 3,
     target: {
       inputAddress,
       formattedAddress: location.formattedAddress,

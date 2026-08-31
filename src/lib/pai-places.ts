@@ -160,6 +160,7 @@ export async function researchWithPaiPlaces(
   );
 
   return {
+    schemaVersion: 3,
     target: {
       inputAddress,
       formattedAddress: target.formattedAddress,

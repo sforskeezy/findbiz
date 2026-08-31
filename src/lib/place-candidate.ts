@@ -77,7 +77,9 @@ export function normalizeCategory(value: string | null | undefined): string {
   const wanted = value.trim().toLowerCase();
   const exact = PLACE_CATEGORIES.find((category) => category.toLowerCase() === wanted);
   if (exact) return exact;
-  if (/(dent|doctor|medic|clinic|pharm|vet|health)/.test(wanted)) return "Medical & dental";
+  if (/(dentist|dental|doctor|medical|clinic|pharmacy|veterinary|health care|healthcare)/.test(wanted)) {
+    return "Medical & dental";
+  }
   if (/(law|attorney|account|tax|cpa)/.test(wanted)) return "Legal & accounting";
   if (/(logistic|warehouse|freight|truck|moving|storage)/.test(wanted)) return "Logistics & warehouse";
   if (/(realty|real estate|property|apartment)/.test(wanted)) return "Property management";

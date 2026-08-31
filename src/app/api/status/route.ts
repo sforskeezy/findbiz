@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { fccRuntimeConfigured } from "@/lib/fcc";
+import { googleMapsScraperEnabled } from "@/lib/google-maps-scraper";
 import { hasGooglePlacesKey } from "@/lib/google-places";
 import { PAI_PLACES_LABEL } from "@/lib/pai-places";
 import { placesCacheStatus } from "@/lib/places-cache";
@@ -22,12 +23,26 @@ export async function GET() {
       geocoders: ["US Census", "Photon", "Nominatim"],
       localCache: cache,
     },
-    // /api/research always uses PAI Places. Deprecated providers are never primary.
-    businessDataMode: "pai_places",
-    deprecatedProviders: {
-      googlePlaces: googleOptIn ? "opt_in_available_unused_by_research" : "disabled",
-      rapidApiMapsData: rapidOptIn ? "opt_in_available_unused_by_research" : "disabled",
-      note: "Research and /api/places/* always use PAI Places. Google/RapidAPI modules remain in the tree but are not called by default.",
+    businessDataMode: "multi_source",
+    discoveryProviders: {
+      googleMapsScraper: googleMapsScraperEnabled() ? "active" : "disabled",
+      googlePlaces: googleOptIn ? "active" : "not_configured",
+      rapidApiMapsData: rapidOptIn ? "active" : "not_configured",
+      paiPlaces: "active",
+      note: "Research prefers the first-party Google Maps scraper, merges any optional licensed feeds, and keeps PAI Places as the not-on-Google backstop.",
+    },
+    googleMapsScraperApi: "/api/maps/search",
+    publicWebResearch: {
+      officialWebsite: "active",
+      googleProgrammableSearch:
+        (process.env.GOOGLE_SEARCH_API_KEY || process.env.GOOGLE_MAPS_API_KEY) &&
+        process.env.GOOGLE_SEARCH_ENGINE_ID
+          ? "active"
+          : "not_configured",
+      allowedSearchDomains: (process.env.RESEARCH_SEARCH_DOMAINS || "")
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean),
     },
     databaseConfigured: Boolean(process.env.DATABASE_URL),
     fccMode: fccRuntimeConfigured()

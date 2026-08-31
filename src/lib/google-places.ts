@@ -143,7 +143,7 @@ function normalizeOperatingStatus(place: GooglePlace): Prospect["operatingStatus
   return "Unknown";
 }
 
-/** Deprecated third-party path. Off unless ENABLE_GOOGLE_PLACES is explicitly "true". */
+/** Official Google Places API path. Off unless explicitly enabled by the operator. */
 export function hasGooglePlacesKey() {
   return Boolean(process.env.GOOGLE_MAPS_API_KEY?.trim()) && process.env.ENABLE_GOOGLE_PLACES === "true";
 }
@@ -240,6 +240,23 @@ async function textSearchOnce(
   return payload.places ?? [];
 }
 
+async function settlePool<T>(jobs: Array<() => Promise<T>>, concurrency: number) {
+  const results: Array<PromiseSettledResult<T>> = new Array(jobs.length);
+  let nextIndex = 0;
+  async function worker() {
+    while (nextIndex < jobs.length) {
+      const index = nextIndex++;
+      try {
+        results[index] = { status: "fulfilled", value: await jobs[index]() };
+      } catch (reason) {
+        results[index] = { status: "rejected", reason };
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, jobs.length) }, () => worker()));
+  return results;
+}
+
 export async function searchNearbyGooglePlaces(
   center: Coordinates,
   radiusMiles: number,
@@ -249,14 +266,18 @@ export async function searchNearbyGooglePlaces(
   const byId = new Map<string, GooglePlace>();
   let firstError: Error | null = null;
 
-  const nearbyJobs = NEARBY_TYPE_BATCHES.map((types) => nearbyOnce(center, radiusMiles, apiKey, types));
   const locality = options.localityHint?.trim();
   const textQueries = locality
     ? TEXT_QUERIES.map((q) => `${q} near ${locality}`)
     : TEXT_QUERIES.map((q) => `${q} nearby`);
-  const textJobs = textQueries.map((query) => textSearchOnce(query, center, radiusMiles, apiKey));
+  const jobs = [
+    ...NEARBY_TYPE_BATCHES.map((types) => () => nearbyOnce(center, radiusMiles, apiKey, types)),
+    ...textQueries.map((query) => () => textSearchOnce(query, center, radiusMiles, apiKey)),
+  ];
 
-  const batches = await Promise.allSettled([...nearbyJobs, ...textJobs]);
+  // A bounded pool preserves the broad query strategy without bursting every
+  // paid request at once or tripping a conservative server-side QPS limit.
+  const batches = await settlePool(jobs, 4);
   for (const batch of batches) {
     if (batch.status === "fulfilled") {
       for (const place of batch.value) {
@@ -310,7 +331,7 @@ function toProspect(place: GooglePlace, target: Coordinates, retrievedAt: string
     businessSize: null,
     operatingStatus: normalizeOperatingStatus(place),
     publicNotes: null,
-    source: "Google Places (deprecated opt-in)",
+    source: "Google Places API (New)",
     sourceDate: retrievedAt,
     retrievedAt,
     confidence: "Verified",
@@ -343,8 +364,8 @@ function toProspect(place: GooglePlace, target: Coordinates, retrievedAt: string
 }
 
 /**
- * Deprecated. Not used by /api/research. Only callable when ENABLE_GOOGLE_PLACES=true
- * and a GOOGLE_MAPS_API_KEY is set. Do not attribute these results as PAI Places.
+ * Official Google Places API discovery. The operator is responsible for enabling
+ * a billing account and using returned content under their Google Maps license.
  */
 export async function researchWithGoogle(
   inputAddress: string,
@@ -352,7 +373,7 @@ export async function researchWithGoogle(
   apiKey = googlePlacesApiKey(),
 ): Promise<ResearchResponse> {
   if (process.env.ENABLE_GOOGLE_PLACES !== "true") {
-    throw new Error("Google Places is disabled. PAI Places is the supported discovery path.");
+    throw new Error("Google Places is disabled. Set ENABLE_GOOGLE_PLACES=true to use it.");
   }
   const retrievedAt = new Date().toISOString();
   const target = await geocodeWithGoogle(inputAddress, apiKey);
@@ -368,6 +389,7 @@ export async function researchWithGoogle(
   }
 
   return {
+    schemaVersion: 3,
     target: {
       inputAddress,
       formattedAddress: target.formattedAddress,
@@ -380,7 +402,7 @@ export async function researchWithGoogle(
     sources: [
       {
         id: `google-places-${Date.now()}`,
-        label: "Google Places (deprecated opt-in — not PAI Places)",
+        label: "Google Places API (New)",
         url: "https://developers.google.com/maps/documentation/places/web-service/overview",
         sourceDate: retrievedAt,
         retrievedAt,
@@ -390,8 +412,8 @@ export async function researchWithGoogle(
     retrievedAt,
     demoMode: false,
     warnings: [
-      "Deprecated path: results come from Google Places, not PAI Places / OpenStreetMap.",
-      "Standard Google Maps Platform terms restrict storing, scoring, and exporting Places content — verify your license before using this path.",
+      "Google Maps business details were retrieved through the official Places API (New), not by scraping the consumer Maps website.",
+      "Use, storage, and export of Google Places content must stay within the operator's Google Maps Platform license.",
       "FCC broadband data is not attached until a business is selected.",
     ],
   };

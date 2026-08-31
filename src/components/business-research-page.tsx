@@ -12,14 +12,15 @@ import { classifyServiceability, displayServiceability, isCharterSpectrumProvide
 import type {
   AiBriefResult,
   BroadbandObservation,
+  CompanyIntelligence,
   FccLookupResponse,
   Prospect,
   ResearchResponse,
   ServiceabilitySignal,
 } from "@/lib/types";
 
-type ResearchStep = "business" | "fcc" | "profile" | "complete";
-type Tab = "research" | "availability" | "outreach";
+type ResearchStep = "business" | "public_web" | "profile" | "complete";
+type Tab = "research" | "evidence" | "availability" | "outreach";
 
 const MISSING_ADDRESS = new Set([
   "Address not listed in public data",
@@ -91,12 +92,25 @@ function SectionHeading({ label, hint }: { label: string; hint: string }) {
   );
 }
 
-function briefToPlainText(brief: AiBriefResult, prospect: Prospect) {
+function briefToPlainText(
+  brief: AiBriefResult,
+  prospect: Prospect,
+  intelligence: CompanyIntelligence | null,
+) {
   return [
     `${prospect.name} — ${prospect.category}`,
     prospect.address,
     "",
     brief.summary,
+    ...(intelligence?.facts.length
+      ? [
+          "",
+          "Public evidence",
+          ...intelligence.facts.map(
+            (fact) => `- ${fact.label}: ${fact.value} (${fact.sourceUrl})`,
+          ),
+        ]
+      : []),
     "",
     "Reflect on",
     ...brief.reflectOn.map((item, index) => `${index + 1}. ${item}`),
@@ -124,6 +138,7 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
   const backQuery = new URLSearchParams({ address, radius: String(radius) }).toString();
   const [prospect, setProspect] = useState<Prospect | null>(null);
   const [brief, setBrief] = useState<AiBriefResult | null>(null);
+  const [intelligence, setIntelligence] = useState<CompanyIntelligence | null>(null);
   const [broadband, setBroadband] = useState<BroadbandObservation[]>([]);
   const [fcc, setFcc] = useState<FccLookupResponse | null>(null);
   const [signal, setSignal] = useState<ServiceabilitySignal | null>(null);
@@ -155,11 +170,12 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
         if (!selected) throw new Error("This business was not found in the current search.");
         if (cancelled) return;
         setProspect(selected);
-        setStep("fcc");
+        setStep("public_web");
 
         let observations: BroadbandObservation[] = [];
-        try {
-          const fccResponse = await fetch("/api/fcc/availability", {
+        let companyIntelligence: CompanyIntelligence | null = null;
+        const [fccResult, intelligenceResult] = await Promise.allSettled([
+          fetch("/api/fcc/availability", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -167,15 +183,26 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
               coordinates: selected.coordinates,
               businessId: selected.id,
             }),
-          });
-          const fccPayload = (await fccResponse.json()) as FccLookupResponse;
+          }).then(async (response) => ({ response, payload: (await response.json()) as FccLookupResponse })),
+          fetch("/api/company-intelligence", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ prospect: selected }),
+          }).then(async (response) => ({
+            response,
+            payload: (await response.json()) as { intelligence?: CompanyIntelligence; error?: string },
+          })),
+        ]);
+
+        if (fccResult.status === "fulfilled") {
+          const { response: fccResponse, payload: fccPayload } = fccResult.value;
           const nextSignal = fccPayload.serviceability ?? classifyServiceability(fccPayload);
           if (!cancelled) {
             setFcc(fccPayload);
             setSignal(nextSignal);
           }
           if (fccResponse.ok && fccPayload.status === "available") observations = fccPayload.observations;
-        } catch {
+        } else {
           if (!cancelled) {
             const fallback: FccLookupResponse = {
               status: "error",
@@ -190,7 +217,40 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
             setSignal(classifyServiceability(fallback));
           }
         }
+
+        if (
+          intelligenceResult.status === "fulfilled" &&
+          intelligenceResult.value.response.ok &&
+          intelligenceResult.value.payload.intelligence
+        ) {
+          companyIntelligence = intelligenceResult.value.payload.intelligence;
+          if (!cancelled) setIntelligence(companyIntelligence);
+        } else {
+          const message =
+            intelligenceResult.status === "fulfilled"
+              ? intelligenceResult.value.payload.error || "Public web research did not complete."
+              : "Public web research did not complete.";
+          companyIntelligence = {
+            status: "unavailable",
+            summary: null,
+            facts: [],
+            searchResults: [],
+            sources: [],
+            pagesScanned: 0,
+            retrievedAt: new Date().toISOString(),
+            warnings: [message],
+          };
+          if (!cancelled) setIntelligence(companyIntelligence);
+        }
+
         if (cancelled) return;
+        const researchedPhone = companyIntelligence?.facts.find((fact) => fact.kind === "phone")?.value;
+        const researchedProspect: Prospect = {
+          ...selected,
+          phone: selected.phone || researchedPhone || null,
+          publicNotes: selected.publicNotes || companyIntelligence?.summary || null,
+        };
+        setProspect(researchedProspect);
         setBroadband(observations);
         setStep("profile");
 
@@ -198,7 +258,11 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
           const aiResponse = await fetch("/api/brief", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ prospect: selected, broadband: observations }),
+            body: JSON.stringify({
+              prospect: researchedProspect,
+              broadband: observations,
+              intelligence: companyIntelligence,
+            }),
           });
           const aiPayload = (await aiResponse.json()) as { brief?: AiBriefResult; error?: string };
           if (!aiResponse.ok || !aiPayload.brief) {
@@ -207,7 +271,7 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
           if (!cancelled) setBrief(aiPayload.brief);
         } catch {
           // Fall back to the source-bounded template quietly — never surface env/config errors in the UI.
-          if (!cancelled) setBrief(buildFallbackBrief(selected, observations));
+          if (!cancelled) setBrief(buildFallbackBrief(researchedProspect, observations));
         }
         if (!cancelled) setStep("complete");
       } catch (loadError) {
@@ -231,7 +295,7 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
 
   const statusCopy = useMemo(() => {
     if (step === "business") return "Reviewing public business information";
-    if (step === "fcc") return "Checking broadband availability";
+    if (step === "public_web") return "Reading the company website and public sources";
     if (step === "profile") return "Building a profile on this business";
     return "Building a profile on this business";
   }, [step]);
@@ -296,7 +360,12 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
               <div className="flex flex-col justify-between gap-6 sm:flex-row sm:items-end">
                 <div className="min-w-0">
                   <p className="text-[13px] font-medium tracking-[-0.01em] text-[#777771]">{prospect.category}</p>
-                  <h1 className="mt-3 text-[38px] font-semibold leading-[1.05] tracking-[-0.05em] text-[#141412] sm:text-[56px]">
+                  <h1
+                    className={cn(
+                      "mt-3 break-words font-semibold leading-[1.05] tracking-[-0.05em] text-[#141412]",
+                      prospect.name.length > 80 ? "text-[30px] sm:text-[42px]" : "text-[38px] sm:text-[56px]",
+                    )}
+                  >
                     {prospect.name}
                   </h1>
                   <p className="mt-4 max-w-[680px] text-sm leading-6 text-[#70706a]">
@@ -344,10 +413,11 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
               </section>
             ) : brief ? (
               <div className="animate-enter">
-                <nav className="flex gap-7 border-b border-[#dcdcd7] pt-7" aria-label="Business research sections">
+                <nav className="scrollbar-none flex gap-7 overflow-x-auto border-b border-[#dcdcd7] pt-7" aria-label="Business research sections">
                   {(
                     [
                       ["research", "Research"],
+                      ["evidence", "Evidence"],
                       ["availability", "Availability"],
                       ["outreach", "Outreach"],
                     ] as const
@@ -357,7 +427,7 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                       type="button"
                       onClick={() => setTab(id)}
                       className={cn(
-                        "border-b-2 pb-3 text-xs font-semibold transition",
+                        "shrink-0 border-b-2 pb-3 text-xs font-semibold transition",
                         tab === id ? "border-[#171715] text-[#171715]" : "border-transparent text-[#81817b] hover:text-[#343430]",
                       )}
                     >
@@ -373,7 +443,7 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                         <p className="text-[13px] font-medium tracking-[-0.01em] text-[#777771]">Assessment</p>
                         <button
                           type="button"
-                          onClick={() => void copy(briefToPlainText(brief, prospect), "Assessment")}
+                          onClick={() => void copy(briefToPlainText(brief, prospect, intelligence), "Assessment")}
                           className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-[#666660] transition hover:text-[#171715]"
                         >
                           <Copy size={11} /> Copy assessment
@@ -460,6 +530,107 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                         Availability figures come from public FCC provider filings for this address or area — not a
                         subscription, quote, or serviceability guarantee. Confirm in the official tool before quoting.
                       </p>
+                    </div>
+                  </section>
+                )}
+
+                {tab === "evidence" && (
+                  <section className="py-10">
+                    <div className="max-w-[760px]">
+                      <p className="text-[13px] font-medium tracking-[-0.01em] text-[#777771]">Evidence ledger</p>
+                      <h2 className="mt-4 max-w-[17ch] text-[40px] font-semibold leading-[1.05] tracking-[-0.05em] text-[#141412] sm:text-[52px]">
+                        Facts you can trace.
+                      </h2>
+                      <p className="mt-4 max-w-[38rem] text-[15px] leading-7 text-[#6e6e68]">
+                        Public facts stay attached to the page that published them. Estimated search-result matches are
+                        labeled separately, and missing values stay missing.
+                      </p>
+
+                      <dl className="mt-10 grid grid-cols-3 border-y border-[#dcdcd7] py-5">
+                        <div>
+                          <dt className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#9a9a93]">Pages read</dt>
+                          <dd className="mt-2 text-2xl font-semibold tabular-nums text-[#1d1d1a]">{intelligence?.pagesScanned ?? 0}</dd>
+                        </div>
+                        <div className="border-l border-[#deded8] pl-5">
+                          <dt className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#9a9a93]">Public facts</dt>
+                          <dd className="mt-2 text-2xl font-semibold tabular-nums text-[#1d1d1a]">{intelligence?.facts.length ?? 0}</dd>
+                        </div>
+                        <div className="border-l border-[#deded8] pl-5">
+                          <dt className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#9a9a93]">Indexed results</dt>
+                          <dd className="mt-2 text-2xl font-semibold tabular-nums text-[#1d1d1a]">{intelligence?.searchResults.length ?? 0}</dd>
+                        </div>
+                      </dl>
+
+                      {intelligence?.summary && (
+                        <div className="mt-12 max-w-[42rem]">
+                          <SectionHeading label="How the company describes itself" hint="Official website" />
+                          <p className="mt-5 text-[17px] leading-8 tracking-[-0.015em] text-[#33332f]">
+                            {intelligence.summary}
+                          </p>
+                        </div>
+                      )}
+
+                      {intelligence?.facts.length ? (
+                        <div className="mt-12 max-w-[46rem]">
+                          <SectionHeading label="Published facts" hint="Click through to verify" />
+                          <ul className="mt-2 divide-y divide-[#e3e3de]">
+                            {intelligence.facts.map((fact) => (
+                              <li key={fact.id} className="grid gap-2 py-4 sm:grid-cols-[170px_1fr_auto] sm:items-start sm:gap-5">
+                                <p className="text-[11px] font-semibold uppercase tracking-[0.09em] text-[#96968f]">{fact.label}</p>
+                                <p className="break-words text-[14px] font-medium leading-6 text-[#282825]">{fact.value}</p>
+                                <a
+                                  href={fact.sourceUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#6e6e68] transition hover:text-[#171715]"
+                                >
+                                  {fact.confidence} <ExternalLink size={10} />
+                                </a>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : (
+                        <div className="mt-12 max-w-[42rem] rounded-2xl border border-[#deded8] bg-white/60 px-6 py-6">
+                          <p className="text-[15px] font-semibold text-[#292926]">No additional public facts found.</p>
+                          <p className="mt-2 text-[13px] leading-6 text-[#777771]">
+                            The report kept the directory record as-is instead of filling gaps with guesses.
+                          </p>
+                        </div>
+                      )}
+
+                      {intelligence?.searchResults.length ? (
+                        <div className="mt-12 max-w-[46rem]">
+                          <SectionHeading label="Indexed web results" hint="Google Programmable Search" />
+                          <ul className="mt-2 divide-y divide-[#e3e3de]">
+                            {intelligence.searchResults.map((result) => (
+                              <li key={result.id} className="py-5">
+                                <a
+                                  href={result.url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="inline-flex items-center gap-1.5 text-[15px] font-semibold tracking-[-0.015em] text-[#242421] hover:underline"
+                                >
+                                  {result.title} <ExternalLink size={11} />
+                                </a>
+                                {result.snippet && <p className="mt-2 text-[13px] leading-6 text-[#73736d]">{result.snippet}</p>}
+                                <p className="mt-2 truncate text-[10px] text-[#a0a099]">{result.url}</p>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : null}
+
+                      {intelligence?.warnings.length ? (
+                        <div className="mt-12 max-w-[42rem] border-l-2 border-[#d1d1ca] pl-5">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#92928b]">Research notes</p>
+                          <ul className="mt-3 space-y-2">
+                            {intelligence.warnings.map((warning) => (
+                              <li key={warning} className="text-[12px] leading-5 text-[#777771]">{warning}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : null}
                     </div>
                   </section>
                 )}

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { generateDemoResearch } from "@/lib/demo-data";
-import { researchWithPaiPlaces } from "@/lib/pai-places";
+import { researchAcrossSources } from "@/lib/discovery";
 
 const allowedRadii = new Set([0.25, 0.5, 1, 2, 5]);
 
@@ -37,10 +37,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    // Primary (and only) discovery path: PAI Places (/api/places/* internals).
-    // Google Places and RapidAPI stay in the tree behind ENABLE_* flags but are
-    // not called here — those providers are deprecated for this product.
-    return NextResponse.json(await researchWithPaiPlaces(address, radiusMiles));
+    return NextResponse.json(await researchAcrossSources(address, radiusMiles));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Research provider failed.";
     const notFound = message.includes("could not be located");

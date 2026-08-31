@@ -262,6 +262,7 @@ function toCandidate(element: OverpassElement): PlaceCandidate | null {
   if (!coordinates || !name || !looksLikeBusiness(tags)) return null;
   if (/^\d+[A-Za-z]?$/.test(name)) return null;
   if (/^(unit|lot|site|cabin|room|bldg|building)\s*#?\s*\d+/i.test(name)) return null;
+  if (/^(section|phase|zone|area|entrance|gate)\s*#?\s*[A-Z0-9-]+$/i.test(name)) return null;
 
   const ageMs = element.timestamp ? Date.now() - new Date(element.timestamp).getTime() : Number.POSITIVE_INFINITY;
   const confidence: Confidence = ageMs > 2 * 365 * 24 * 60 * 60 * 1_000 ? "Potentially stale" : "Verified";

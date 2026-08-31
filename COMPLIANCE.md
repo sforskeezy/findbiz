@@ -54,8 +54,16 @@ PAI / ProspectIQ is an **independent, unofficial, open-source** local research h
 ### Business directory / map data
 
 - Default public discovery may use OpenStreetMap ecosystem services. Follow their usage policies, identify your client, and respect rate limits.
-- Optional Google / RapidAPI / other directory providers are **off or operator-configured**. Enable them only if your license expressly allows storage, scoring, export, and automated drafting for sales research.
+- The built-in Google Maps discovery path reads public Maps search responses directly without the official Places API. It uses conservative concurrency, request spacing, short-lived caching, response-size limits, and stops when Google returns a block or CAPTCHA response. It does not bypass access controls. Google can change the page format or applicable terms at any time; the operator is responsible for confirming that their deployment and use are permitted.
+- Google Places, RapidAPI, and other commercial directory providers are optional, operator-configured enrichment feeds. Enable them only if your license expressly allows the intended display, temporary storage, scoring, export, and sales-research workflow.
 - Do not enable a directory provider whose terms forbid lead generation or persistent storage.
+
+### Public website research
+
+- The app reads only publicly reachable business pages and configured search-result sources. It blocks private/local network targets and limits crawl depth and page size.
+- A phone number, email address, company identifier, founding date, or team size is shown only when a public page or structured record publishes it. The app does not infer hidden contact details, bypass access controls, or claim a missing value exists.
+- Search snippets and pattern-matched identifiers are labeled Estimated and link to the page that must be verified before use.
+- Follow each site's terms, robots policy, privacy rules, and applicable outreach laws. Public visibility does not automatically authorize bulk marketing or automated contact.
 
 ### Generated outreach copy
 

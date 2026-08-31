@@ -213,6 +213,7 @@ export function generateDemoResearch(
 ): ResearchResponse {
   const retrievedAt = new Date().toISOString();
   return {
+    schemaVersion: 3,
     target: {
       inputAddress,
       formattedAddress: inputAddress.startsWith("Sample")

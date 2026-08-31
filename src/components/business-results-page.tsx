@@ -38,6 +38,15 @@ function contactLine(prospect: Prospect) {
   }
 }
 
+function sourceBadge(prospect: Prospect) {
+  const source = prospect.source.toLowerCase();
+  if (source.includes("google") && source.includes("pai places")) return "Google + public map";
+  if (source.includes("google")) return "Google Maps";
+  if (source.includes("manually entered")) return "Verified by operator";
+  if (source.includes("openstreetmap")) return "Public map";
+  return "Public directory";
+}
+
 function MetaDot() {
   return <span aria-hidden="true" className="h-[3px] w-[3px] shrink-0 rounded-full bg-[#cbcbc4]" />;
 }
@@ -90,13 +99,10 @@ export function BusinessResultsPage() {
       try {
         const cached = JSON.parse(window.sessionStorage.getItem("prospectiq.currentResearch") || "null") as ResearchResponse | null;
         const age = cached ? Date.now() - new Date(cached.retrievedAt).getTime() : Number.POSITIVE_INFINITY;
-        const fromPaiPlaces = cached?.sources?.some((source) =>
-          (source.label || "").toLowerCase().includes("pai places"),
-        );
         if (
           cached?.target.inputAddress === address &&
           cached.radiusMiles === radius &&
-          fromPaiPlaces &&
+          cached.schemaVersion === 3 &&
           age < 15 * 60 * 1_000
         ) {
           if (!cancelled) {
@@ -105,7 +111,7 @@ export function BusinessResultsPage() {
           }
           return;
         }
-        // Drop stale third-party / OSM-only session results so PAI Places is always used.
+        // Drop old response shapes so newly enabled discovery sources are not hidden by stale sessions.
         window.sessionStorage.removeItem("prospectiq.currentResearch");
       } catch {
         window.sessionStorage.removeItem("prospectiq.currentResearch");
@@ -339,6 +345,10 @@ export function BusinessResultsPage() {
                               </span>
                               <span className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11.5px] leading-4 text-[#85857f]">
                                 <span className="font-medium text-[#6d6d67]">{prospect.category}</span>
+                                <MetaDot />
+                                <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[#999991]">
+                                  {sourceBadge(prospect)}
+                                </span>
                                 {place && (
                                   <>
                                     <MetaDot />
@@ -394,7 +404,7 @@ export function BusinessResultsPage() {
                   <p className="mt-2 max-w-[340px] text-[13px] leading-6 text-[#7d7d77]">
                     {category === "All"
                       ? research.warnings?.[0] ||
-                        "OpenStreetMap may have no businesses mapped here. Widen the radius or add entries to data/places-cache.json."
+                        "No configured source returned a business here. Widen the radius or add a verified entry to data/places-cache.json."
                       : "Clear the category filter or widen the search radius."}
                   </p>
                 </div>
