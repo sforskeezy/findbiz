@@ -1,4 +1,5 @@
 import { describeScore, scoreProspect } from "@/lib/scoring";
+import { displayPhone } from "@/lib/phone";
 import { buildSalesOpportunity, buildSalesSummary } from "@/lib/sales-copy";
 import type { Confidence, Coordinates, OperatingStatus, Prospect } from "@/lib/types";
 
@@ -128,7 +129,7 @@ export function buildProspect(
     coordinates: candidate.coordinates,
     distanceMiles: distance,
     category,
-    phone: candidate.phone,
+    phone: displayPhone(candidate.phone),
     website: candidate.website,
     directoryUrl: candidate.directoryUrl,
     hours: candidate.hours,

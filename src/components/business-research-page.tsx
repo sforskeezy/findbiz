@@ -1,14 +1,16 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { ArrowRight, Copy, ExternalLink, MapPin } from "lucide-react";
+import { ArrowRight, Check, Copy, ExternalLink, MapPin } from "lucide-react";
 import { ThinkingOrb } from "thinking-orbs";
 
 import { EvidencePanel } from "@/components/evidence-panel";
 import { ProspectHeader } from "@/components/prospect-header";
 import { cn, scoreTone } from "@/components/ui";
 import { buildFallbackBrief } from "@/lib/brief-fallback";
+import { displayPhone, telHref } from "@/lib/phone";
 import { classifyServiceability, displayServiceability, isCharterSpectrumProvider } from "@/lib/serviceability";
 import type {
   AiBriefResult,
@@ -21,7 +23,42 @@ import type {
 } from "@/lib/types";
 
 type ResearchStep = "business" | "public_web" | "profile" | "complete";
-type Tab = "research" | "evidence" | "availability" | "outreach";
+const RESEARCH_TABS = ["research", "evidence", "availability", "outreach"] as const;
+type Tab = (typeof RESEARCH_TABS)[number];
+
+function parseTab(value: string | null): Tab {
+  return RESEARCH_TABS.includes(value as Tab) ? (value as Tab) : "research";
+}
+
+function CopyValueButton({
+  value,
+  label,
+  onCopied,
+}: {
+  value: string;
+  label: string;
+  onCopied: (label: string) => void;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  return (
+    <button
+      type="button"
+      aria-label={copied ? `${label} copied` : `Copy ${label}`}
+      onClick={async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        await navigator.clipboard.writeText(value);
+        setCopied(true);
+        onCopied(label);
+        window.setTimeout(() => setCopied(false), 1600);
+      }}
+      className="inline-flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full text-[#8a8a84] transition hover:bg-[#f1f1ec] hover:text-[#2a2a26]"
+    >
+      {copied ? <Check size={11} strokeWidth={2.4} /> : <Copy size={11} />}
+    </button>
+  );
+}
 
 const MISSING_ADDRESS = new Set([
   "Address not listed in public data",
@@ -163,6 +200,11 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
   const address = params.get("address") ?? "";
   const radius = Number(params.get("radius") ?? 0.5);
   const backQuery = new URLSearchParams({ address, radius: String(radius) }).toString();
+  const tabHref = (id: Tab) => {
+    const next = new URLSearchParams({ address, radius: String(radius) });
+    if (id !== "research") next.set("tab", id);
+    return `/business/${encodeURIComponent(prospectId)}?${next.toString()}`;
+  };
   const [prospect, setProspect] = useState<Prospect | null>(null);
   const [brief, setBrief] = useState<AiBriefResult | null>(null);
   const [intelligence, setIntelligence] = useState<CompanyIntelligence | null>(null);
@@ -170,7 +212,7 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
   const [fcc, setFcc] = useState<FccLookupResponse | null>(null);
   const [signal, setSignal] = useState<ServiceabilitySignal | null>(null);
   const [step, setStep] = useState<ResearchStep>("business");
-  const [tab, setTab] = useState<Tab>("research");
+  const tab = parseTab(params.get("tab"));
   const [error, setError] = useState("");
   const [toast, setToast] = useState("");
 
@@ -365,6 +407,9 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
     return displayServiceability(signal, null);
   }, [signal]);
 
+  const phoneLabel = displayPhone(prospect?.phone);
+  const phoneTel = telHref(prospect?.phone);
+
   const providerChart = useMemo(() => {
     return [...broadband].sort((a, b) => (b.downloadMbps ?? 0) - (a.downloadMbps ?? 0));
   }, [broadband]);
@@ -415,9 +460,37 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                   >
                     {prospect.name}
                   </h1>
-                  <p className="mt-3.5 max-w-[52rem] text-[14px] leading-6 text-pretty text-[#70706a]">
-                    {[prospect.address, prospect.phone].filter(Boolean).join(" · ")}
-                  </p>
+                  <div className="mt-3.5 flex max-w-[52rem] flex-wrap items-center gap-x-1.5 gap-y-1.5 text-[14px] leading-6 text-[#70706a]">
+                    {prospect.address && !MISSING_ADDRESS.has(prospect.address) && (
+                      <span className="inline-flex min-w-0 items-center gap-1">
+                        <span className="min-w-0 text-pretty">{prospect.address}</span>
+                        <CopyValueButton
+                          value={prospect.address}
+                          label="Address"
+                          onCopied={(label) => setToast(`${label} copied.`)}
+                        />
+                      </span>
+                    )}
+                    {phoneLabel && (
+                      <>
+                        {prospect.address && !MISSING_ADDRESS.has(prospect.address) && (
+                          <span aria-hidden="true" className="text-[#c8c8c2]">
+                            ·
+                          </span>
+                        )}
+                        <span className="inline-flex items-center gap-1 tabular-nums">
+                          <a href={phoneTel ?? undefined} className="transition hover:text-[#2a2a26]">
+                            {phoneLabel}
+                          </a>
+                          <CopyValueButton
+                            value={phoneLabel}
+                            label="Phone"
+                            onCopied={(label) => setToast(`${label} copied.`)}
+                          />
+                        </span>
+                      </>
+                    )}
+                  </div>
                   {(prospect.website || prospect.directoryUrl) && (
                     <div className="mt-5 flex flex-wrap gap-2">
                       {prospect.website && (
@@ -485,20 +558,20 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                       ["outreach", "Outreach"],
                     ] as const
                   ).map(([id, label]) => (
-                    <button
+                    <Link
                       key={id}
-                      type="button"
-                      onClick={() => setTab(id)}
+                      href={tabHref(id)}
+                      scroll={false}
                       aria-current={tab === id ? "page" : undefined}
                       className={cn(
-                        "h-9 shrink-0 rounded-full px-5 text-[13px] font-semibold tracking-[-0.01em] transition duration-150",
+                        "inline-flex h-9 shrink-0 items-center rounded-full px-5 text-[13px] font-semibold tracking-[-0.01em] transition duration-150",
                         tab === id
                           ? "bg-[#171715] text-[#f6f6f1] shadow-[0_6px_18px_rgba(20,20,16,0.18)]"
                           : "text-[#75756f] hover:bg-[#f4f4ef] hover:text-[#22221f]",
                       )}
                     >
                       {label}
-                    </button>
+                    </Link>
                   ))}
                 </nav>
 
@@ -613,13 +686,13 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                         <p className="mt-2.5 text-[13px] leading-6 text-pretty text-[#77776f]">
                           {displayedSignal?.detail ?? "FCC provider-reported availability for this address."}
                         </p>
-                        <button
-                          type="button"
-                          onClick={() => setTab("availability")}
+                        <Link
+                          href={tabHref("availability")}
+                          scroll={false}
                           className="mt-4 inline-flex h-9 items-center gap-1.5 rounded-full border border-[#e0e0da] px-4 text-[12px] font-semibold text-[#3f3f3a] transition hover:border-[#c9c9c2] hover:bg-[#faf9f6] hover:text-[#171715]"
                         >
                           See broadband facts <ArrowRight size={12} />
-                        </button>
+                        </Link>
                       </Panel>
 
                       <p className="px-1 text-[11px] leading-5 text-[#9a9a93]">

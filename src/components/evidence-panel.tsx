@@ -3,6 +3,7 @@
 import { ArrowUpRight, SearchX } from "lucide-react";
 
 import { StatusPill, cn } from "@/components/ui";
+import { displayPhone } from "@/lib/phone";
 import type {
   CompanyIntelligence,
   PublicFact,
@@ -164,7 +165,7 @@ function FactRow({ fact }: { fact: PublicFact }) {
       <div className="min-w-0">
         <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#a3a39c]">{fact.label}</p>
         <p className="mt-1.5 break-words text-[15px] font-medium leading-6 tracking-[-0.015em] text-pretty text-[#1c1c19]">
-          {fact.value}
+          {fact.kind === "phone" ? displayPhone(fact.value) ?? fact.value.replace(/^\s*\+1/, "") : fact.value}
         </p>
         <a
           href={fact.sourceUrl}
