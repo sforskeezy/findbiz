@@ -84,6 +84,59 @@ function uniqueWarnings(values: string[]) {
   return [...new Set(values.filter(Boolean))];
 }
 
+/** Grace a straggling provider gets once the lead provider has already answered. */
+const PROVIDER_GRACE_MS = 3_000;
+/** Hang guard. Long enough that a healthy provider is never cut off. */
+const PROVIDER_DEADLINE_MS = 45_000;
+
+type DiscoveryJob = { label: string; priority: number; run: () => Promise<ResearchResponse> };
+
+/**
+ * Waits on every provider, but stops letting a straggler set the pace. The lead
+ * provider owns result quality, so nothing is cut off until it has answered;
+ * after that the rest get a short grace window and then the search moves on.
+ */
+async function settleWithDeadline(jobs: DiscoveryJob[]) {
+  const leadPriority = Math.min(...jobs.map((job) => job.priority));
+  const results: Array<PromiseSettledResult<ResearchResponse> | null> = jobs.map(() => null);
+  let releaseEarly = () => {};
+  const early = new Promise<void>((resolve) => {
+    releaseEarly = resolve;
+  });
+  let grace: ReturnType<typeof setTimeout> | null = null;
+
+  const tracked = jobs.map((job, index) =>
+    job
+      .run()
+      .then(
+        (value) => {
+          results[index] = { status: "fulfilled", value };
+        },
+        (reason: unknown) => {
+          results[index] = { status: "rejected", reason };
+        },
+      )
+      .then(() => {
+        const leadDone = jobs.every((other, i) => other.priority !== leadPriority || results[i] != null);
+        const usable = results.some((item) => item?.status === "fulfilled" && item.value.prospects.length > 0);
+        if (leadDone && usable && !grace) {
+          grace = setTimeout(releaseEarly, PROVIDER_GRACE_MS);
+          grace.unref?.();
+        }
+      }),
+  );
+
+  const deadline = setTimeout(releaseEarly, PROVIDER_DEADLINE_MS);
+  deadline.unref?.();
+  try {
+    await Promise.race([Promise.all(tracked), early]);
+  } finally {
+    clearTimeout(deadline);
+    if (grace) clearTimeout(grace);
+  }
+  return results;
+}
+
 /**
  * The first-party Google Maps scraper leads. Licensed feeds remain optional;
  * PAI Places is the resilient backstop for businesses that have no Maps pin.
@@ -109,12 +162,16 @@ export async function researchAcrossSources(
   }
   jobs.push({ label: "PAI Places", priority: 3, run: () => researchWithPaiPlaces(inputAddress, radiusMiles) });
 
-  const settled = await Promise.allSettled(jobs.map((job) => job.run()));
+  const settled = await settleWithDeadline(jobs);
   const successes: ProviderResult[] = [];
   const failures: string[] = [];
 
   settled.forEach((result, index) => {
     const job = jobs[index];
+    if (result == null) {
+      failures.push(`${job.label} was still running when the search deadline passed.`);
+      return;
+    }
     if (result.status === "fulfilled") {
       successes.push({ label: job.label, priority: job.priority, response: result.value });
       return;

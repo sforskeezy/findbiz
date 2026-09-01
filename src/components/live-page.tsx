@@ -1,0 +1,672 @@
+"use client";
+
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import {
+  ArrowUp,
+  Brain,
+  ChevronRight,
+  Clock3,
+  MapPin,
+  Phone,
+  Plus,
+  Search,
+  SkipForward,
+  Sparkles,
+  SquarePen,
+} from "lucide-react";
+
+import { BorderBeam } from "border-beam";
+import { ModeSwitch } from "@/components/prospect-header";
+import { LiveMarkdown } from "@/components/live/live-markdown";
+import { LiveSidebar, type SessionGroup } from "@/components/live/live-sidebar";
+import { LiveSources } from "@/components/live/live-sources";
+import { LiveThinking, LiveThoughtTrace } from "@/components/live/live-thinking";
+import { useWorkingTitle } from "@/components/live/use-working-title";
+import { cn } from "@/components/ui";
+import type {
+  LiveChatMessage,
+  LiveMemoryFact,
+  LiveProspectCard,
+  LivePublicState,
+  LiveSessionSummary,
+  LiveSource,
+  LiveThinkingStep,
+} from "@/lib/live/types";
+
+const QUICK_ACTIONS: Array<{ label: string; icon: typeof MapPin; prompt?: string; prefill?: string }> = [
+  { label: "Find businesses in an area", icon: MapPin, prefill: "Find businesses in " },
+  { label: "Prioritize my list", icon: Sparkles, prompt: "Who is worth calling first, and why?" },
+  { label: "Brief the current business", icon: Search, prompt: "Brief me on the business we are on" },
+  { label: "Skip to the next one", icon: SkipForward, prompt: "Skip to the next one" },
+  { label: "What do you remember?", icon: Brain, prompt: "What do you remember about my territory?" },
+];
+
+const STARTERS = [
+  "Find businesses in 29607",
+  "Who is worth calling first?",
+  "Skip to the next one",
+  "Draft an opener for this one",
+];
+
+type StreamEvent =
+  | { type: "status"; message: string }
+  | { type: "step"; step: LiveThinkingStep }
+  | { type: "sources"; sources: LiveSource[] }
+  | { type: "complete"; state: LivePublicState }
+  | { type: "error"; error: string };
+
+async function readStream(response: Response, onEvent: (event: StreamEvent) => void) {
+  if (!response.body) throw new Error("Live did not return a stream.");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const chunks = buffer.split("\n\n");
+    buffer = chunks.pop() ?? "";
+    for (const chunk of chunks) {
+      const line = chunk.split("\n").find((item) => item.startsWith("data: "));
+      if (!line) continue;
+      onEvent(JSON.parse(line.slice(6)) as StreamEvent);
+    }
+  }
+}
+
+function groupSessions(sessions: LiveSessionSummary[]): SessionGroup[] {
+  const now = Date.now();
+  const groups: SessionGroup[] = [
+    { label: "Today", items: [] },
+    { label: "Yesterday", items: [] },
+    { label: "Earlier", items: [] },
+  ];
+  for (const session of sessions) {
+    const age = now - new Date(session.updatedAt).getTime();
+    if (age < 20 * 60 * 60 * 1000) groups[0].items.push(session);
+    else if (age < 48 * 60 * 60 * 1000) groups[1].items.push(session);
+    else groups[2].items.push(session);
+  }
+  return groups.filter((group) => group.items.length);
+}
+
+/** Neutral rank dot — strongest fit reads darkest, no status-pill candy. */
+function rankTone(score: number) {
+  if (score >= 75) return "bg-[#171715]";
+  if (score >= 55) return "bg-[#8a8a84]";
+  return "bg-[#cfcfc7]";
+}
+
+function HomeCard({
+  title,
+  icon: Icon,
+  children,
+  className,
+}: {
+  title: string;
+  icon: typeof MapPin;
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <section
+      className={cn(
+        "rounded-[16px] border border-[#eaeae4] bg-white p-3.5 shadow-[0_1px_2px_rgba(20,20,16,0.04)]",
+        className,
+      )}
+    >
+      <div className="flex items-center gap-1.5 pb-2.5">
+        <Icon size={13} strokeWidth={1.9} className="text-[#a4a49c]" />
+        <h2 className="text-[12.5px] font-medium text-[#6f6f69]">{title}</h2>
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function ProspectRow({
+  card,
+  index,
+  current,
+  onOpen,
+}: {
+  card: LiveProspectCard;
+  index: number;
+  current: boolean;
+  onOpen: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="group flex w-full items-center gap-2.5 rounded-[11px] px-2 py-[7px] text-left transition hover:bg-[#f7f7f4]"
+    >
+      <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", rankTone(card.score))} aria-hidden="true" />
+      <span className="min-w-0 flex-1 truncate text-[13px] text-[#26261f]">{card.name}</span>
+      {current && (
+        <span className="shrink-0 rounded-full border border-[#e2e2db] px-2 py-[2px] text-[10.5px] font-medium text-[#5f5f59]">
+          On now
+        </span>
+      )}
+      <span className="hidden shrink-0 items-center gap-1 rounded-full bg-[#f2f2ee] px-2 py-[2px] text-[10.5px] text-[#6f6f69] sm:inline-flex">
+        <MapPin size={9} /> {card.distanceMiles.toFixed(1)} mi
+      </span>
+      <span className="hidden shrink-0 items-center gap-1 rounded-full bg-[#f2f2ee] px-2 py-[2px] text-[10.5px] text-[#6f6f69] md:inline-flex">
+        {card.phone ? (
+          <>
+            <Phone size={9} /> Phone on file
+          </>
+        ) : (
+          <>
+            <Clock3 size={9} /> No phone yet
+          </>
+        )}
+      </span>
+      <span className="w-4 shrink-0 text-right text-[11px] tabular-nums text-[#c2c2ba]">{index + 1}</span>
+    </button>
+  );
+}
+
+export function LivePage() {
+  const [sessions, setSessions] = useState<LiveSessionSummary[]>([]);
+  const [memory, setMemory] = useState<LiveMemoryFact[]>([]);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<LiveChatMessage[]>([]);
+  const [queue, setQueue] = useState<LivePublicState["queue"]>(null);
+  const [draft, setDraft] = useState("");
+  const [status, setStatus] = useState("");
+  const [steps, setSteps] = useState<LiveThinkingStep[]>([]);
+  const [liveSources, setLiveSources] = useState<LiveSource[]>([]);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  // Session titles come from disk, so hold them back until hydration matches.
+  const mounted = useSyncExternalStore(
+    () => () => {},
+    () => true,
+    () => false,
+  );
+  const [collapsed, setCollapsed] = useState(false);
+  const [listFilter, setListFilter] = useState("");
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [focused, setFocused] = useState(false);
+
+  useWorkingTitle(busy, status || steps[steps.length - 1]?.label || "Working");
+  const scroller = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  const atHome = messages.length === 0 && !busy;
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      try {
+        const response = await fetch("/api/live/sessions");
+        const payload = (await response.json()) as { sessions?: LiveSessionSummary[]; memory?: LiveMemoryFact[] };
+        if (cancelled) return;
+        setSessions(payload.sessions ?? []);
+        setMemory(payload.memory ?? []);
+      } catch {
+        // First visit has no Live history.
+      }
+    }
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: "smooth" });
+  }, [messages, status, steps.length, busy]);
+
+  useEffect(() => {
+    const node = inputRef.current;
+    if (!node) return;
+    node.style.height = "0px";
+    node.style.height = `${Math.min(node.scrollHeight, 168)}px`;
+  }, [draft]);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    function onPointerDown(event: MouseEvent) {
+      if (!menuRef.current?.contains(event.target as Node)) setMenuOpen(false);
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setMenuOpen(false);
+    }
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [menuOpen]);
+
+  function applyState(state: LivePublicState) {
+    setSessionId(state.session.id);
+    setMessages(state.session.messages);
+    setQueue(state.queue);
+    setMemory(state.memory);
+    setSessions((current) => {
+      const summary = {
+        id: state.session.id,
+        title: state.session.title,
+        updatedAt: state.session.updatedAt,
+        preview: state.session.preview,
+      };
+      return [summary, ...current.filter((item) => item.id !== state.session.id)].slice(0, 40);
+    });
+  }
+
+  async function openSession(id: string) {
+    const response = await fetch(`/api/live/sessions?sessionId=${encodeURIComponent(id)}`);
+    const payload = (await response.json()) as { state?: LivePublicState };
+    if (payload.state) applyState(payload.state);
+  }
+
+  function newChat() {
+    setSessionId(null);
+    setMessages([]);
+    setQueue(null);
+    setSteps([]);
+    setLiveSources([]);
+    setError("");
+    inputRef.current?.focus();
+  }
+
+  async function send(text = draft) {
+    const message = text.replace(/\s+/g, " ").trim();
+    if (!message || busy) return;
+    setDraft("");
+    setError("");
+    setSteps([]);
+    setLiveSources([]);
+    setBusy(true);
+    setStatus("Reading your message");
+    setMessages((current) => [
+      ...current,
+      { id: `local_${Date.now()}`, role: "user", content: message, createdAt: new Date().toISOString() },
+    ]);
+    try {
+      const response = await fetch("/api/live/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, message }),
+      });
+      if (!response.ok && response.headers.get("content-type")?.includes("application/json")) {
+        const payload = (await response.json()) as { error?: string };
+        throw new Error(payload.error || "Live could not reply.");
+      }
+      let completed: LivePublicState | null = null;
+      await readStream(response, (event) => {
+        if (event.type === "status") setStatus(event.message);
+        if (event.type === "step") setSteps((current) => [...current, event.step]);
+        if (event.type === "sources") setLiveSources(event.sources);
+        if (event.type === "error") throw new Error(event.error);
+        if (event.type === "complete") completed = event.state;
+      });
+      if (!completed) throw new Error("Live ended before a reply came back.");
+      applyState(completed);
+    } catch (sendError) {
+      setError(sendError instanceof Error ? sendError.message : "Live could not reply.");
+    } finally {
+      setBusy(false);
+      setStatus("");
+      setSteps([]);
+      setLiveSources([]);
+      inputRef.current?.focus();
+    }
+  }
+
+  const groups = useMemo(
+    () => (mounted ? groupSessions(sessions.filter((item) => item.preview !== "New chat")) : []),
+    [sessions, mounted],
+  );
+  const current = queue?.current ?? null;
+  const recent = useMemo(() => {
+    const seen = new Set<string>();
+    return (groups[0]?.items ?? [])
+      .filter((item) => {
+        const key = item.title.toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .slice(0, 4);
+  }, [groups]);
+  // The territory already has its own row in the card, so drop the fact that duplicates it.
+  const facts = useMemo(() => memory.filter((item) => item.kind !== "territory").slice(0, 4), [memory]);
+  const filteredCards = useMemo(() => {
+    const cards = queue?.cards ?? [];
+    const needle = listFilter.trim().toLowerCase();
+    if (!needle) return cards;
+    return cards.filter((item) => `${item.name} ${item.category}`.toLowerCase().includes(needle));
+  }, [queue, listFilter]);
+
+  return (
+    <main className="flex h-[100dvh] overflow-hidden bg-[#fbfbf9]">
+      <LiveSidebar
+        collapsed={collapsed}
+        onToggleCollapse={() => setCollapsed((value) => !value)}
+        groups={groups}
+        sessionId={sessionId}
+        onOpenSession={(id) => void openSession(id)}
+        onNewChat={newChat}
+        onHome={newChat}
+        memory={memory}
+        queue={queue}
+        atHome={atHome}
+      />
+
+      <section className="flex min-w-0 flex-1 flex-col">
+        <div className="relative flex h-[72px] shrink-0 items-center px-4 sm:px-6">
+          <span className="text-[13px] font-semibold tracking-[-0.01em] text-[#14140f] lg:hidden">PAI Live</span>
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+            <div className="pointer-events-auto">
+              <ModeSwitch small />
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={newChat}
+            className="ml-auto inline-flex h-8 items-center gap-1.5 rounded-full border border-[#e4e4de] bg-white px-3 text-[12px] font-semibold text-[#171715] transition hover:border-[#d4d4cc]"
+          >
+            <SquarePen size={13} /> New
+          </button>
+        </div>
+
+        <div ref={scroller} className={cn("min-h-0 flex-1 overflow-y-auto px-4 sm:px-8", atHome && "flex flex-col")}>
+          {atHome ? (
+            <div className="mx-auto my-auto w-full max-w-[720px] py-8">
+              <h1 className="text-center text-[30px] font-semibold leading-[1.18] tracking-[-0.035em] sm:text-[38px]">
+                <span className="assessment-highlight text-[#14140f]">Welcome back</span>
+                <br />
+                <span className="text-[#b4b4ac]">What are we working today?</span>
+              </h1>
+
+              <div className="mt-8 grid gap-2.5 sm:grid-cols-2">
+                <HomeCard title="Pick up where you left off" icon={Clock3}>
+                  {recent.length ? (
+                    <ul className="-mx-1.5">
+                      {recent.map((item) => (
+                        <li key={item.id}>
+                          <button
+                            type="button"
+                            onClick={() => void openSession(item.id)}
+                            className="group flex w-full items-center gap-2.5 rounded-[9px] px-1.5 py-[7px] text-left transition hover:bg-[#f7f7f4]"
+                          >
+                            <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[7px] bg-[#f2f2ee] text-[#8a8a84]">
+                              <Sparkles size={11} />
+                            </span>
+                            <span className="min-w-0 flex-1 truncate text-[13px] text-[#26261f]">{item.title}</span>
+                            <ChevronRight size={13} className="shrink-0 text-[#cfcfc7] transition group-hover:text-[#8a8a84]" />
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="text-[13px] leading-6 text-[#a4a49c]">
+                      Nothing yet. Name an area below and Live will build your first list.
+                    </p>
+                  )}
+                </HomeCard>
+
+                <HomeCard title="What Live remembers" icon={Brain}>
+                  {queue?.locationLabel && (
+                    <div className="mb-2.5 flex items-start gap-2.5 rounded-[12px] bg-[#f7f7f4] px-2.5 py-2">
+                      <MapPin size={12} strokeWidth={1.9} className="mt-[3px] shrink-0 text-[#8a8a84]" />
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-[13px] font-semibold tracking-[-0.01em] text-[#14140f]">
+                          {queue.locationLabel}
+                        </p>
+                        <p className="text-[11.5px] leading-5 text-[#a4a49c]">
+                          {queue.total} on the list · {queue.radiusMiles} mi radius
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                  {facts.length ? (
+                    <ul className="space-y-1">
+                      {facts.map((item) => (
+                        <li key={item.id} className="flex gap-2 text-[12.5px] leading-5 text-[#5f5f59]">
+                          <span className="mt-[8px] h-1 w-1 shrink-0 rounded-full bg-[#cfcfc7]" />
+                          <span className="min-w-0 flex-1">{item.text}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : queue?.locationLabel ? null : (
+                    <p className="text-[13px] leading-6 text-[#a4a49c]">
+                      Live keeps your territory, the industries you sell, and who you already called.
+                    </p>
+                  )}
+                </HomeCard>
+
+              </div>
+
+              {queue && queue.cards.length > 0 && (
+                <section className="mt-3 rounded-[18px] border border-[#eaeae4] bg-white p-4 shadow-[0_1px_2px_rgba(20,20,16,0.04)]">
+                  <div className="flex flex-wrap items-center gap-2 pb-3">
+                    <h2 className="flex items-center gap-1.5 text-[13px] font-semibold tracking-[-0.01em] text-[#14140f]">
+                      <MapPin size={13} strokeWidth={1.9} className="text-[#a4a49c]" />
+                      Your list
+                      <span className="text-[12px] font-medium text-[#a4a49c]">{queue.total}</span>
+                    </h2>
+                    <label className="ml-auto flex h-8 min-w-0 flex-1 items-center gap-1.5 rounded-full border border-[#eaeae4] bg-[#fbfbf9] px-3 sm:max-w-[240px]">
+                      <Search size={12} className="shrink-0 text-[#b4b4ac]" />
+                      <span className="sr-only">Filter your list</span>
+                      <input
+                        value={listFilter}
+                        onChange={(event) => setListFilter(event.target.value)}
+                        placeholder="Search for name…"
+                        className="min-w-0 flex-1 bg-transparent text-[12.5px] text-[#26261f] outline-none placeholder:text-[#b4b4ac]"
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => void send("Who is worth calling first, and why?")}
+                      className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border border-[#e2e2db] px-3 text-[12px] font-medium text-[#3a3a35] transition hover:border-[#cfcfc7] hover:bg-[#f7f7f4]"
+                    >
+                      <Sparkles size={12} className="text-[#8a8a84]" /> Prioritize
+                    </button>
+                  </div>
+                  <div className="-mx-2">
+                    {filteredCards.map((card, index) => (
+                      <ProspectRow
+                        key={card.id}
+                        card={card}
+                        index={index}
+                        current={card.id === current?.id}
+                        onOpen={() => void send(`Tell me about ${card.name}`)}
+                      />
+                    ))}
+                    {filteredCards.length === 0 && (
+                      <p className="px-2 py-2 text-[12.5px] text-[#a4a49c]">Nothing on the list matches that.</p>
+                    )}
+                  </div>
+                </section>
+              )}
+            </div>
+          ) : (
+            <div className="mx-auto w-full max-w-[720px] space-y-6 pb-8 pt-6">
+              {messages.map((message, index) => {
+                if (message.role === "user") {
+                  return (
+                    <article key={message.id} className="flex justify-end">
+                      <div className="max-w-[86%] rounded-[20px] rounded-br-[8px] bg-[#171715] px-4 py-2.5">
+                        <p className="whitespace-pre-wrap text-[14.5px] leading-6 text-white">{message.content}</p>
+                      </div>
+                    </article>
+                  );
+                }
+                const previous = messages[index - 1];
+                const elapsed = previous
+                  ? Math.round((new Date(message.createdAt).getTime() - new Date(previous.createdAt).getTime()) / 1000)
+                  : 0;
+                return (
+                  <article key={message.id} className="animate-enter">
+                    {message.thinking?.length ? <LiveThoughtTrace steps={message.thinking} seconds={elapsed} /> : null}
+                    <LiveMarkdown content={message.content} />
+                    {message.sources?.length ? <LiveSources sources={message.sources} /> : null}
+                  </article>
+                );
+              })}
+
+              {busy && (
+                <div className="animate-enter space-y-3">
+                  <LiveThinking steps={steps} status={status} />
+                  {liveSources.length > 0 && <LiveSources sources={liveSources} />}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="shrink-0 px-4 pb-4 sm:px-8">
+          <div className="mx-auto w-full max-w-[720px]">
+            {error && (
+              <p role="alert" className="mb-2 text-[12.5px] font-medium text-[#a63a31]">
+                {error}
+              </p>
+            )}
+
+            {current && !atHome && (
+              <div className="mb-2 flex items-center gap-2 rounded-[16px] border border-[#eaeae4] bg-white px-3 py-2">
+                <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", rankTone(current.score))} aria-hidden="true" />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-[12.5px] font-semibold text-[#14140f]">{current.name}</p>
+                  <p className="truncate text-[11px] text-[#a4a49c]">
+                    {queue && queue.total > 0 ? `${queue.currentIndex + 1} of ${queue.total}` : "Current"} · {current.category}
+                  </p>
+                </div>
+                {current.phone && (
+                  <a
+                    href={`tel:${current.phone}`}
+                    className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-[11.5px] font-medium text-[#5f5f59] transition hover:bg-[#f2f2ee] hover:text-[#171715]"
+                  >
+                    <Phone size={11} /> Call
+                  </a>
+                )}
+                <button
+                  type="button"
+                  onClick={() => void send("Skip to the next one")}
+                  disabled={busy || (queue?.currentIndex ?? 0) >= (queue?.total ?? 1) - 1}
+                  className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full bg-[#171715] px-3 text-[11.5px] font-semibold text-white transition hover:bg-black disabled:opacity-30"
+                >
+                  <SkipForward size={11} /> Next
+                </button>
+              </div>
+            )}
+
+            <BorderBeam
+              size="md"
+              colorVariant="sunset"
+              theme="light"
+              active={busy || focused || Boolean(draft.trim())}
+              duration={busy ? 1.5 : 2.4}
+              brightness={busy ? 1.25 : 1.05}
+              saturation={1.45}
+              hueRange={18}
+              strength={busy ? 1 : focused ? 0.9 : 0.7}
+              borderRadius={24}
+              className="w-full"
+            >
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void send();
+                }}
+                className="rounded-[24px] border border-[#e6e6e0] bg-white p-1.5 shadow-[0_2px_6px_rgba(20,20,16,0.04),0_16px_40px_rgba(20,20,16,0.06)] transition"
+              >
+                <div className="flex items-end gap-1.5">
+                <div ref={menuRef} className="relative mb-0.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setMenuOpen((value) => !value)}
+                    aria-label="Quick actions"
+                    aria-expanded={menuOpen}
+                    className={cn(
+                      "inline-flex h-9 w-9 items-center justify-center rounded-full transition",
+                      menuOpen ? "bg-[#f2f2ee] text-[#3a3a35]" : "text-[#a4a49c] hover:bg-[#f2f2ee] hover:text-[#3a3a35]",
+                    )}
+                  >
+                    <Plus size={17} strokeWidth={1.9} className={cn("transition-transform duration-200", menuOpen && "rotate-45")} />
+                  </button>
+                  {menuOpen && (
+                    <div className="animate-enter absolute bottom-11 left-0 z-20 w-[248px] rounded-[16px] border border-[#eaeae4] bg-white p-1 shadow-[0_12px_40px_rgba(20,20,16,0.12)]">
+                      {QUICK_ACTIONS.map((action) => (
+                        <button
+                          key={action.label}
+                          type="button"
+                          onClick={() => {
+                            setMenuOpen(false);
+                            if (action.prompt) void send(action.prompt);
+                            else {
+                              setDraft(action.prefill ?? "");
+                              inputRef.current?.focus();
+                            }
+                          }}
+                          className="flex w-full items-center gap-2.5 rounded-[11px] px-2.5 py-2 text-left transition hover:bg-[#f7f7f4]"
+                        >
+                          <action.icon size={14} strokeWidth={1.8} className="shrink-0 text-[#a4a49c]" />
+                          <span className="min-w-0 flex-1 truncate text-[13px] text-[#26261f]">{action.label}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <label className="min-w-0 flex-1">
+                  <span className="sr-only">Message Live</span>
+                  <textarea
+                    ref={inputRef}
+                    value={draft}
+                    rows={1}
+                    onChange={(event) => setDraft(event.target.value)}
+                    onFocus={() => setFocused(true)}
+                    onBlur={() => setFocused(false)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && !event.shiftKey) {
+                        event.preventDefault();
+                        void send();
+                      }
+                    }}
+                    placeholder="Ask Live for anything. Name an area to build a list."
+                    className="max-h-[168px] min-h-[38px] w-full resize-none bg-transparent py-2 text-[14px] leading-6 text-[#1c1c19] outline-none placeholder:text-[#b0b0a8]"
+                  />
+                </label>
+                <button
+                  type="submit"
+                  disabled={busy || !draft.trim()}
+                  aria-label="Send"
+                  className="mb-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#171715] text-white transition hover:bg-black disabled:bg-[#e6e6e0] disabled:text-[#b0b0a8]"
+                >
+                  <ArrowUp size={16} strokeWidth={2.2} />
+                </button>
+                </div>
+              </form>
+            </BorderBeam>
+
+            {atHome && (
+              <div className="mt-2.5 flex flex-wrap justify-center gap-1.5">
+                {STARTERS.map((item) => (
+                  <button
+                    key={item}
+                    type="button"
+                    onClick={() => void send(item)}
+                    className="shrink-0 whitespace-nowrap rounded-full border border-[#eaeae4] bg-white px-3 py-1.5 text-[12px] font-medium text-[#5f5f59] transition hover:border-[#dcdcd4] hover:text-[#26261f]"
+                  >
+                    {item}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <p className="mt-2.5 text-center text-[11px] text-[#b4b4ac]">
+              Live works from public listings. It will not invent businesses.
+            </p>
+          </div>
+        </div>
+      </section>
+    </main>
+  );
+}

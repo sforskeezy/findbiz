@@ -2,11 +2,12 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { Copy, ExternalLink } from "lucide-react";
+import { ArrowRight, Copy, ExternalLink, MapPin } from "lucide-react";
 import { ThinkingOrb } from "thinking-orbs";
 
+import { EvidencePanel } from "@/components/evidence-panel";
 import { ProspectHeader } from "@/components/prospect-header";
-import { cn } from "@/components/ui";
+import { cn, scoreTone } from "@/components/ui";
 import { buildFallbackBrief } from "@/lib/brief-fallback";
 import { classifyServiceability, displayServiceability, isCharterSpectrumProvider } from "@/lib/serviceability";
 import type {
@@ -83,10 +84,36 @@ function splitAssessment(summary: string) {
   return { lead, body: sentences.slice(next).join(" ") };
 }
 
-function SectionHeading({ label, hint }: { label: string; hint: string }) {
+function Panel({
+  children,
+  compact = false,
+  className,
+}: {
+  children: React.ReactNode;
+  compact?: boolean;
+  className?: string;
+}) {
   return (
-    <div className="flex items-baseline justify-between gap-4 border-b border-[#dedad3] pb-3">
-      <p className="text-[13px] font-medium tracking-[-0.01em] text-[#777771]">{label}</p>
+    <section
+      className={cn(
+        "rounded-[28px] border border-[#e4e4de] bg-white shadow-[0_1px_0_rgba(20,20,16,0.04)]",
+        compact ? "px-6 py-6" : "px-6 py-7 sm:px-8 sm:py-8",
+        className,
+      )}
+    >
+      {children}
+    </section>
+  );
+}
+
+function PanelLabel({ children }: { children: React.ReactNode }) {
+  return <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#8f8f88]">{children}</p>;
+}
+
+function PanelHeading({ label, hint }: { label: string; hint: string }) {
+  return (
+    <div className="flex items-baseline justify-between gap-4">
+      <PanelLabel>{label}</PanelLabel>
       <p className="text-[11px] font-medium tracking-[-0.005em] text-[#a1a19a]">{hint}</p>
     </div>
   );
@@ -237,6 +264,18 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
             searchResults: [],
             sources: [],
             pagesScanned: 0,
+            research: {
+              engine: "first_party_google_research",
+              providers: [],
+              queriesPlanned: 0,
+              queriesCompleted: 0,
+              rawResults: 0,
+              uniqueResults: 0,
+              pagesSelected: 0,
+              pagesRead: 0,
+              failures: [],
+              cacheHit: false,
+            },
             retrievedAt: new Date().toISOString(),
             warnings: [message],
           };
@@ -295,7 +334,7 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
 
   const statusCopy = useMemo(() => {
     if (step === "business") return "Reviewing public business information";
-    if (step === "public_web") return "Reading the company website and public sources";
+    if (step === "public_web") return "Searching Google and reading public sources";
     if (step === "profile") return "Building a profile on this business";
     return "Building a profile on this business";
   }, [step]);
@@ -338,7 +377,7 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
   if (error || (step === "complete" && !prospect)) {
     return (
       <main className="min-h-screen bg-[#f5f5f2]">
-        <ProspectHeader backHref={`/search?${backQuery}`} backLabel="Back to results" />
+        <ProspectHeader backHref={`/search?${backQuery}`} backLabel="Back to results" wide />
         <div className="mx-auto flex min-h-[600px] max-w-lg items-center justify-center px-5 text-center">
           <div>
             <h1 className="text-2xl font-semibold text-[#22221f]">Research could not be completed.</h1>
@@ -351,53 +390,74 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
 
   return (
     <main className="min-h-screen bg-[#f5f5f2]">
-      <ProspectHeader backHref={`/search?${backQuery}`} backLabel="Back to results" />
+      <ProspectHeader backHref={`/search?${backQuery}`} backLabel="Back to results" wide />
 
-      <div className="mx-auto w-full max-w-[940px] px-5 pb-24 pt-6 sm:px-8 sm:pt-12">
+      <div className="mx-auto w-full max-w-[1400px] px-5 pb-24 pt-6 sm:px-8 sm:pt-12">
         {prospect ? (
           <>
-            <header className="border-b border-[#dcdcd7] pb-8 sm:pb-10">
-              <div className="flex flex-col justify-between gap-6 sm:flex-row sm:items-end">
+            <header className="overflow-hidden rounded-[28px] border border-[#e4e4de] bg-white shadow-[0_1px_0_rgba(20,20,16,0.04)]">
+              <div className="grid gap-8 px-6 py-7 sm:px-9 sm:py-9 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
                 <div className="min-w-0">
-                  <p className="text-[13px] font-medium tracking-[-0.01em] text-[#777771]">{prospect.category}</p>
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    <span className="inline-flex h-6 items-center rounded-full bg-[#f1f1ec] px-3 text-[11px] font-semibold tracking-[-0.005em] text-[#55554f]">
+                      {prospect.category}
+                    </span>
+                    <span className="inline-flex h-6 items-center gap-1.5 rounded-full bg-[#f1f1ec] px-3 text-[11px] font-semibold tabular-nums text-[#55554f]">
+                      <MapPin size={11} className="text-[#8a8a84]" />
+                      {prospect.distanceMiles.toFixed(2)} mi
+                    </span>
+                  </div>
                   <h1
                     className={cn(
-                      "mt-3 break-words font-semibold leading-[1.05] tracking-[-0.05em] text-[#141412]",
-                      prospect.name.length > 80 ? "text-[30px] sm:text-[42px]" : "text-[38px] sm:text-[56px]",
+                      "mt-4 break-words font-semibold leading-[1.04] tracking-[-0.045em] text-balance text-[#141412]",
+                      prospect.name.length > 60 ? "text-[30px] sm:text-[38px]" : "text-[34px] sm:text-[46px]",
                     )}
                   >
                     {prospect.name}
                   </h1>
-                  <p className="mt-4 max-w-[680px] text-sm leading-6 text-[#70706a]">
-                    {[
-                      prospect.address,
-                      `${prospect.distanceMiles.toFixed(2)} miles from the search address`,
-                      prospect.phone,
-                    ]
-                      .filter(Boolean)
-                      .join(" · ")}
+                  <p className="mt-3.5 max-w-[52rem] text-[14px] leading-6 text-pretty text-[#70706a]">
+                    {[prospect.address, prospect.phone].filter(Boolean).join(" · ")}
                   </p>
-                  <div className="mt-4 flex flex-wrap gap-x-4 gap-y-2 text-[11px] font-medium text-[#65655f]">
-                    {prospect.website && (
-                      <a href={prospect.website} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 hover:text-[#171715]">
-                        Website <ExternalLink size={11} />
-                      </a>
-                    )}
-                    {prospect.directoryUrl && (
-                      <a href={prospect.directoryUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 hover:text-[#171715]">
-                        Source record <ExternalLink size={11} />
-                      </a>
-                    )}
-                  </div>
+                  {(prospect.website || prospect.directoryUrl) && (
+                    <div className="mt-5 flex flex-wrap gap-2">
+                      {prospect.website && (
+                        <a
+                          href={prospect.website}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex h-9 items-center gap-1.5 rounded-full border border-[#e0e0da] px-4 text-[12px] font-semibold text-[#3f3f3a] transition hover:border-[#c9c9c2] hover:bg-[#faf9f6] hover:text-[#171715]"
+                        >
+                          Website <ExternalLink size={11} />
+                        </a>
+                      )}
+                      {prospect.directoryUrl && (
+                        <a
+                          href={prospect.directoryUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex h-9 items-center gap-1.5 rounded-full border border-[#e0e0da] px-4 text-[12px] font-semibold text-[#3f3f3a] transition hover:border-[#c9c9c2] hover:bg-[#faf9f6] hover:text-[#171715]"
+                        >
+                          Source record <ExternalLink size={11} />
+                        </a>
+                      )}
+                    </div>
+                  )}
                 </div>
-                <div className="shrink-0 text-right">
-                  <p className="text-[9px] font-bold uppercase tracking-[0.14em] text-[#969690]">Initial fit</p>
-                  <p className="mt-1 text-2xl font-semibold tabular-nums text-[#20201d]">
+
+                <div className="w-full rounded-[22px] bg-[#f7f7f3] px-6 py-6 lg:w-[268px]">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#8f8f88]">Initial fit</p>
+                  <p className="mt-2.5 text-[46px] font-semibold leading-none tracking-[-0.05em] tabular-nums text-[#141412]">
                     {prospect.score}
-                    <span className="ml-1 text-xs font-medium text-[#85857f]">/ 100</span>
+                    <span className="ml-1.5 text-[15px] font-medium tracking-[-0.02em] text-[#9a9a93]">/ 100</span>
                   </p>
+                  <span className="mt-4 block h-1.5 overflow-hidden rounded-full bg-[#e5e5df]">
+                    <span
+                      className="fit-bar block h-full rounded-full"
+                      style={{ width: `${prospect.score}%`, backgroundColor: scoreTone(prospect.score) }}
+                    />
+                  </span>
                   {displayedSignal && (
-                    <p className={cn("mt-2 text-[11px] font-semibold", displayedSignal.toneClass)}>
+                    <p className={cn("mt-4 text-[12px] font-semibold leading-5", displayedSignal.toneClass)}>
                       {displayedSignal.shortLabel}
                     </p>
                   )}
@@ -413,7 +473,10 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
               </section>
             ) : brief ? (
               <div className="animate-enter">
-                <nav className="scrollbar-none flex gap-7 overflow-x-auto border-b border-[#dcdcd7] pt-7" aria-label="Business research sections">
+                <nav
+                  className="scrollbar-none mt-5 flex gap-1 overflow-x-auto rounded-full border border-[#e4e4de] bg-white p-1.5 sm:w-fit"
+                  aria-label="Business research sections"
+                >
                   {(
                     [
                       ["research", "Research"],
@@ -426,9 +489,12 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                       key={id}
                       type="button"
                       onClick={() => setTab(id)}
+                      aria-current={tab === id ? "page" : undefined}
                       className={cn(
-                        "shrink-0 border-b-2 pb-3 text-xs font-semibold transition",
-                        tab === id ? "border-[#171715] text-[#171715]" : "border-transparent text-[#81817b] hover:text-[#343430]",
+                        "h-9 shrink-0 rounded-full px-5 text-[13px] font-semibold tracking-[-0.01em] transition duration-150",
+                        tab === id
+                          ? "bg-[#171715] text-[#f6f6f1] shadow-[0_6px_18px_rgba(20,20,16,0.18)]"
+                          : "text-[#75756f] hover:bg-[#f4f4ef] hover:text-[#22221f]",
                       )}
                     >
                       {label}
@@ -437,225 +503,158 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                 </nav>
 
                 {tab === "research" && (
-                  <section className="py-10">
-                    <div className="max-w-[760px]">
-                      <div className="flex items-start justify-between gap-6">
-                        <p className="text-[13px] font-medium tracking-[-0.01em] text-[#777771]">Assessment</p>
-                        <button
-                          type="button"
-                          onClick={() => void copy(briefToPlainText(brief, prospect, intelligence), "Assessment")}
-                          className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-[#666660] transition hover:text-[#171715]"
-                        >
-                          <Copy size={11} /> Copy assessment
-                        </button>
-                      </div>
-                      <h2 className="mt-4 max-w-[16ch] text-[40px] font-semibold leading-[1.05] tracking-[-0.05em] text-[#141412] sm:text-[52px]">
-                        {verdict(prospect.score)}
-                      </h2>
-                      <p className="mt-4 max-w-[36rem] text-[15px] leading-7 text-[#6e6e68]">{verdictDetail(prospect.score)}</p>
-
-                      {assessment && (
-                        <div className="mt-10 max-w-[42rem]">
-                          <p className="text-[20px] font-medium leading-[1.45] tracking-[-0.022em] text-[#1c1c19] sm:text-[22px] sm:leading-[1.4]">
-                            {assessment.lead}
-                          </p>
-                          {assessment.bodyParagraphs.length > 0 && (
-                            <div className="mt-5 space-y-4 text-[16px] leading-8 tracking-[-0.012em] text-[#5d5d57]">
-                              {assessment.bodyParagraphs.map((paragraph, index) => (
-                                <p key={index}>{paragraph}</p>
-                              ))}
-                            </div>
-                          )}
+                  <section className="grid gap-4 py-6 xl:grid-cols-[minmax(0,1fr)_370px] xl:items-start">
+                    <div className="min-w-0 space-y-4">
+                      <Panel>
+                        <div className="flex items-center justify-between gap-6">
+                          <PanelLabel>Assessment</PanelLabel>
+                          <button
+                            type="button"
+                            onClick={() => void copy(briefToPlainText(brief, prospect, intelligence), "Assessment")}
+                            className="inline-flex h-8 items-center gap-1.5 rounded-full border border-[#e0e0da] px-3.5 text-[11px] font-semibold text-[#5f5f59] transition hover:border-[#c9c9c2] hover:bg-[#faf9f6] hover:text-[#171715]"
+                          >
+                            <Copy size={11} /> Copy
+                          </button>
                         </div>
-                      )}
+                        <h2 className="mt-4 text-[32px] font-semibold leading-[1.06] tracking-[-0.045em] text-balance text-[#141412] sm:text-[40px]">
+                          {verdict(prospect.score)}
+                        </h2>
+                        <p className="mt-3 max-w-[46rem] text-[15px] leading-7 text-pretty text-[#6e6e68]">
+                          {verdictDetail(prospect.score)}
+                        </p>
+
+                        {assessment && (
+                          <div className="mt-8 border-t border-[#ecece7] pt-7">
+                            <p className="max-w-[46rem] text-[19px] font-medium leading-[1.5] tracking-[-0.022em] text-pretty text-[#1c1c19] sm:text-[21px]">
+                              {assessment.lead}
+                            </p>
+                            {assessment.bodyParagraphs.length > 0 && (
+                              <div className="mt-5 max-w-[46rem] space-y-4 text-[15.5px] leading-[1.75] tracking-[-0.012em] text-pretty text-[#5d5d57]">
+                                {assessment.bodyParagraphs.map((paragraph, index) => (
+                                  <p key={index}>{paragraph}</p>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </Panel>
 
                       {brief.reflectOn.length > 0 && (
-                        <div className="mt-14 max-w-[42rem]">
-                          <SectionHeading label="Reflect on" hint="Before you dial" />
-                          <ol className="mt-6 space-y-5">
+                        <Panel>
+                          <PanelHeading label="Reflect on" hint="Before you dial" />
+                          <ol className="mt-6 grid gap-x-8 gap-y-5 lg:grid-cols-2">
                             {brief.reflectOn.map((item, index) => (
-                              <li key={item} className="flex gap-5">
-                                <span className="w-7 shrink-0 border-t border-[#c9c9c2] pt-2 text-[11px] font-semibold tabular-nums text-[#a4a49d]">
+                              <li key={item} className="flex gap-4">
+                                <span className="mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#f1f1ec] text-[11px] font-semibold tabular-nums text-[#75756f]">
                                   {String(index + 1).padStart(2, "0")}
                                 </span>
-                                <p className="text-[16px] font-medium leading-7 tracking-[-0.015em] text-[#252522]">
+                                <p className="text-[15px] font-medium leading-7 tracking-[-0.015em] text-pretty text-[#33332f]">
                                   {item}
                                 </p>
                               </li>
                             ))}
                           </ol>
-                        </div>
+                        </Panel>
                       )}
 
                       {brief.talkAbout.length > 0 && (
-                        <div className="mt-14 max-w-[42rem]">
-                          <SectionHeading label="Talk about" hint="On the call" />
-                          <ul className="mt-2 divide-y divide-[#e6e6e1]">
+                        <Panel>
+                          <PanelHeading label="Talk about" hint="On the call" />
+                          <ul className="mt-2 divide-y divide-[#f0f0eb]">
                             {brief.talkAbout.map((item) => (
-                              <li key={item} className="flex gap-3.5 py-4">
-                                <span aria-hidden className="mt-[11px] h-[5px] w-[5px] shrink-0 rounded-full bg-[#b6b6ae]" />
-                                <p className="text-[15px] leading-7 tracking-[-0.012em] text-[#33332f]">{item}</p>
+                              <li key={item} className="flex gap-3.5 py-3.5">
+                                <span aria-hidden className="mt-[11px] h-[5px] w-[5px] shrink-0 rounded-full bg-[#c2c2ba]" />
+                                <p className="text-[15px] leading-7 tracking-[-0.012em] text-pretty text-[#33332f]">{item}</p>
                               </li>
                             ))}
                           </ul>
-                        </div>
+                        </Panel>
                       )}
+                    </div>
 
-                      {brief.hypothesizedNeeds.length > 0 && (
-                        <div className="mt-14 max-w-[42rem]">
-                          <SectionHeading label="Working hypotheses" hint="Test, never assume" />
-                          <ul className="mt-5 flex flex-wrap gap-2">
-                            {brief.hypothesizedNeeds.map((need) => (
-                              <li
-                                key={need}
-                                className="rounded-full border border-[#dcdcd5] bg-white px-3.5 py-1.5 text-[13px] font-medium tracking-[-0.01em] text-[#4a4a44]"
-                              >
-                                {need}
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-
+                    <aside className="space-y-4 xl:sticky xl:top-6">
                       {brief.topOpportunity && (
-                        <div className="mt-14 max-w-[42rem] rounded-2xl bg-[#171715] px-7 py-7 shadow-[0_18px_50px_rgba(20,20,16,0.16)]">
-                          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#8f8f86]">Sales angle</p>
-                          <p className="mt-3.5 text-[17px] font-medium leading-[1.65] tracking-[-0.015em] text-[#f3f3ed]">
+                        <div className="relative overflow-hidden rounded-[28px] border border-[#dfe3f4] bg-[#f4f6fd] px-6 py-6 sm:px-7">
+                          <span aria-hidden className="absolute inset-y-0 left-0 w-[3px] bg-[#2855e7]" />
+                          <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[#5f6f9e]">Sales angle</p>
+                          <p className="mt-3.5 text-[16px] font-medium leading-[1.65] tracking-[-0.015em] text-pretty text-[#22283a]">
                             {brief.topOpportunity}
                           </p>
                         </div>
                       )}
 
-                      <p className="mt-6 max-w-[42rem] text-[11px] leading-5 text-[#9a9a93]">
+                      {brief.hypothesizedNeeds.length > 0 && (
+                        <Panel compact>
+                          <PanelLabel>Working hypotheses</PanelLabel>
+                          <p className="mt-1.5 text-[12px] text-[#9a9a93]">Test, never assume</p>
+                          <ul className="mt-4 flex flex-wrap gap-2">
+                            {brief.hypothesizedNeeds.map((need) => (
+                              <li
+                                key={need}
+                                className="rounded-full bg-[#f4f4ef] px-3.5 py-1.5 text-[13px] font-medium tracking-[-0.01em] text-[#4a4a44]"
+                              >
+                                {need}
+                              </li>
+                            ))}
+                          </ul>
+                        </Panel>
+                      )}
+
+                      <Panel compact>
+                        <PanelLabel>Availability signal</PanelLabel>
+                        <p
+                          className={cn(
+                            "mt-3 text-[17px] font-semibold tracking-[-0.025em]",
+                            displayedSignal?.toneClass ?? "text-[#141412]",
+                          )}
+                        >
+                          {displayedSignal?.shortLabel ?? "Not reported"}
+                        </p>
+                        <p className="mt-2.5 text-[13px] leading-6 text-pretty text-[#77776f]">
+                          {displayedSignal?.detail ?? "FCC provider-reported availability for this address."}
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => setTab("availability")}
+                          className="mt-4 inline-flex h-9 items-center gap-1.5 rounded-full border border-[#e0e0da] px-4 text-[12px] font-semibold text-[#3f3f3a] transition hover:border-[#c9c9c2] hover:bg-[#faf9f6] hover:text-[#171715]"
+                        >
+                          See broadband facts <ArrowRight size={12} />
+                        </button>
+                      </Panel>
+
+                      <p className="px-1 text-[11px] leading-5 text-[#9a9a93]">
                         Availability figures come from public FCC provider filings for this address or area — not a
                         subscription, quote, or serviceability guarantee. Confirm in the official tool before quoting.
                       </p>
-                    </div>
+                    </aside>
                   </section>
                 )}
 
-                {tab === "evidence" && (
-                  <section className="py-10">
-                    <div className="max-w-[760px]">
-                      <p className="text-[13px] font-medium tracking-[-0.01em] text-[#777771]">Evidence ledger</p>
-                      <h2 className="mt-4 max-w-[17ch] text-[40px] font-semibold leading-[1.05] tracking-[-0.05em] text-[#141412] sm:text-[52px]">
-                        Facts you can trace.
-                      </h2>
-                      <p className="mt-4 max-w-[38rem] text-[15px] leading-7 text-[#6e6e68]">
-                        Public facts stay attached to the page that published them. Estimated search-result matches are
-                        labeled separately, and missing values stay missing.
-                      </p>
-
-                      <dl className="mt-10 grid grid-cols-3 border-y border-[#dcdcd7] py-5">
-                        <div>
-                          <dt className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#9a9a93]">Pages read</dt>
-                          <dd className="mt-2 text-2xl font-semibold tabular-nums text-[#1d1d1a]">{intelligence?.pagesScanned ?? 0}</dd>
-                        </div>
-                        <div className="border-l border-[#deded8] pl-5">
-                          <dt className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#9a9a93]">Public facts</dt>
-                          <dd className="mt-2 text-2xl font-semibold tabular-nums text-[#1d1d1a]">{intelligence?.facts.length ?? 0}</dd>
-                        </div>
-                        <div className="border-l border-[#deded8] pl-5">
-                          <dt className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#9a9a93]">Indexed results</dt>
-                          <dd className="mt-2 text-2xl font-semibold tabular-nums text-[#1d1d1a]">{intelligence?.searchResults.length ?? 0}</dd>
-                        </div>
-                      </dl>
-
-                      {intelligence?.summary && (
-                        <div className="mt-12 max-w-[42rem]">
-                          <SectionHeading label="How the company describes itself" hint="Official website" />
-                          <p className="mt-5 text-[17px] leading-8 tracking-[-0.015em] text-[#33332f]">
-                            {intelligence.summary}
-                          </p>
-                        </div>
-                      )}
-
-                      {intelligence?.facts.length ? (
-                        <div className="mt-12 max-w-[46rem]">
-                          <SectionHeading label="Published facts" hint="Click through to verify" />
-                          <ul className="mt-2 divide-y divide-[#e3e3de]">
-                            {intelligence.facts.map((fact) => (
-                              <li key={fact.id} className="grid gap-2 py-4 sm:grid-cols-[170px_1fr_auto] sm:items-start sm:gap-5">
-                                <p className="text-[11px] font-semibold uppercase tracking-[0.09em] text-[#96968f]">{fact.label}</p>
-                                <p className="break-words text-[14px] font-medium leading-6 text-[#282825]">{fact.value}</p>
-                                <a
-                                  href={fact.sourceUrl}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#6e6e68] transition hover:text-[#171715]"
-                                >
-                                  {fact.confidence} <ExternalLink size={10} />
-                                </a>
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      ) : (
-                        <div className="mt-12 max-w-[42rem] rounded-2xl border border-[#deded8] bg-white/60 px-6 py-6">
-                          <p className="text-[15px] font-semibold text-[#292926]">No additional public facts found.</p>
-                          <p className="mt-2 text-[13px] leading-6 text-[#777771]">
-                            The report kept the directory record as-is instead of filling gaps with guesses.
-                          </p>
-                        </div>
-                      )}
-
-                      {intelligence?.searchResults.length ? (
-                        <div className="mt-12 max-w-[46rem]">
-                          <SectionHeading label="Indexed web results" hint="Google Programmable Search" />
-                          <ul className="mt-2 divide-y divide-[#e3e3de]">
-                            {intelligence.searchResults.map((result) => (
-                              <li key={result.id} className="py-5">
-                                <a
-                                  href={result.url}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="inline-flex items-center gap-1.5 text-[15px] font-semibold tracking-[-0.015em] text-[#242421] hover:underline"
-                                >
-                                  {result.title} <ExternalLink size={11} />
-                                </a>
-                                {result.snippet && <p className="mt-2 text-[13px] leading-6 text-[#73736d]">{result.snippet}</p>}
-                                <p className="mt-2 truncate text-[10px] text-[#a0a099]">{result.url}</p>
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      ) : null}
-
-                      {intelligence?.warnings.length ? (
-                        <div className="mt-12 max-w-[42rem] border-l-2 border-[#d1d1ca] pl-5">
-                          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#92928b]">Research notes</p>
-                          <ul className="mt-3 space-y-2">
-                            {intelligence.warnings.map((warning) => (
-                              <li key={warning} className="text-[12px] leading-5 text-[#777771]">{warning}</li>
-                            ))}
-                          </ul>
-                        </div>
-                      ) : null}
-                    </div>
-                  </section>
-                )}
+                {tab === "evidence" && <EvidencePanel intelligence={intelligence} />}
 
                 {tab === "availability" && (
-                  <section className="py-10">
-                    <div className="max-w-[760px]">
-                      <p className="text-[13px] font-medium tracking-[-0.01em] text-[#777771]">Availability</p>
+                  <section className="grid gap-4 py-6 xl:grid-cols-[minmax(0,1fr)_minmax(420px,560px)] xl:items-start">
+                    <Panel className="xl:sticky xl:top-6">
+                      <PanelLabel>Availability</PanelLabel>
                       <h2
                         className={cn(
-                          "mt-4 max-w-[18ch] text-[40px] font-semibold leading-[1.05] tracking-[-0.05em] sm:text-[52px]",
+                          "mt-4 text-[32px] font-semibold leading-[1.06] tracking-[-0.045em] text-balance sm:text-[40px]",
                           displayedSignal?.toneClass ?? "text-[#141412]",
                         )}
                       >
                         {displayedSignal?.shortLabel ?? "Checking availability"}
                       </h2>
-                      <p className="mt-4 max-w-[36rem] text-[15px] leading-7 text-[#6e6e68]">
+                      <p className="mt-3 max-w-[40rem] text-[15px] leading-7 text-pretty text-[#6e6e68]">
                         {displayedSignal?.detail ?? "Looking up FCC provider-reported availability for this address."}
                       </p>
                       {fcc?.asOfDate && (
-                        <p className="mt-3 text-xs text-[#85857f]">FCC data as of {formatDate(fcc.asOfDate)}</p>
+                        <p className="mt-4 inline-flex h-7 items-center rounded-full bg-[#f4f4ef] px-3 text-[11px] font-medium text-[#75756f]">
+                          FCC data as of {formatDate(fcc.asOfDate)}
+                        </p>
                       )}
-                    </div>
+                    </Panel>
 
-                    <div className="mt-14 w-full max-w-[640px]">
+                    <div className="w-full">
                       {providerChart.length ? (
                         <div className="border-[3px] border-black bg-white text-black shadow-[6px_6px_0_#171715]">
                           <div className="border-b-[8px] border-black px-3.5 pb-2.5 pt-3">
@@ -790,45 +789,65 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                 )}
 
                 {tab === "outreach" && (
-                  <section className="py-10">
-                    <div className="max-w-[720px]">
-                      <p className="text-[13px] font-medium tracking-[-0.01em] text-[#777771]">Discovery questions</p>
-                      <div className="mt-5 space-y-5">
-                        {brief.discoveryQuestions.map((question) => (
-                          <p key={question} className="text-[15px] leading-7 text-[#3f3f3a]">
-                            {question}
-                          </p>
+                  <section className="grid gap-4 py-6 xl:grid-cols-[minmax(0,1fr)_minmax(400px,440px)] xl:items-start">
+                    <Panel>
+                      <PanelHeading label="Discovery questions" hint="Ask, then listen" />
+                      <ol className="mt-6 divide-y divide-[#f0f0eb]">
+                        {brief.discoveryQuestions.map((question, index) => (
+                          <li key={question} className="flex gap-4 py-4 first:pt-0">
+                            <span className="mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#f1f1ec] text-[11px] font-semibold tabular-nums text-[#75756f]">
+                              {String(index + 1).padStart(2, "0")}
+                            </span>
+                            <p className="text-[15px] leading-7 tracking-[-0.012em] text-pretty text-[#33332f]">{question}</p>
+                          </li>
                         ))}
-                      </div>
-                    </div>
+                      </ol>
+                    </Panel>
 
-                    <div className="mt-12 max-w-[760px]">
-                      <div className="flex items-center justify-between gap-4">
-                        <p className="text-[13px] font-medium tracking-[-0.01em] text-[#777771]">Call opener</p>
-                        <button
-                          type="button"
-                          onClick={() => void copy(brief.callOpener, "Call opener")}
-                          className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-[#666660] hover:text-[#171715]"
-                        >
-                          <Copy size={11} /> Copy
-                        </button>
+                    <div className="space-y-4 xl:sticky xl:top-6">
+                      <div className="relative overflow-hidden rounded-[28px] border border-[#dfe3f4] bg-[#f4f6fd] px-6 py-6 sm:px-7">
+                        <span aria-hidden className="absolute inset-y-0 left-0 w-[3px] bg-[#2855e7]" />
+                        <div className="flex items-center justify-between gap-4">
+                          <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[#5f6f9e]">Call opener</p>
+                          <button
+                            type="button"
+                            onClick={() => void copy(brief.callOpener, "Call opener")}
+                            className="inline-flex h-8 items-center gap-1.5 rounded-full border border-[#cfd7f0] bg-white/70 px-3.5 text-[11px] font-semibold text-[#41507d] transition hover:border-[#b7c3e8] hover:bg-white hover:text-[#22283a]"
+                          >
+                            <Copy size={11} /> Copy
+                          </button>
+                        </div>
+                        <p className="mt-4 text-[17px] font-medium leading-[1.6] tracking-[-0.02em] text-pretty text-[#22283a]">
+                          “{brief.callOpener}”
+                        </p>
                       </div>
-                      <p className="mt-4 text-[15px] leading-7 text-[#2d2d29]">“{brief.callOpener}”</p>
-                    </div>
 
-                    <div className="mt-12 max-w-[760px]">
-                      <div className="flex items-center justify-between gap-4">
-                        <p className="text-[13px] font-medium tracking-[-0.01em] text-[#777771]">Follow-up email</p>
-                        <button
-                          type="button"
-                          onClick={() => void copy(`Subject: ${brief.followUpEmail.subject}\n\n${brief.followUpEmail.body}`, "Email draft")}
-                          className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-[#666660] hover:text-[#171715]"
-                        >
-                          <Copy size={11} /> Copy
-                        </button>
-                      </div>
-                      <p className="mt-4 text-sm font-semibold text-[#2d2d29]">{brief.followUpEmail.subject}</p>
-                      <p className="mt-4 whitespace-pre-line text-sm leading-7 text-[#555550]">{brief.followUpEmail.body}</p>
+                      <Panel compact>
+                        <div className="flex items-center justify-between gap-4">
+                          <PanelLabel>Follow-up email</PanelLabel>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void copy(
+                                `Subject: ${brief.followUpEmail.subject}\n\n${brief.followUpEmail.body}`,
+                                "Email draft",
+                              )
+                            }
+                            className="inline-flex h-8 items-center gap-1.5 rounded-full border border-[#e0e0da] px-3.5 text-[11px] font-semibold text-[#5f5f59] transition hover:border-[#c9c9c2] hover:bg-[#faf9f6] hover:text-[#171715]"
+                          >
+                            <Copy size={11} /> Copy
+                          </button>
+                        </div>
+                        <div className="mt-4 rounded-[18px] bg-[#f7f7f3] px-4 py-3">
+                          <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#9a9a93]">Subject</p>
+                          <p className="mt-1.5 text-[14px] font-semibold tracking-[-0.015em] text-pretty text-[#22221f]">
+                            {brief.followUpEmail.subject}
+                          </p>
+                        </div>
+                        <p className="mt-4 whitespace-pre-line text-[14px] leading-[1.75] text-pretty text-[#555550]">
+                          {brief.followUpEmail.body}
+                        </p>
+                      </Panel>
                     </div>
                   </section>
                 )}

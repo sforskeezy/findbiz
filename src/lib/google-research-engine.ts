@@ -9,6 +9,7 @@ import type {
 
 const GOOGLE_ORIGIN = "https://www.google.com";
 const GOOGLE_CUSTOM_SEARCH_ORIGIN = "https://customsearch.googleapis.com";
+const BING_ORIGIN = "https://www.bing.com";
 const DUCKDUCKGO_ORIGIN = "https://html.duckduckgo.com";
 const REQUEST_TIMEOUT_MS = 10_000;
 const MAX_RESPONSE_BYTES = 2_000_000;
@@ -16,7 +17,7 @@ const DEFAULT_CACHE_TTL_MS = 15 * 60 * 1_000;
 const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
-type SearchProvider = "google_custom_search" | "google_public_search" | "keyless_web_fallback";
+type SearchProvider = "google_custom_search" | "google_public_search" | "bing_public_search" | "keyless_web_fallback";
 
 type RawSearchResult = {
   title: string;
@@ -138,6 +139,7 @@ export function googleResearchStatus() {
     googleCustomSearch: googleCustomSearchConfigured() ? "active" : "not_configured",
     googlePublicSearch:
       process.env.ENABLE_GOOGLE_SEARCH_SCRAPER === "false" ? "disabled" : "active_with_runtime_probe",
+    bingPublicSearch: process.env.ENABLE_BING_SEARCH_FALLBACK === "false" ? "disabled" : "active",
     keylessFallback:
       process.env.ENABLE_KEYLESS_WEB_SEARCH_FALLBACK === "false" ? "disabled" : "active",
     domains: configuredDomains(),
@@ -185,13 +187,23 @@ function canonicalResultUrl(value: string, base: string) {
       const destination = url.searchParams.get("uddg");
       if (destination) url = new URL(destination);
     }
-    if (url.hostname.endsWith("google.com") && url.pathname === "/url") {
-      const destination = url.searchParams.get("q") || url.searchParams.get("url");
-      if (destination) url = new URL(destination);
+    if (url.hostname.endsWith("bing.com") && url.pathname === "/ck/a") {
+      const encoded = url.searchParams.get("u");
+      if (encoded) {
+        const payload = encoded.replace(/^a1/i, "");
+        const padded = payload + "=".repeat((4 - (payload.length % 4)) % 4);
+        try {
+          const decoded = Buffer.from(padded, "base64").toString("utf8");
+          if (/^https?:\/\//i.test(decoded)) url = new URL(decoded);
+        } catch {
+          // Keep the tracking URL and let the hostname filter drop it.
+        }
+      }
     }
     if (!/^https?:$/.test(url.protocol)) return null;
     if (
       /(^|\.)google\.[a-z.]+$/i.test(url.hostname) ||
+      /(^|\.)bing\.com$/i.test(url.hostname) ||
       /(^|\.)duckduckgo\.com$/i.test(url.hostname)
     ) {
       return null;
@@ -265,6 +277,41 @@ async function searchGooglePublic(query: string) {
   return results;
 }
 
+function bingUrlFromCite(cite: string) {
+  if (cite.includes("...")) return null;
+  const cleaned = cite.replace(/\s*›\s*/g, "/").replace(/\s+/g, "");
+  if (!/^https?:\/\//i.test(cleaned)) return null;
+  return canonicalResultUrl(cleaned, BING_ORIGIN);
+}
+
+function parseBingHtml(html: string, query: string): RawSearchResult[] {
+  const results: RawSearchResult[] = [];
+  for (const block of html.matchAll(/<li class="b_algo"[^>]*>([\s\S]*?)<\/li>/gi)) {
+    const item = block[1];
+    const heading = item.match(/<h2\b[^>]*>([\s\S]*?)<\/h2>/i);
+    const title = heading ? plainText(heading[1]) : "";
+    const href = heading?.[1].match(/<a\b[^>]*href=["']([^"']+)["']/i)?.[1];
+    const cite = plainText(item.match(/<cite\b[^>]*>([\s\S]*?)<\/cite>/i)?.[1] || "");
+    const snippet = plainText(
+      item.match(/class=["'][^"']*b_caption[^"']*["'][^>]*>([\s\S]*?)<\/(?:p|div|li)>/i)?.[1] || "",
+    ).slice(0, 500);
+    const url = (cite ? bingUrlFromCite(cite) : null) || (href ? canonicalResultUrl(href, BING_ORIGIN) : null);
+    if (!url || !title) continue;
+    results.push({ title, url, snippet, provider: "bing_public_search", query, position: results.length + 1 });
+  }
+  return results.slice(0, 10);
+}
+
+async function searchBingPublic(query: string) {
+  const url = new URL("/search", BING_ORIGIN);
+  url.searchParams.set("q", query);
+  url.searchParams.set("setlang", "en-US");
+  const html = await fetchText(url);
+  const results = parseBingHtml(html, query);
+  if (!results.length) throw new Error("Bing returned no parseable public result records.");
+  return results;
+}
+
 function parseDuckDuckGoHtml(html: string, query: string): RawSearchResult[] {
   const anchors = [...html.matchAll(/<a\b[^>]*class=["'][^"']*result__a[^"']*["'][^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)];
   return anchors.flatMap((match, index) => {
@@ -329,14 +376,24 @@ function nameTokens(name: string) {
   return name.toLowerCase().split(/[^a-z0-9]+/).filter((value) => value.length >= 3 && !ignored.has(value));
 }
 
-function relevanceScore(result: RawSearchResult, prospect: Prospect) {
+function nameOverlap(result: RawSearchResult, prospect: Prospect) {
   const haystack = `${result.title} ${result.snippet} ${result.url}`.toLowerCase();
   const tokens = nameTokens(prospect.name);
   const tokenMatches = tokens.filter((token) => haystack.includes(token)).length;
   const exactName = haystack.includes(prospect.name.toLowerCase());
+  return { haystack, tokens, tokenMatches, exactName };
+}
+
+function relevanceScore(result: RawSearchResult, prospect: Prospect) {
+  const { tokenMatches, exactName } = nameOverlap(result, prospect);
   const addressTokens = addressContext(prospect.address).toLowerCase().split(/\s+/).filter((value) => value.length >= 4);
-  const locationMatches = addressTokens.filter((token) => haystack.includes(token)).length;
+  const locationMatches = addressTokens.filter((token) => `${result.title} ${result.snippet} ${result.url}`.toLowerCase().includes(token)).length;
   return Math.min(35, (exactName ? 18 : 0) + tokenMatches * 5 + Math.min(7, locationMatches * 2));
+}
+
+function siteConstraint(query: string) {
+  const match = query.match(/\bsite:([^\s]+)/i);
+  return match?.[1]?.replace(/^www\./, "").toLowerCase() ?? null;
 }
 
 function resultKey(value: string) {
@@ -348,6 +405,18 @@ function rankAndDedupe(raw: RawSearchResult[], prospect: Prospect) {
   const officialHost = websiteHost(prospect);
   const byUrl = new Map<string, WebSearchResult>();
   for (const item of raw) {
+    const requiredHost = siteConstraint(item.query);
+    if (requiredHost) {
+      const hostname = new URL(item.url).hostname.toLowerCase().replace(/^www\./, "");
+      if (hostname !== requiredHost && !hostname.endsWith(`.${requiredHost}`)) continue;
+    }
+    const { tokens, tokenMatches, exactName } = nameOverlap(item, prospect);
+    if (tokens.length >= 2 && tokenMatches < 2 && !exactName) continue;
+    const distinctive = tokens.filter((token) => token.length >= 5);
+    if (distinctive.length && distinctive.some((token) => !`${item.title} ${item.snippet} ${item.url}`.toLowerCase().includes(token)) && !exactName) {
+      continue;
+    }
+
     const { sourceKind, authorityScore } = sourceClassification(item.url, officialHost);
     const relevance = relevanceScore(item, prospect);
     const rank = Math.round(authorityScore * 0.55 + relevance + Math.max(0, 12 - item.position));
@@ -374,7 +443,9 @@ function rankAndDedupe(raw: RawSearchResult[], prospect: Prospect) {
           ? "Google Programmable Search"
           : item.provider === "google_public_search"
             ? "Google public search"
-            : "Keyless web index fallback",
+            : item.provider === "bing_public_search"
+              ? "Bing public search"
+              : "Keyless web index fallback",
       query: item.query,
       matchedQueries: [item.query],
       rank,
@@ -404,32 +475,45 @@ async function runResearch(prospect: Prospect, queries: string[]): Promise<Googl
   const providers: string[] = [];
   const raw: RawSearchResult[] = [];
   let completed = 0;
-  let provider: SearchProvider;
+  let provider: SearchProvider = "bing_public_search";
   let firstResults: RawSearchResult[] | null = null;
 
   if (googleCustomSearchConfigured()) {
     provider = "google_custom_search";
     providers.push("Google Programmable Search");
-  } else if (process.env.ENABLE_GOOGLE_SEARCH_SCRAPER !== "false") {
-    try {
-      firstResults = await searchGooglePublic(queries[0]);
-      provider = "google_public_search";
-      providers.push("Google public search");
-      raw.push(...firstResults);
-      completed += 1;
-    } catch (error) {
-      failures.push(`Google public search: ${error instanceof Error ? error.message : String(error)}`);
-      if (process.env.ENABLE_KEYLESS_WEB_SEARCH_FALLBACK === "false") {
+  } else {
+    const probeQuery = queries[0];
+    if (process.env.ENABLE_GOOGLE_SEARCH_SCRAPER !== "false") {
+      try {
+        firstResults = await searchGooglePublic(probeQuery);
         provider = "google_public_search";
         providers.push("Google public search");
-      } else {
-        provider = "keyless_web_fallback";
-        providers.push("Google public search (runtime probe)", "Keyless web index fallback");
+      } catch (error) {
+        failures.push(`Google public search: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
-  } else {
-    provider = "keyless_web_fallback";
-    providers.push("Keyless web index fallback");
+    if (!firstResults && process.env.ENABLE_BING_SEARCH_FALLBACK !== "false") {
+      try {
+        firstResults = await searchBingPublic(probeQuery);
+        provider = "bing_public_search";
+        providers.push("Google public search (runtime probe)", "Bing public search");
+      } catch (error) {
+        failures.push(`Bing public search: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    if (!firstResults && process.env.ENABLE_KEYLESS_WEB_SEARCH_FALLBACK !== "false") {
+      try {
+        firstResults = await searchKeylessFallback(probeQuery);
+        provider = "keyless_web_fallback";
+        providers.push("Keyless web index fallback");
+      } catch (error) {
+        failures.push(`Keyless web index: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    if (firstResults) {
+      raw.push(...firstResults);
+      completed += 1;
+    }
   }
 
   const startIndex = firstResults ? 1 : 0;
@@ -447,7 +531,9 @@ async function runResearch(prospect: Prospect, queries: string[]): Promise<Googl
             ? await searchGoogleCustom(query)
             : provider === "google_public_search"
               ? await searchGooglePublic(query)
-              : await searchKeylessFallback(query);
+              : provider === "bing_public_search"
+                ? await searchBingPublic(query)
+                : await searchKeylessFallback(query);
         raw.push(...results);
         completed += 1;
       } catch (error) {
@@ -499,8 +585,11 @@ export async function researchGoogleWeb(
   if (pending) return pending;
   const request = runResearch(prospect, queries)
     .then((result) => {
-      const ttl = numberEnv("GOOGLE_RESEARCH_CACHE_TTL_SECONDS", DEFAULT_CACHE_TTL_MS / 1_000, 30, 86_400);
-      researchCache.set(key, { expiresAt: Date.now() + ttl * 1_000, result });
+      const failedHard = result.diagnostics.uniqueResults === 0 && result.diagnostics.queriesCompleted === 0;
+      if (!failedHard) {
+        const ttl = numberEnv("GOOGLE_RESEARCH_CACHE_TTL_SECONDS", DEFAULT_CACHE_TTL_MS / 1_000, 30, 86_400);
+        researchCache.set(key, { expiresAt: Date.now() + ttl * 1_000, result });
+      }
       return result;
     })
     .finally(() => inFlight.delete(key));

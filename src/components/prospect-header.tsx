@@ -3,7 +3,10 @@
 import { useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { Pencil } from "lucide-react";
+
+import { cn } from "@/components/ui";
 
 const GITHUB_URL = process.env.NEXT_PUBLIC_GITHUB_URL || "https://github.com/sforskeezy/findbiz";
 
@@ -39,7 +42,7 @@ function RotatingTagline() {
 
   return (
     <span
-      className="hidden text-[12px] font-semibold tracking-[-0.02em] text-[#5f5f59] sm:inline"
+      className="hidden text-[12px] font-semibold tracking-[-0.02em] text-[#5f5f59] lg:inline"
       aria-live="polite"
     >
       <span
@@ -155,36 +158,125 @@ function RewriteBackLink({ href, label }: { href: string; label: string }) {
   );
 }
 
-export function ProspectHeader({ backHref, backLabel }: { backHref?: string; backLabel?: string }) {
+function ModeSegment({
+  href,
+  active,
+  small,
+  transitionTypes,
+  children,
+}: {
+  href: string;
+  active: boolean;
+  small: boolean;
+  transitionTypes?: string[];
+  children: React.ReactNode;
+}) {
   return (
-    <header className="relative z-20 mx-auto flex h-28 w-full max-w-[1180px] items-center justify-between px-5 sm:px-8">
-      <Link href="/" className="flex items-center" aria-label="PAI home">
-        <Image
-          src="/PAINEWLOGO.png"
-          alt="PAI"
-          width={1536}
-          height={1024}
-          className="h-[5.5rem] w-auto sm:h-24"
-          priority
-        />
-      </Link>
-      {backHref ? (
-        <RewriteBackLink href={backHref} label={backLabel ?? "Back"} />
-      ) : (
-        <div className="flex items-center gap-3 sm:gap-4">
-          <RotatingTagline />
-          <a
-            href={GITHUB_URL}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex items-center gap-2 rounded-full border border-[#e0e0db] bg-white/70 px-3.5 py-2 text-xs font-semibold text-[#44443f] backdrop-blur transition hover:border-[#cfcfc9] hover:text-[#151513]"
-            aria-label="View source on GitHub"
-          >
-            <GitHubIcon />
-            GitHub
-          </a>
-        </div>
+    <Link
+      href={href}
+      aria-current={active ? "page" : undefined}
+      transitionTypes={transitionTypes}
+      className={cn(
+        "relative inline-flex items-center justify-center rounded-[9px] font-medium tracking-[-0.01em] transition duration-200",
+        small
+          ? "h-7 px-3.5 text-[12.5px]"
+          : "h-8 px-3.5 text-[13px] sm:h-10 sm:rounded-[11px] sm:px-6 sm:text-[15px]",
+        active ? "text-[#14140f]" : "text-[#6f6f69] hover:text-[#26261f]",
       )}
+    >
+      {active && (
+        <span
+          aria-hidden="true"
+          className={cn(
+            "absolute inset-0 rounded-[9px] border border-[#e2e2dd] bg-white shadow-[0_1px_2px_rgba(20,20,16,0.10),0_2px_6px_rgba(20,20,16,0.05)]",
+            !small && "sm:rounded-[11px]",
+          )}
+        />
+      )}
+      <span className="relative">{children}</span>
+    </Link>
+  );
+}
+
+/** Shared Normal/Live switch. Reads the route itself so callers only pick a size. */
+export function ModeSwitch({ small = false }: { small?: boolean }) {
+  const pathname = usePathname();
+  const liveActive = pathname.startsWith("/live") || pathname.startsWith("/radar");
+
+  return (
+    <div
+      className={cn(
+        "inline-flex shrink-0 items-center bg-[#ededea] p-[3px]",
+        small ? "rounded-[10px]" : "rounded-[11px] sm:rounded-[13px]",
+      )}
+      role="group"
+      aria-label="PAI mode"
+      style={{ viewTransitionName: "mode-switch" }}
+    >
+      <ModeSegment href="/" active={!liveActive} small={small} transitionTypes={["mode-switch"]}>
+        Normal
+      </ModeSegment>
+      <ModeSegment href="/live" active={liveActive} small={small} transitionTypes={["mode-switch"]}>
+        Live
+      </ModeSegment>
+    </div>
+  );
+}
+
+export function ProspectHeader({
+  backHref,
+  backLabel,
+  wide = false,
+  compact = false,
+}: {
+  backHref?: string;
+  backLabel?: string;
+  wide?: boolean;
+  compact?: boolean;
+}) {
+  const pathname = usePathname();
+  const liveActive = pathname.startsWith("/live") || pathname.startsWith("/radar");
+
+  return (
+    <header
+      className={cn(
+        "relative z-20 mx-auto flex w-full items-center justify-between px-5 sm:px-8",
+        compact ? "h-[72px] sm:h-20" : "h-28",
+        wide || compact ? "max-w-[1400px]" : "max-w-[1180px]",
+      )}
+    >
+      <div className="flex min-w-0 items-center gap-3 sm:gap-5">
+        <Link href="/" className="flex shrink-0 items-center" aria-label="PAI home">
+          <Image
+            src="/PAINEWLOGO.png"
+            alt="PAI"
+            width={1536}
+            height={1024}
+            className={compact ? "h-10 w-auto sm:h-14" : "h-14 w-auto sm:h-24"}
+            priority
+          />
+        </Link>
+        <ModeSwitch />
+      </div>
+      <div className="flex items-center gap-4 sm:gap-6">
+        {backHref ? (
+          <RewriteBackLink href={backHref} label={backLabel ?? "Back"} />
+        ) : (
+          <div className="flex items-center gap-3 sm:gap-4">
+            {!liveActive && <RotatingTagline />}
+            <a
+              href={GITHUB_URL}
+              target="_blank"
+              rel="noreferrer"
+              className="hidden items-center gap-2 rounded-full border border-[#e0e0db] bg-white/70 px-3.5 py-2 text-xs font-semibold text-[#44443f] backdrop-blur transition hover:border-[#cfcfc9] hover:text-[#151513] sm:inline-flex"
+              aria-label="View source on GitHub"
+            >
+              <GitHubIcon />
+              GitHub
+            </a>
+          </div>
+        )}
+      </div>
     </header>
   );
 }

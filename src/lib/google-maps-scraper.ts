@@ -145,7 +145,9 @@ function zoomForRadius(radiusMiles: number) {
   if (radiusMiles <= 0.5) return 15;
   if (radiusMiles <= 1) return 14;
   if (radiusMiles <= 2) return 13;
-  return 12;
+  if (radiusMiles <= 5) return 12;
+  if (radiusMiles <= 10) return 11;
+  return 10;
 }
 
 function mapsPlaceUrl(placeId: string, coordinates: Coordinates) {
@@ -413,8 +415,10 @@ async function scrapeUncached(
   queries: string[],
 ): Promise<GoogleMapsScrapeResult> {
   const retrievedAt = new Date().toISOString();
-  const concurrency = numberEnv("GOOGLE_MAPS_SCRAPER_CONCURRENCY", 2, 1, 4);
-  const delayMs = numberEnv("GOOGLE_MAPS_SCRAPER_DELAY_MS", 250, 0, 5_000);
+  // Each query costs two dependent round trips, so the queue depth is what sets
+  // the wall clock. Both stay env-tunable if Google starts pushing back.
+  const concurrency = numberEnv("GOOGLE_MAPS_SCRAPER_CONCURRENCY", 4, 1, 6);
+  const delayMs = numberEnv("GOOGLE_MAPS_SCRAPER_DELAY_MS", 120, 0, 5_000);
   const byId = new Map<string, PlaceCandidate>();
   const failures: string[] = [];
   let nextIndex = 0;

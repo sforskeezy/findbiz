@@ -3,9 +3,14 @@ import { NextResponse } from "next/server";
 import { fccRuntimeConfigured } from "@/lib/fcc";
 import { googleMapsScraperEnabled } from "@/lib/google-maps-scraper";
 import { hasGooglePlacesKey } from "@/lib/google-places";
+import { googleResearchStatus } from "@/lib/google-research-engine";
 import { PAI_PLACES_LABEL } from "@/lib/pai-places";
 import { placesCacheStatus } from "@/lib/places-cache";
 import { hasRapidApiKey } from "@/lib/rapidapi-local-business";
+import { liveAssistantStatus } from "@/lib/live/engine";
+import { liveStoreStatus } from "@/lib/live/store";
+import { radarBriefStatus } from "@/lib/radar/brief";
+import { radarStoreStatus } from "@/lib/radar/store";
 import { researchBriefConfigured } from "@/lib/research-brief";
 
 export async function GET() {
@@ -34,15 +39,21 @@ export async function GET() {
     googleMapsScraperApi: "/api/maps/search",
     publicWebResearch: {
       officialWebsite: "active",
-      googleProgrammableSearch:
-        (process.env.GOOGLE_SEARCH_API_KEY || process.env.GOOGLE_MAPS_API_KEY) &&
-        process.env.GOOGLE_SEARCH_ENGINE_ID
-          ? "active"
-          : "not_configured",
+      googleResearchEngine: googleResearchStatus(),
       allowedSearchDomains: (process.env.RESEARCH_SEARCH_DOMAINS || "")
         .split(",")
         .map((value) => value.trim())
         .filter(Boolean),
+    },
+    live: {
+      chatApi: "/api/live/chat",
+      store: await liveStoreStatus(),
+      assistant: liveAssistantStatus(),
+    },
+    radar: {
+      scanApi: "/api/radar/scan",
+      store: await radarStoreStatus(),
+      brief: radarBriefStatus(),
     },
     databaseConfigured: Boolean(process.env.DATABASE_URL),
     fccMode: fccRuntimeConfigured()

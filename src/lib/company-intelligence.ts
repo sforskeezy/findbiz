@@ -9,6 +9,7 @@ import type {
   Prospect,
   PublicFact,
   PublicFactKind,
+  ResearchDiagnostics,
   SourceRecord,
   WebSearchResult,
 } from "@/lib/types";
@@ -351,58 +352,22 @@ function addPageFacts(page: PageSnapshot, facts: PublicFact[], retrievedAt: stri
   for (const email of [...mailLinks, ...emailMatches].slice(0, 8)) {
     addFact(facts, { kind: "email", label: "Published email", value: email, sourceUrl: page.url, retrievedAt });
   }
-  for (const match of page.text.matchAll(COMPANY_ID_PATTERN)) {
-    addFact(facts, {
-      kind: "company_id",
-      label: `Published ${match[1].toLowerCase()} number`,
-      value: match[2],
-      sourceUrl: page.url,
-      retrievedAt,
-      confidence: "Estimated",
-    });
-  }
+  addIdentifierFacts(page.text, facts, page.url, retrievedAt, "Estimated");
 }
 
-function googleSearchConfigured() {
-  return Boolean(
-    (process.env.GOOGLE_SEARCH_API_KEY?.trim() || process.env.GOOGLE_MAPS_API_KEY?.trim()) &&
-      process.env.GOOGLE_SEARCH_ENGINE_ID?.trim(),
-  );
-}
-
-async function searchGoogle(prospect: Prospect): Promise<WebSearchResult[]> {
-  const key = process.env.GOOGLE_SEARCH_API_KEY?.trim() || process.env.GOOGLE_MAPS_API_KEY?.trim();
-  const cx = process.env.GOOGLE_SEARCH_ENGINE_ID?.trim();
-  if (!key || !cx) return [];
-
-  const domains = (process.env.RESEARCH_SEARCH_DOMAINS || "")
-    .split(",")
-    .map((item) => item.trim().replace(/^https?:\/\//, "").replace(/\/.*$/, ""))
-    .filter(Boolean)
-    .slice(0, 8);
-  const domainFilter = domains.length ? ` (${domains.map((domain) => `site:${domain}`).join(" OR ")})` : "";
-  const query = `"${prospect.name.slice(0, 120)}" "${prospect.address.slice(0, 160)}"${domainFilter}`;
-  const url = new URL("https://customsearch.googleapis.com/customsearch/v1");
-  url.searchParams.set("key", key);
-  url.searchParams.set("cx", cx);
-  url.searchParams.set("q", query);
-  url.searchParams.set("num", "10");
-  url.searchParams.set("safe", "active");
-  url.searchParams.set("gl", "us");
-
-  const response = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
-  const payload = (await response.json()) as GoogleSearchPayload;
-  if (!response.ok) throw new Error(payload.error?.message || `Google web search returned ${response.status}.`);
-
-  return (payload.items ?? [])
-    .filter((item) => item.link && /^https?:\/\//i.test(item.link))
-    .map((item) => ({
-      id: hashId(item.link || "", item.title || ""),
-      title: item.title?.trim() || sourceLabel(item.link || ""),
-      url: item.link!,
-      snippet: item.snippet?.replace(/\s+/g, " ").trim() || "",
-      provider: "Google Programmable Search",
-    }));
+function emptyResearch(): ResearchDiagnostics {
+  return {
+    engine: "first_party_google_research",
+    providers: [],
+    queriesPlanned: 0,
+    queriesCompleted: 0,
+    rawResults: 0,
+    uniqueResults: 0,
+    pagesSelected: 0,
+    pagesRead: 0,
+    failures: [],
+    cacheHit: false,
+  };
 }
 
 function addSearchFacts(results: WebSearchResult[], facts: PublicFact[], retrievedAt: string) {
@@ -492,37 +457,112 @@ export async function researchCompany(prospect: Prospect): Promise<CompanyIntell
     });
   }
 
-  if (prospect.website) {
+  // The site crawl and the search engine touch different hosts, so run them together
+  // instead of paying for one and then the other.
+  const sitePages: Promise<PageSnapshot[]> = (async () => {
+    if (!prospect.website) {
+      warnings.push("No official website was supplied by the business directory, so site-level contact research was skipped.");
+      return [];
+    }
     try {
       const home = await fetchHtml(prospect.website);
-      pages.push(home);
+      const found = [home];
       const links = discoverCompanyLinks(home);
       const detailPages = await Promise.allSettled(links.map((url) => fetchHtml(url)));
       for (const result of detailPages) {
-        if (result.status === "fulfilled" && !pages.some((page) => page.url === result.value.url)) pages.push(result.value);
+        if (result.status === "fulfilled" && !found.some((page) => page.url === result.value.url)) found.push(result.value);
       }
       if (detailPages.some((result) => result.status === "rejected")) {
         warnings.push("Some linked company pages could not be read.");
       }
+      return found;
     } catch (error) {
       warnings.push(error instanceof Error ? `Official website research: ${error.message}` : "Official website could not be read.");
+      return [];
     }
-  } else {
-    warnings.push("No official website was supplied by the business directory, so site-level contact research was skipped.");
-  }
+  })();
+
+  const googleSearch = researchGoogleWeb(prospect).then(
+    (value) => ({ ok: true as const, value }),
+    (error: unknown) => ({ ok: false as const, error }),
+  );
+
+  const [crawled, googleOutcome] = await Promise.all([sitePages, googleSearch]);
+  pages.push(...crawled);
 
   for (const page of pages) addPageFacts(page, facts, retrievedAt);
 
   let searchResults: WebSearchResult[] = [];
-  if (googleSearchConfigured()) {
-    try {
-      searchResults = await searchGoogle(prospect);
-      addSearchFacts(searchResults, facts, retrievedAt);
-    } catch (error) {
-      warnings.push(error instanceof Error ? `Google web search: ${error.message}` : "Google web search could not be completed.");
+  let research = emptyResearch();
+  try {
+    if (!googleOutcome.ok) throw googleOutcome.error;
+    const google = googleOutcome.value;
+    searchResults = google.results;
+    research = { ...google.diagnostics };
+    addSearchFacts(searchResults, facts, retrievedAt);
+
+    const already = new Set(
+      pages.flatMap((page) => {
+        try {
+          return [comparableHost(page.url)];
+        } catch {
+          return [];
+        }
+      }),
+    );
+    if (prospect.website) {
+      try {
+        already.add(comparableHost(prospect.website));
+      } catch {
+        // Listed websites that are not absolute URLs are skipped for extra crawls.
+      }
     }
-  } else {
-    warnings.push("Google web search is not configured; add GOOGLE_SEARCH_ENGINE_ID and an API key to include indexed results.");
+
+    const extra = searchResults
+      .filter(
+        (result) =>
+          result.sourceKind === "government_registry" ||
+          result.sourceKind === "professional_registry" ||
+          result.sourceKind === "official_site",
+      )
+      .filter((result) => {
+        try {
+          return !already.has(comparableHost(result.url));
+        } catch {
+          return false;
+        }
+      })
+      .slice(0, 4);
+    research.pagesSelected = extra.length;
+
+    const extraPages = await Promise.allSettled(extra.map((result) => fetchHtml(result.url)));
+    let extraRead = 0;
+    extraPages.forEach((result, index) => {
+      if (result.status !== "fulfilled") {
+        warnings.push(
+          `Could not read ${sourceLabel(extra[index].url)}: ${
+            result.reason instanceof Error ? result.reason.message : "unavailable"
+          }`,
+        );
+        return;
+      }
+      if (pages.some((page) => page.url === result.value.url)) return;
+      pages.push(result.value);
+      addPageFacts(result.value, facts, retrievedAt);
+      extraRead += 1;
+    });
+    research.pagesRead = extraRead;
+  } catch (error) {
+    warnings.push(
+      error instanceof Error ? `Google research engine: ${error.message}` : "Google research engine could not be completed.",
+    );
+  }
+
+  if (!searchResults.length) {
+    const engineNote = research.failures[0]
+      ? `Google research found no usable sources. ${research.failures[0]}`
+      : "Google research completed with no usable indexed sources for this company.";
+    warnings.push(engineNote);
   }
 
   if (!facts.length) warnings.push("No additional public contact or registration facts were found. Nothing was guessed.");
@@ -545,14 +585,14 @@ export async function researchCompany(prospect: Prospect): Promise<CompanyIntell
       status: prospect.confidence,
     });
   }
-  if (searchResults.length) {
+  if (searchResults.length || research.queriesCompleted) {
     sources.push({
-      id: hashId("google-search", prospect.id, retrievedAt),
-      label: "Google Programmable Search results",
-      url: "https://developers.google.com/custom-search/v1/overview",
+      id: hashId("google-research", prospect.id, retrievedAt),
+      label: research.providers.join(" + ") || "Google research engine",
+      url: searchResults[0]?.url || "https://www.google.com/search",
       sourceDate: retrievedAt,
       retrievedAt,
-      status: "Estimated",
+      status: searchResults.length ? "Estimated" : "Unavailable",
     });
   }
 
@@ -563,6 +603,7 @@ export async function researchCompany(prospect: Prospect): Promise<CompanyIntell
     searchResults,
     sources,
     pagesScanned: pages.length,
+    research,
     retrievedAt,
     warnings: [...new Set(warnings)],
   };

@@ -30,3 +30,9 @@ next-env.d.ts
 
 # Operator-maintained business list (may contain private prospect notes)
 /data/places-cache.json
+
+# Radar territory snapshots, scans, and business timelines
+/data/radar/
+
+# Live chat sessions and remembered facts
+/data/live/
