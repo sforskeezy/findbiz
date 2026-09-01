@@ -1,13 +1,15 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type MouseEvent } from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { BorderBeam } from "border-beam";
-import { ChevronDown, ChevronRight, Download, MapPin, Search } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Download, MapPin, Search } from "lucide-react";
 
 import { ProspectHeader } from "@/components/prospect-header";
 import { SearchProgress } from "@/components/search-progress";
-import { scoreTone } from "@/components/ui";
+import { cn, scoreTone } from "@/components/ui";
+import { displayPhone } from "@/lib/phone";
 import type { Prospect, ResearchResponse } from "@/lib/types";
 
 type LoadState = "loading" | "success" | "error";
@@ -29,7 +31,7 @@ function placeLine(prospect: Prospect) {
 }
 
 function contactLine(prospect: Prospect) {
-  if (prospect.phone) return prospect.phone;
+  if (prospect.phone) return displayPhone(prospect.phone);
   if (!prospect.website) return null;
   try {
     return new URL(prospect.website).hostname.replace(/^www\./, "");
@@ -51,6 +53,19 @@ function MetaDot() {
   return <span aria-hidden="true" className="h-[3px] w-[3px] shrink-0 rounded-full bg-[#cbcbc4]" />;
 }
 
+function lookedAtKey(address: string, radius: number) {
+  return `prospectiq.lookedAt:${address.trim().toLowerCase()}|${radius}`;
+}
+
+function readLookedAt(key: string) {
+  try {
+    const raw = JSON.parse(window.sessionStorage.getItem(key) || "[]") as unknown;
+    return Array.isArray(raw) ? raw.filter((id): id is string => typeof id === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
 function csvCell(value: string | number | null) {
   if (value === null || value === undefined) return "";
   let text = String(value).replace(/\r?\n/g, " ");
@@ -61,7 +76,7 @@ function csvCell(value: string | number | null) {
 function exportResults(prospects: Prospect[]) {
   const rows = [
     ["Initial fit", "Business", "Category", "Distance miles", "Address", "Phone", "Website", "Source"],
-    ...prospects.map((item) => [item.score, item.name, item.category, item.distanceMiles.toFixed(2), item.address, item.phone, item.website, item.source]),
+    ...prospects.map((item) => [item.score, item.name, item.category, item.distanceMiles.toFixed(2), item.address, displayPhone(item.phone) ?? item.phone, item.website, item.source]),
   ];
   const csv = rows.map((row) => row.map(csvCell).join(",")).join("\r\n");
   const url = URL.createObjectURL(new Blob(["\ufeff", csv], { type: "text/csv;charset=utf-8" }));
@@ -85,6 +100,12 @@ export function BusinessResultsPage() {
   const [error, setError] = useState("");
   const [category, setCategory] = useState("All");
   const [sort, setSort] = useState<"fit" | "distance" | "name">("fit");
+  const [lookedAt, setLookedAt] = useState<Set<string>>(() => new Set());
+  const seenStorageKey = lookedAtKey(address, radius);
+
+  useEffect(() => {
+    setLookedAt(new Set(readLookedAt(seenStorageKey)));
+  }, [seenStorageKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -165,10 +186,32 @@ export function BusinessResultsPage() {
     router.push(`/search?address=${encodeURIComponent(queryAddress.trim())}&radius=${queryRadius}`);
   }
 
+  function businessHref(prospect: Prospect) {
+    const query = new URLSearchParams({ address, radius: String(radius) });
+    return `/business/${encodeURIComponent(prospect.id)}?${query.toString()}`;
+  }
+
   function openBusiness(prospect: Prospect) {
     window.sessionStorage.setItem("prospectiq.selectedProspect", JSON.stringify(prospect));
-    const query = new URLSearchParams({ address, radius: String(radius) });
-    router.push(`/business/${encodeURIComponent(prospect.id)}?${query.toString()}`);
+  }
+
+  function toggleLookedAt(id: string) {
+    setLookedAt((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      window.sessionStorage.setItem(seenStorageKey, JSON.stringify([...next]));
+      return next;
+    });
+  }
+
+  function onBusinessClick(event: MouseEvent<HTMLAnchorElement>, prospect: Prospect) {
+    if (event.ctrlKey) {
+      event.preventDefault();
+      toggleLookedAt(prospect.id);
+      return;
+    }
+    openBusiness(prospect);
   }
 
   if (state === "loading") {
@@ -318,15 +361,28 @@ export function BusinessResultsPage() {
                     const place = placeLine(prospect);
                     const contact = contactLine(prospect);
                     const delay = `${Math.min(index, 10) * 45}ms`;
+                    const seen = lookedAt.has(prospect.id);
                     return (
                       <li
                         key={prospect.id}
                         className="animate-enter border-t border-[#e5e5e0] first:border-t-0"
                         style={{ animationDelay: delay }}
                       >
-                        <button
-                          type="button"
-                          onClick={() => openBusiness(prospect)}
+                        <Link
+                          href={businessHref(prospect)}
+                          title="Ctrl-click to mark as looked at"
+                          aria-label={
+                            seen
+                              ? `${prospect.name}, looked at. Control-click to clear.`
+                              : `${prospect.name}. Control-click to mark as looked at.`
+                          }
+                          onClick={(event) => onBusinessClick(event, prospect)}
+                          onContextMenu={(event) => {
+                            if (event.ctrlKey) {
+                              event.preventDefault();
+                              toggleLookedAt(prospect.id);
+                            }
+                          }}
                           className="group relative block w-full py-4 text-left sm:py-[18px]"
                         >
                           <span className="pointer-events-none absolute -inset-x-3 -inset-y-px rounded-[16px] border border-[#e6e6e0] bg-white/90 opacity-0 shadow-[0_14px_36px_rgba(20,20,16,0.07)] backdrop-blur-sm transition-opacity duration-200 group-hover:opacity-100 group-focus-visible:opacity-100 sm:-inset-x-5" />
@@ -334,10 +390,22 @@ export function BusinessResultsPage() {
                           <span className="relative flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-6">
                             <span className="min-w-0 flex-1 transition-transform duration-200 group-hover:translate-x-[3px]">
                               <span className="flex items-baseline gap-2.5">
-                                <span className="truncate text-[16px] font-semibold tracking-[-0.02em] text-[#1a1a17] sm:text-[17px]">
+                                <span
+                                  className={cn(
+                                    "truncate text-[16px] font-semibold tracking-[-0.02em] sm:text-[17px]",
+                                    seen
+                                      ? "text-[#9a9a93] line-through decoration-[#d0d0ca]"
+                                      : "text-[#1a1a17]",
+                                  )}
+                                >
                                   {prospect.name}
                                 </span>
-                                {sort === "fit" && index === 0 && (
+                                {seen && (
+                                  <span className="hidden shrink-0 text-[9px] font-bold uppercase tracking-[0.14em] text-[#7a9a86] sm:inline">
+                                    Looked at
+                                  </span>
+                                )}
+                                {!seen && sort === "fit" && index === 0 && (
                                   <span className="hidden shrink-0 text-[9px] font-bold uppercase tracking-[0.14em] text-[#a4a49d] sm:inline">
                                     Top fit
                                   </span>
@@ -376,19 +444,25 @@ export function BusinessResultsPage() {
                                     className="fit-bar block h-full rounded-full"
                                     style={{
                                       width: `${prospect.score}%`,
-                                      backgroundColor: scoreTone(prospect.score),
+                                      backgroundColor: seen ? "#c5c5be" : scoreTone(prospect.score),
                                       animationDelay: delay,
                                     }}
                                   />
                                 </span>
                               </span>
-                              <ChevronRight
-                                size={16}
-                                className="shrink-0 text-[#b9b9b2] transition duration-200 group-hover:translate-x-1 group-hover:text-[#1f1f1c]"
-                              />
+                              {seen ? (
+                                <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-[#e7f3ec] text-[#19734a]">
+                                  <Check size={11} strokeWidth={2.6} />
+                                </span>
+                              ) : (
+                                <ChevronRight
+                                  size={16}
+                                  className="shrink-0 text-[#b9b9b2] transition duration-200 group-hover:translate-x-1 group-hover:text-[#1f1f1c]"
+                                />
+                              )}
                             </span>
                           </span>
-                        </button>
+                        </Link>
                       </li>
                     );
                   })}
@@ -411,7 +485,9 @@ export function BusinessResultsPage() {
               )}
             </section>
 
-            <p className="mt-5 text-[10px] leading-5 text-[#9d9d96]">Verify business facts before outreach.</p>
+            <p className="mt-5 text-[10px] leading-5 text-[#9d9d96]">
+              Ctrl-click a business to mark it looked at. Verify facts before outreach.
+            </p>
           </div>
         ) : null}
       </div>

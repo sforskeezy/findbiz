@@ -1,5 +1,13 @@
 @import "tailwindcss";
 
+@theme {
+  --font-sans:
+    var(--font-inter), ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text",
+    "Segoe UI", system-ui, Roboto, Helvetica, Arial, sans-serif;
+  --font-mono:
+    var(--font-jetbrains-mono), ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
 :root {
   --canvas: #f3f3f0;
   --surface: #ffffff;
@@ -26,14 +34,24 @@ body {
   margin: 0;
   background: var(--canvas);
   color: var(--ink);
-  font-family:
-    ui-sans-serif, -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
-    "Segoe UI Variable Text", "Segoe UI", system-ui, Roboto, Helvetica, Arial, sans-serif;
-  font-feature-settings: "kern" 1, "liga" 1, "calt" 1;
-  letter-spacing: -0.011em;
+  font-family: var(--font-sans);
+  font-feature-settings:
+    "kern" 1,
+    "liga" 1,
+    "calt" 1;
+  font-optical-sizing: auto;
+  letter-spacing: -0.006em;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+code,
+kbd,
+pre,
+samp {
+  font-family: var(--font-mono);
+  font-feature-settings: "liga" 0;
 }
 
 button,
@@ -90,8 +108,13 @@ select:focus-visible {
   animation: enter 420ms cubic-bezier(0.2, 0.75, 0.2, 1) both;
 }
 
+/* Page transitions ---------------------------------------------------------
+   Fill mode stays at `backwards` so no transform or filter is left on the page
+   shell once the entrance finishes; a lingering one would turn the shell into a
+   containing block and break fixed-position UI inside the page. */
+
 .page-enter {
-  animation: page-enter 480ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: page-enter 520ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
 }
 
 @keyframes page-enter {
@@ -102,8 +125,47 @@ select:focus-visible {
   }
   to {
     opacity: 1;
-    filter: blur(0);
+    filter: none;
     transform: none;
+  }
+}
+
+/* Switching Normal <-> Live re-forms the page in place: the mode pill slides
+   and everything around it defocuses and settles, so the switch reads as the
+   fixed point of the whole navigation. */
+
+.page-enter-mode {
+  animation: page-enter-mode 560ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+  transform-origin: 50% 8%;
+}
+
+@keyframes page-enter-mode {
+  from {
+    opacity: 0;
+    filter: blur(14px) saturate(0.85);
+    transform: scale(1.028);
+  }
+  55% {
+    opacity: 1;
+  }
+  to {
+    opacity: 1;
+    filter: none;
+    transform: none;
+  }
+}
+
+.page-exit-mode {
+  animation: page-exit-mode 260ms cubic-bezier(0.4, 0, 1, 1) forwards;
+  transform-origin: 50% 8%;
+  pointer-events: none;
+}
+
+@keyframes page-exit-mode {
+  to {
+    opacity: 0;
+    filter: blur(12px);
+    transform: scale(0.982);
   }
 }
 
@@ -213,8 +275,14 @@ select:focus-visible {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .page-enter {
+  .page-enter,
+  .page-enter-mode,
+  .page-exit-mode {
     animation: none;
+  }
+
+  .page-exit-mode {
+    opacity: 0;
   }
 }
 

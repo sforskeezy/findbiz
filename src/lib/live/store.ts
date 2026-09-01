@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 
@@ -7,25 +7,19 @@ import type {
   LiveSession,
   LiveSessionSummary,
 } from "@/lib/live/types";
+import { ensureWritableStore, preferredStorePath } from "@/lib/writable-store";
 
 type LiveIndex = {
   version: 1;
   sessionIds: string[];
 };
 
-function liveRoot() {
-  const configured = process.env.LIVE_STORE_PATH?.trim();
-  if (configured) {
-    return path.isAbsolute(configured) ? configured : path.join(process.cwd(), configured);
-  }
-  return path.join(/* turbopackIgnore: true */ process.cwd(), "data", "live");
-}
+let resolvedRoot: string | null = null;
 
 async function ensureRoot() {
-  const root = liveRoot();
-  await mkdir(/* turbopackIgnore: true */ root, { recursive: true });
-  await mkdir(/* turbopackIgnore: true */ path.join(root, "sessions"), { recursive: true });
-  return root;
+  if (resolvedRoot) return resolvedRoot;
+  resolvedRoot = await ensureWritableStore(preferredStorePath(process.env.LIVE_STORE_PATH, "live"), ["sessions"]);
+  return resolvedRoot;
 }
 
 async function readJson<T>(file: string, fallback: T): Promise<T> {
@@ -162,9 +156,10 @@ export async function forgetFact(id: string) {
 }
 
 export async function liveStoreStatus() {
+  const root = await ensureRoot();
   const index = await loadIndex();
   return {
-    path: "data/live",
+    path: root,
     sessions: index.sessionIds.length,
     memory: (await loadMemory()).length,
   };

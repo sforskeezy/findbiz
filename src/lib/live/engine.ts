@@ -1,5 +1,6 @@
 import {
   createSession,
+  forgetFact,
   liveId,
   loadMemory,
   loadSession,
@@ -14,9 +15,12 @@ import {
   currentProspect,
   dedupeSources,
   findBusinesses,
+  liveSearchDetail,
+  refineQueue,
   researchProspect,
   skipQueue,
   toSource,
+  webLookup,
 } from "@/lib/live/tools";
 import type {
   LiveChatEvent,
@@ -50,27 +54,124 @@ async function trackStep(
   await trace.emit({ type: "status", message: label });
 }
 
-const TOOL_PHRASING: Array<[RegExp, string]> = [
-  [/\bfind_businesses\b/g, "the area search"],
-  [/\bresearch_business\b/g, "a public records lookup"],
-  [/\bcheck_broadband\b/g, "the FCC broadband map"],
-  [/\bskip_to_next\b/g, "moving down the list"],
-  [/\bdraft_outreach\b/g, "drafting the opener"],
-  [/\bremember\b/g, "saving a note"],
-];
+const PHONE_IN_TEXT = /(?:\+?1[\s.-]*)?\(?\d{3}\)?[\s.-]*\d{3}[\s.-]\d{4}/g;
 
-/** gpt-oss thinks in raw scratchpad. Keep the whole thing, just make it readable. */
-function readableReasoning(reasoning: string) {
-  let text = reasoning.replace(/\s+/g, " ").trim();
-  if (text.length < 8) return null;
-  for (const [pattern, phrase] of TOOL_PHRASING) text = text.replace(pattern, phrase);
-  text = text.replace(/\bcalling\b/gi, "using").replace(/\bcall\b/gi, "use");
-  const sentence = text.split(/(?<=[.!?])\s+/)[0] ?? text;
-  const label = sentence.length > 88 ? `${sentence.slice(0, 85).trim()}…` : sentence;
-  return {
-    label: label.replace(/^(we|i)\s+/i, "").replace(/^./, (char) => char.toUpperCase()),
-    thought: text.length > 900 ? `${text.slice(0, 900).trim()}…` : text,
-  };
+function phoneDigits(value: string) {
+  return value.replace(/\D/g, "").replace(/^1(?=\d{10}$)/, "");
+}
+
+function collectGroundedPhones(payload: string, into: Set<string>) {
+  for (const match of payload.match(PHONE_IN_TEXT) ?? []) {
+    const digits = phoneDigits(match);
+    if (digits.length === 10) into.add(digits);
+  }
+}
+
+/**
+ * The model is told never to invent a phone number. This is the check that it
+ * did not: any 10-digit number in the answer that never appeared in the list or
+ * in a tool result gets pulled before the rep can dial it.
+ */
+function stripUngroundedPhones(content: string, allowed: Set<string>) {
+  let removed = 0;
+  const cleaned = content.replace(PHONE_IN_TEXT, (match) => {
+    const digits = phoneDigits(match);
+    if (digits.length !== 10 || allowed.has(digits)) return match;
+    removed += 1;
+    return "(no public phone on file)";
+  });
+  return { content: cleaned, removed };
+}
+
+function looksLikeDemo(text: string) {
+  return /\b(Acme Legal|Bright Dental|Two things I can do|parsed a task item)\b/i.test(text);
+}
+
+function isPresentationFact(fact: LiveMemoryFact) {
+  return fact.kind === "preference" && /\b(table|tables|markdown|skimmable|boxed|demo|format)\b/i.test(fact.text);
+}
+
+function usefulMemory(memory: LiveMemoryFact[]) {
+  return memory.filter((item) => !isPresentationFact(item));
+}
+
+const TABLE_ROW = /^\s*\|.*\|?\s*$/;
+const TABLE_DIVIDER = /^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$/;
+
+function splitTableRow(line: string) {
+  return line
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.replace(/\*+/g, "").trim());
+}
+
+/** Turn a markdown table into a numbered list so businesses never render as a boxed grid. */
+function flattenMarkdownTables(text: string) {
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  const out: string[] = [];
+  let index = 0;
+
+  while (index < lines.length) {
+    const next = lines[index + 1] ?? "";
+    if (TABLE_ROW.test(lines[index]) && lines[index].includes("|") && TABLE_DIVIDER.test(next) && next.includes("-")) {
+      const head = splitTableRow(lines[index]);
+      index += 2;
+      const rows: string[][] = [];
+      while (index < lines.length && TABLE_ROW.test(lines[index]) && !TABLE_DIVIDER.test(lines[index])) {
+        rows.push(splitTableRow(lines[index]));
+        index += 1;
+      }
+      rows.forEach((row, rowIndex) => {
+        const parts = row
+          .map((cell, cellIndex) => {
+            if (!cell || /^(#|business|name|miles|distance|fit|phone|category|why.*)$/i.test(cell)) return "";
+            if (cellIndex === 0) return `**${cell.replace(/^\d+[.)]\s*/, "")}**`;
+            const label = head[cellIndex] ?? "";
+            if (/\b(miles|distance)\b/i.test(label) && !/\bmi\b/i.test(cell)) return `${cell} mi`;
+            return cell;
+          })
+          .filter(Boolean);
+        if (parts.length) out.push(`${rowIndex + 1}. ${parts.join(" — ")}`);
+      });
+      continue;
+    }
+    out.push(lines[index]);
+    index += 1;
+  }
+
+  return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function looksIncomplete(text: string) {
+  const trimmed = text.trim();
+  if (!trimmed) return true;
+  if (trimmed.endsWith("|") || /\|[-: ]*$/.test(trimmed.split("\n").at(-1) ?? "")) return true;
+  const lastWord = trimmed.split(/\s+/).pop() ?? "";
+  return lastWord.length <= 3 && !/[.!?)]$/.test(trimmed) && trimmed.length < 120;
+}
+
+function hasBusinessTable(text: string) {
+  return /\n\s*\|.+\|\s*\n\s*\|[-: |]+\|/m.test(text);
+}
+
+/** Newest turns first within a character budget, so a long chat costs a stable number of tokens. */
+function historyMessages(messages: LiveChatMessage[]): ChatMessage[] {
+  const kept: ChatMessage[] = [];
+  let budget = HISTORY_BUDGET_CHARS;
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const item = messages[index];
+    if (item.role === "assistant" && looksLikeDemo(item.content)) continue;
+    const flattened = flattenMarkdownTables(item.content);
+    const content = flattened.length > 1_800 ? `${flattened.slice(0, 1_800)}…` : flattened;
+    if (content.length > budget && kept.length >= 2) break;
+    budget -= content.length;
+    kept.push({ role: item.role, content });
+  }
+
+  return kept.reverse();
 }
 
 async function trackSources(trace: TurnTrace, sources: LiveSource[]) {
@@ -84,6 +185,7 @@ type ChatMessage = {
   content: string | null;
   tool_calls?: ToolCall[];
   tool_call_id?: string;
+  reasoning_content?: string | null;
 };
 
 type ToolCall = {
@@ -92,19 +194,42 @@ type ToolCall = {
   function: { name: string; arguments: string };
 };
 
-type GroqResponse = {
+type ToolCallDelta = {
+  index?: number;
+  id?: string;
+  type?: "function";
+  function?: { name?: string; arguments?: string };
+};
+
+type GroqStreamChunk = {
   choices?: Array<{
+    delta?: {
+      content?: string | null;
+      reasoning?: string | null;
+      reasoning_content?: string | null;
+      tool_calls?: ToolCallDelta[];
+    };
     message?: {
       content?: string | null;
       reasoning?: string | null;
-      tool_calls?: ToolCall[];
+      reasoning_content?: string | null;
+      tool_calls?: ToolCallDelta[];
     };
-    finish_reason?: string;
+    finish_reason?: string | null;
   }>;
   error?: { message?: string };
 };
 
+type ModelReply = {
+  content: string;
+  reasoning: string;
+  toolCalls: ToolCall[];
+};
+
 const LIVE_MODEL_FALLBACK = "openai/gpt-oss-120b";
+const MAX_TOOL_ROUNDS = 4;
+/** Free-tier keys are billed per minute, so the history is trimmed by size, not turn count. */
+const HISTORY_BUDGET_CHARS = 5_000;
 
 const TOOLS = [
   {
@@ -181,6 +306,61 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "refine_list",
+      description:
+        "Narrow or re-order the list the rep already has, without searching again. Use when they ask for only one industry, only places within a distance, only ones with a phone, or the closest ones first.",
+      parameters: {
+        type: "object",
+        properties: {
+          category: { type: "string", description: "Industry to keep, such as Legal & accounting." },
+          maxDistanceMiles: { type: "number", description: "Drop anything farther than this." },
+          requirePhone: { type: "boolean", description: "Keep only listings with a public phone." },
+          sortBy: { type: "string", enum: ["fit", "distance"], description: "Default fit." },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "web_lookup",
+      description:
+        "Search the public web about one business on the list for something the listing does not cover: who owns it, how many locations, recent news, whether it is still open. Use when research_business already ran and the answer is still missing.",
+      parameters: {
+        type: "object",
+        properties: {
+          question: { type: "string", description: "What you need to find out, in a few words." },
+          prospectId: { type: "string" },
+          name: { type: "string", description: "Business name if you do not have the id." },
+        },
+        required: ["question"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "mark_contacted",
+      description:
+        "Record that the rep just worked a business, so it is not suggested again. Use when they say they called it, left a voicemail, emailed it, or that it is a dead end.",
+      parameters: {
+        type: "object",
+        properties: {
+          outcome: {
+            type: "string",
+            enum: ["reached", "voicemail", "no_answer", "not_interested", "follow_up"],
+          },
+          prospectId: { type: "string" },
+          name: { type: "string", description: "Business name if you do not have the id." },
+          note: { type: "string", description: "One short line worth keeping, if there is one." },
+        },
+        required: ["outcome"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "remember",
       description:
         "Save a durable fact that will help later: working territory, industries they sell, businesses already contacted, or a lasting preference. Do not save hiring, gossip, or the full chat.",
@@ -194,17 +374,84 @@ const TOOLS = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "forget",
+      description:
+        "Drop remembered facts that are now wrong or stale, such as an old territory. Use when the rep says to forget something or corrects a saved fact.",
+      parameters: {
+        type: "object",
+        properties: {
+          about: { type: "string", description: "Words that appear in the fact to drop, or the kind of fact." },
+        },
+        required: ["about"],
+      },
+    },
+  },
 ];
 
 function groqConfigured() {
   return Boolean(process.env.GROQ_API_KEY?.trim());
 }
 
+function qwenConfigured() {
+  return Boolean(process.env.DASHSCOPE_API_KEY?.trim());
+}
+
+type LiveProvider = {
+  id: "qwen" | "groq";
+  apiKey: string;
+  model: string;
+  baseUrl: string;
+  enableThinking?: boolean;
+  reasoningEffort?: "low" | "medium" | "high";
+};
+
+/** Qwen 3.5 Flash first — it is faster. Groq stays as the exhausted-quota fallback. */
+function liveProviders(): LiveProvider[] {
+  const providers: LiveProvider[] = [];
+  const qwenKey = process.env.DASHSCOPE_API_KEY?.trim();
+  const groqKey = process.env.GROQ_API_KEY?.trim();
+  if (qwenKey) {
+    providers.push({
+      id: "qwen",
+      apiKey: qwenKey,
+      model: process.env.QWEN_MODEL?.trim() || "qwen3.5-flash",
+      baseUrl: (process.env.DASHSCOPE_BASE_URL?.trim() || "https://dashscope-intl.aliyuncs.com/compatible-mode/v1").replace(
+        /\/$/,
+        "",
+      ),
+      enableThinking: false,
+    });
+  }
+  if (groqKey) {
+    providers.push({
+      id: "groq",
+      apiKey: groqKey,
+      model: process.env.LIVE_MODEL?.trim() || LIVE_MODEL_FALLBACK,
+      baseUrl: (process.env.LIVE_BASE_URL?.trim() || process.env.RADAR_BRIEF_BASE_URL?.trim() || "https://api.groq.com/openai/v1").replace(
+        /\/$/,
+        "",
+      ),
+      reasoningEffort: reasoningEffort(),
+    });
+  }
+  return providers;
+}
+
+function liveConfigured() {
+  return liveProviders().length > 0;
+}
+
 export function liveAssistantStatus() {
+  const providers = liveProviders();
   return {
+    primary: providers[0]?.id ?? "none",
+    model: providers[0]?.model ?? LIVE_MODEL_FALLBACK,
+    qwen: qwenConfigured() ? "active" : "not_configured",
     groq: groqConfigured() ? "active" : "not_configured",
-    model: process.env.LIVE_MODEL?.trim() || LIVE_MODEL_FALLBACK,
-    fallback: "tool_router",
+    fallback: providers[1]?.id ?? "tool_router",
   };
 }
 
@@ -237,8 +484,9 @@ export function publicState(session: LiveSession, memory: LiveMemoryFact[]): Liv
 }
 
 function systemPrompt(memory: LiveMemoryFact[], queue: LiveQueue | null) {
-  const memoryBlock = memory.length
-    ? memory.map((item) => `- (${item.kind}) ${item.text}`).join("\n")
+  const recalled = usefulMemory(memory);
+  const memoryBlock = recalled.length
+    ? recalled.map((item) => `- (${item.kind}) ${item.text}`).join("\n")
     : "None yet.";
   const queueBlock = queue?.prospects.length
     ? queue.prospects
@@ -248,26 +496,45 @@ function systemPrompt(memory: LiveMemoryFact[], queue: LiveQueue | null) {
         })
         .join("\n")
     : "No current list.";
-  return `You are Live, PAI's full-time sales prospecting assistant.
+  const today = new Date().toLocaleDateString("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  });
+
+  return `You are Live, PAI's full-time sales prospecting assistant. Today is ${today}.
 
 You help a field rep find nearby businesses worth contacting, brief them in chat, draft openers, and keep moving. Talk like a sharp colleague, not a chatbot.
 
-Rules:
-- Never invent businesses, phone numbers, websites, hours, owners, or events.
-- Only use tool results and the current list. If you do not know, say so and look it up.
+Grounding, in order of importance:
+- Never invent businesses, phone numbers, websites, addresses, hours, owners, or events. A number you did not read in a tool result does not exist.
+- Only use tool results, the current list, and remembered facts. If you do not know, say so in one line and either look it up or ask.
+- Attribute anything soft: "the listing says", "FCC reports", "public web". Never upgrade reported to confirmed.
 - This is not recruiting. Ignore hiring, jobs, and careers.
-- Call find_businesses only with a place the user actually named, or the remembered territory. Never guess a location from a business name, and never search a place the user did not give you.
-- If they already have a list and ask who to call, rank from the current list. Do not search again.
-- When they ask about one company, call research_business if you need public facts you do not already have.
-- If they name a business that is not on the current list and you have no territory, ask which city or ZIP it is in. Do not search for it blind.
-- When they ask who is available, who serves an address, what providers are there, or what speeds they can get, call check_broadband. Use scope "territory" if they said the area, around here, or the list; use scope "business" for one company. Never answer availability from memory, and report it as FCC provider-reported data rather than a confirmed install.
-- In broadband results, providerCount and providers cover every provider. charterSpectrum describes Charter/Spectrum only, so never read a not_reported Charter tier as "no providers serve this address".
-- When they say skip, next, or similar, call skip_to_next.
-- When they ask to write, draft, open, or email, call draft_outreach. Ground every line in the returned facts. Do not invent a new pitch.
-- Call remember only for durable facts that will help later (territory, industries, already-contacted names, working style). Never remember the whole chat.
-- Lead with the useful answer. If you found businesses, say how many are worth talking to, then name the strongest two or three with why, distance, and phone when you have it. The full list is already on screen, so do not repeat every row.
-- Keep replies tight. Usually under 140 words, except emails, which can run a short paragraph.
-- Write in markdown the UI can render: **bold** names, numbered lists when ranking, a short ## heading only when splitting a brief from a draft. No tables, no emoji, no horizontal rules.
+
+Picking the right tool:
+- find_businesses only with a place the rep actually named, or the remembered territory. Never guess a location from a business name, and never search a place they did not give you.
+- Already have a list and they ask who to call? Rank from the current list. Do not search again.
+- refine_list when they want fewer: one industry, a tighter radius, only ones with a phone, closest first.
+- research_business when you need public facts about one company on the list that you do not already have.
+- web_lookup after research_business when the answer is still missing: ownership, number of locations, recent news, still open.
+- check_broadband when they ask who is available, who serves an address, what providers are there, or what speeds they can get. scope "territory" for the area or the whole list, scope "business" for one company. Never answer availability from memory.
+- skip_to_next when they say skip, next, or similar.
+- draft_outreach when they ask to write, draft, open, or email. Ground every line in the returned facts.
+- mark_contacted when they say they called, emailed, left a voicemail, or that one is a dead end.
+- remember only for durable facts (territory, industries they sell, working style). forget when they correct or retire one. Never remember the whole chat.
+- If they name a business that is not on the list and you have no territory, ask which city or ZIP. Do not search blind.
+
+Reading broadband results: providerCount and providers cover every provider at the address. charterSpectrum describes Charter/Spectrum only, so a not_reported Charter tier never means "no providers serve this address".
+
+How to write:
+- Answer in the first sentence. Do not narrate a plan, list capabilities, or stall before a tool.
+- If they named a place, search it. Never reply with a demo, fake businesses, or a sample table.
+- If you found businesses, say how many are worth talking to, then the strongest two or three with why, distance, and phone as a numbered list. The full list is already on screen, so never repeat every row.
+- Keep it tight: usually under 80 words. Emails can run a short paragraph.
+- Markdown: **bold** names, numbered lists when ranking, a short ## heading only when splitting a brief from a draft. No tables, no boxed grids, no backtick-wrapping ordinary words, no emoji, no horizontal rules.
+- One idea per bullet. Do not pad with a summary of what you just said.
 
 Remembered facts:
 ${memoryBlock}
@@ -293,7 +560,15 @@ function findInQueue(queue: LiveQueue | null, prospectId?: string, name?: string
 }
 
 /** Tools that only read state, so several of them can be answered at once. */
-const READ_ONLY_TOOLS = new Set(["research_business", "check_broadband"]);
+const READ_ONLY_TOOLS = new Set(["research_business", "check_broadband", "web_lookup"]);
+
+const OUTCOME_LABELS: Record<string, string> = {
+  reached: "reached someone",
+  voicemail: "left a voicemail",
+  no_answer: "no answer",
+  not_interested: "not interested",
+  follow_up: "wants a follow-up",
+};
 
 async function runTool(
   name: string,
@@ -302,8 +577,28 @@ async function runTool(
   trace: TurnTrace,
 ) {
   if (name === "find_businesses") {
+    if (trace.searched && session.queue) {
+      const cards = session.queue.prospects.map(compactProspect);
+      return {
+        ok: true,
+        location: session.queue.locationLabel,
+        radiusMiles: session.queue.radiusMiles,
+        count: cards.length,
+        businesses: cards.map((card) => ({
+          id: card.id,
+          name: card.name,
+          category: card.category,
+          distanceMiles: Number(card.distanceMiles.toFixed(2)),
+          phone: card.phone,
+          score: card.score,
+          why: card.why.slice(0, 110),
+          source: card.source ?? null,
+        })),
+        note: "Already searched this turn. Brief from this list as a numbered list, not a table. Do not invent businesses.",
+      };
+    }
     const location = typeof args.location === "string" ? args.location : "";
-    await trackStep(trace, `Searching public listings near ${location || "that area"}`, "PAI Places · OpenStreetMap");
+    await trackStep(trace, `Searching Google Maps near ${location || "that area"}`, liveSearchDetail());
     const found = await findBusinesses({
       location,
       radiusMiles: typeof args.radiusMiles === "number" ? args.radiusMiles : null,
@@ -315,7 +610,7 @@ async function runTool(
     await trackStep(
       trace,
       `Ranking ${found.cards.length} ${found.cards.length === 1 ? "listing" : "listings"}`,
-      "Contactable first, then fit and distance",
+      found.via,
     );
     await rememberFact({ kind: "territory", text: `Working territory: ${found.queue.locationLabel} (${found.queue.radiusMiles} mi)` });
     return {
@@ -331,9 +626,11 @@ async function runTool(
         phone: card.phone,
         score: card.score,
         why: card.why.slice(0, 110),
+        source: card.source ?? null,
       })),
+      via: found.via,
       note: found.cards.length
-        ? "These are real listings from public sources. Recommend only these. The full list is already rendered for the user, so highlight two or three."
+        ? "These are real listings from the Google Maps scraper. Public map data is only a backstop. Recommend only these. The full list is already rendered for the user, so highlight two or three."
         : "No strong listings came back. Ask for a tighter address or a different area. Do not invent businesses.",
     };
   }
@@ -426,64 +723,355 @@ async function runTool(
     };
   }
 
+  if (name === "refine_list") {
+    if (!session.queue?.prospects.length) {
+      return { ok: false, error: "There is no list to narrow yet. Find businesses in an area first." };
+    }
+    const refined = refineQueue(session.queue, {
+      category: typeof args.category === "string" ? args.category : null,
+      maxDistanceMiles: typeof args.maxDistanceMiles === "number" ? args.maxDistanceMiles : null,
+      requirePhone: args.requirePhone === true,
+      sortBy: args.sortBy === "distance" ? "distance" : "fit",
+    });
+    session.queue = refined.queue;
+    await trackStep(
+      trace,
+      `Narrowing the ${session.queue.locationLabel} list`,
+      `${refined.matches.length} of ${session.queue.prospects.length} match`,
+    );
+    return {
+      ok: true,
+      matched: refined.matches.length,
+      total: session.queue.prospects.length,
+      category: refined.category,
+      businesses: refined.matches.slice(0, 8).map((card) => ({
+        id: card.id,
+        name: card.name,
+        category: card.category,
+        distanceMiles: Number(card.distanceMiles.toFixed(2)),
+        phone: card.phone,
+        score: card.score,
+      })),
+      note: refined.matches.length
+        ? "The list on screen is already re-ordered to match. Name the top two or three."
+        : "Nothing on the current list matches. Offer a wider radius or a different industry instead of inventing listings.",
+    };
+  }
+
+  if (name === "web_lookup") {
+    const question = typeof args.question === "string" ? args.question.trim() : "";
+    if (question.length < 3) return { ok: false, error: "Say what you are trying to find out." };
+    const prospect = findInQueue(
+      session.queue,
+      typeof args.prospectId === "string" ? args.prospectId : undefined,
+      typeof args.name === "string" ? args.name : undefined,
+    );
+    if (!prospect) return { ok: false, error: "That business is not in the current list. Find businesses in an area first." };
+    await trackStep(trace, `Searching the public web on ${prospect.name}`, question.slice(0, 90));
+    try {
+      const looked = await webLookup(prospect, question);
+      await trackSources(trace, looked.sources);
+      return {
+        ok: true,
+        question,
+        business: prospect.name,
+        findings: looked.findings,
+        note: looked.findings.length
+          ? "Quote only what these snippets support, and say where it came from."
+          : "The public web had nothing usable. Say you could not confirm it rather than guessing.",
+      };
+    } catch (lookupError) {
+      return {
+        ok: false,
+        error: lookupError instanceof Error ? lookupError.message : "The web lookup failed.",
+        note: "Tell the rep you could not confirm it from public sources.",
+      };
+    }
+  }
+
+  if (name === "mark_contacted") {
+    const outcome = typeof args.outcome === "string" ? args.outcome : "reached";
+    const prospect = findInQueue(
+      session.queue,
+      typeof args.prospectId === "string" ? args.prospectId : undefined,
+      typeof args.name === "string" ? args.name : undefined,
+    );
+    if (!prospect) return { ok: false, error: "No business selected. Find businesses in an area first, or name one on the list." };
+    const note = typeof args.note === "string" ? args.note.replace(/\s+/g, " ").trim().slice(0, 120) : "";
+    const label = OUTCOME_LABELS[outcome] ?? "worked";
+    await rememberFact({
+      kind: "contacted",
+      text: `${prospect.name} — ${label}${note ? `: ${note}` : ""} (${new Date().toISOString().slice(0, 10)})`,
+    });
+    await trackStep(trace, `Logging ${prospect.name} as ${label}`, note || null);
+    const skipped = skipQueue(session.queue);
+    if (skipped) {
+      session.queue = {
+        locationLabel: skipped.locationLabel,
+        radiusMiles: skipped.radiusMiles,
+        category: skipped.category,
+        currentIndex: skipped.currentIndex,
+        prospects: skipped.prospects,
+      };
+    }
+    const next = currentProspect(session.queue);
+    return {
+      ok: true,
+      logged: `${prospect.name} — ${label}`,
+      next: next && next.id !== prospect.id ? compactProspect(next) : null,
+      note: "Confirm it is logged in one line, then hand them the next business if there is one.",
+    };
+  }
+
   if (name === "remember") {
     const kind = args.kind;
     const fact = typeof args.fact === "string" ? args.fact : "";
     if (kind !== "territory" && kind !== "preference" && kind !== "contacted" && kind !== "note") {
       return { ok: false, error: "Unsupported memory kind." };
     }
+    if (/\b(table|tables|markdown|skimmable|boxed|demo|emoji|format)\b/i.test(fact)) {
+      return { ok: true, saved: null, note: "Presentation preferences are not stored." };
+    }
     const memory = await rememberFact({ kind, text: fact });
     await trackStep(trace, "Saving that for later", fact.slice(0, 90));
     return { ok: true, saved: fact, memoryCount: memory.length };
   }
 
+  if (name === "forget") {
+    const about = typeof args.about === "string" ? args.about.replace(/\s+/g, " ").trim().toLowerCase() : "";
+    if (about.length < 3) return { ok: false, error: "Say which fact to drop." };
+    const facts = await loadMemory();
+    const doomed = facts.filter((item) => item.text.toLowerCase().includes(about) || item.kind === about);
+    if (!doomed.length) return { ok: false, error: "Nothing remembered matches that.", remembered: facts.length };
+    let remaining = facts;
+    for (const item of doomed) remaining = await forgetFact(item.id);
+    await trackStep(trace, "Forgetting that", doomed.map((item) => item.text).join(" · ").slice(0, 90));
+    return { ok: true, forgot: doomed.map((item) => item.text), memoryCount: remaining.length };
+  }
+
   return { ok: false, error: `Unknown tool ${name}` };
 }
 
-/** Free-tier Groq keys sit on a tight tokens-per-minute budget, so a 429 is expected traffic. */
-function retryDelayMs(message: string, attempt: number) {
-  const suggested = message.match(/try again in ([\d.]+)\s*s/i);
-  if (suggested) return Math.min(12_000, Math.ceil(Number(suggested[1]) * 1000) + 400);
-  return Math.min(12_000, 900 * 2 ** attempt);
+/** A rep will not wait this long for a retry; past it, the tool router answers instead. */
+const MAX_RETRY_WAIT_MS = 6_000;
+
+/**
+ * Free-tier Groq keys sit on a tight per-minute budget, so a 429 is expected
+ * traffic and worth a short wait. A daily-quota 429 asks for ten minutes, which
+ * is not a retry — it is a `null`, so the turn falls through immediately.
+ */
+function retryDelayMs(message: string, retryAfter: string | null, attempt: number) {
+  const header = retryAfter ? Number(retryAfter) : NaN;
+  const suggestedSeconds = Number.isFinite(header) && header > 0
+    ? header
+    : Number(message.match(/try again in (?:(\d+)m)?([\d.]+)s/i)?.slice(1).reduce((total, part) => total * 60 + Number(part || 0), 0));
+
+  if (Number.isFinite(suggestedSeconds) && suggestedSeconds > 0) {
+    const wait = suggestedSeconds * 1000 + 300;
+    return wait > MAX_RETRY_WAIT_MS ? null : wait;
+  }
+  // Jitter so two tabs backing off at once do not retry in lockstep.
+  return Math.min(MAX_RETRY_WAIT_MS, 900 * 2 ** attempt + Math.floor(Math.random() * 400));
 }
 
-async function groqChat(messages: ChatMessage[], tools = true) {
-  const apiKey = process.env.GROQ_API_KEY?.trim();
-  if (!apiKey) throw new Error("Live is not configured.");
-  const model = process.env.LIVE_MODEL?.trim() || LIVE_MODEL_FALLBACK;
-  const baseUrl = (process.env.LIVE_BASE_URL?.trim() || process.env.RADAR_BRIEF_BASE_URL?.trim() || "https://api.groq.com/openai/v1").replace(/\/$/, "");
+function rateLimitDetail(message: string) {
+  if (/tokens per day|TPD/i.test(message)) return "The model's daily token budget is used up";
+  if (/rate limit/i.test(message)) return "Model was rate limited";
+  return null;
+}
 
+function numberEnv(name: string, fallback: number, min: number, max: number) {
+  const value = Number(process.env[name]?.trim());
+  if (!Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+function reasoningEffort() {
+  const value = process.env.LIVE_REASONING_EFFORT?.trim().toLowerCase();
+  return value === "low" || value === "medium" || value === "high" ? value : "low";
+}
+
+async function readSseStream(response: Response, onChunk: (chunk: GroqStreamChunk) => Promise<void>) {
+  if (!response.body) throw new Error("The model returned an empty stream.");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary !== -1) {
+      const frame = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      for (const line of frame.split("\n")) {
+        if (!line.startsWith("data:")) continue;
+        const payload = line.slice(5).trim();
+        if (!payload || payload === "[DONE]") continue;
+        await onChunk(JSON.parse(payload) as GroqStreamChunk);
+      }
+      boundary = buffer.indexOf("\n\n");
+    }
+  }
+}
+
+/**
+ * One round trip to the model. Answer text is forwarded chunk by chunk through
+ * `onDelta` so the rep reads the reply as it is written; rounds that turn out to
+ * be tool calls instead call `onDiscard` so the UI can drop the false start.
+ * Qwen 3.5 Flash is first; Groq is used if Qwen fails or is unset, and Qwen is
+ * used if Groq is rate-limited or out of quota.
+ */
+async function groqChat(
+  messages: ChatMessage[],
+  options: {
+    tools?: boolean;
+    maxTokens?: number;
+    effort?: "low" | "medium" | "high";
+    onDelta?: (text: string) => Promise<void>;
+    onDiscard?: () => Promise<void>;
+  } = {},
+): Promise<ModelReply> {
+  const providers = liveProviders();
+  if (!providers.length) throw new Error("Live is not configured.");
   let lastError = "Live could not reach the model.";
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const response = await fetch(`${baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model,
-        temperature: 0.25,
-        max_tokens: 850,
-        reasoning_effort: "low",
-        messages,
-        ...(tools ? { tools: TOOLS, tool_choice: "auto" } : {}),
-      }),
-      cache: "no-store",
-      signal: AbortSignal.timeout(24_000),
-    });
-    const payload = (await response.json()) as GroqResponse;
-    if (response.ok) return payload.choices?.[0]?.message;
-
-    lastError = payload.error?.message || lastError;
-    if (response.status !== 429 && response.status < 500) break;
-    await new Promise((resolve) => setTimeout(resolve, retryDelayMs(lastError, attempt)));
+  for (const provider of providers) {
+    try {
+      return await chatWithProvider(provider, messages, options);
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : lastError;
+    }
   }
   throw new Error(lastError);
 }
 
+async function chatWithProvider(
+  provider: LiveProvider,
+  messages: ChatMessage[],
+  options: {
+    tools?: boolean;
+    maxTokens?: number;
+    effort?: "low" | "medium" | "high";
+    onDelta?: (text: string) => Promise<void>;
+    onDiscard?: () => Promise<void>;
+  },
+): Promise<ModelReply> {
+  const withTools = options.tools !== false;
+  let lastError = `Live could not reach ${provider.id}.`;
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const response = await fetch(`${provider.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${provider.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: provider.model,
+        temperature: 0.15,
+        max_tokens: options.maxTokens ?? numberEnv("LIVE_MAX_TOKENS", 700, 256, 4_096),
+        stream: true,
+        messages,
+        ...(withTools ? { tools: TOOLS, tool_choice: "auto" } : {}),
+        ...(provider.reasoningEffort || options.effort
+          ? { reasoning_effort: options.effort ?? provider.reasoningEffort }
+          : {}),
+        ...(provider.id === "qwen" ? { enable_thinking: provider.enableThinking ?? false } : {}),
+      }),
+      cache: "no-store",
+      signal: AbortSignal.timeout(numberEnv("LIVE_TIMEOUT_MS", 18_000, 5_000, 120_000)),
+    });
+
+    if (!response.ok) {
+      const body = await response.text();
+      let message = body.slice(0, 400);
+      try {
+        message = (JSON.parse(body) as GroqStreamChunk).error?.message || message;
+      } catch {
+        // Non-JSON error bodies (gateway HTML) are used verbatim.
+      }
+      lastError = message || lastError;
+      if (response.status !== 429 && response.status < 500) break;
+      const wait = retryDelayMs(lastError, response.headers.get("retry-after"), attempt);
+      if (wait == null) break;
+      await new Promise((resolve) => setTimeout(resolve, wait));
+      continue;
+    }
+
+    const partials = new Map<number, { id: string; name: string; arguments: string }>();
+    let content = "";
+    let reasoning = "";
+    let streamed = false;
+
+    const buildReply = (): ModelReply => ({
+      content: content.trim(),
+      reasoning: reasoning.trim(),
+      toolCalls: [...partials.entries()]
+        .sort(([a], [b]) => a - b)
+        .filter(([, call]) => call.name)
+        .map(([index, call], position) => ({
+          id: call.id || `call_${index}_${position}`,
+          type: "function" as const,
+          function: { name: call.name, arguments: call.arguments || "{}" },
+        })),
+    });
+
+    try {
+      await readSseStream(response, async (chunk) => {
+        if (chunk.error?.message) throw new Error(chunk.error.message);
+        const choice = chunk.choices?.[0];
+        if (!choice) return;
+
+        // Some gateways collapse a stream into one non-delta message frame.
+        const delta = choice.delta ?? choice.message;
+        if (!delta) return;
+
+        if (delta.reasoning) reasoning += delta.reasoning;
+        if (delta.reasoning_content) reasoning += delta.reasoning_content;
+
+        for (const call of delta.tool_calls ?? []) {
+          const index = call.index ?? partials.size;
+          const existing = partials.get(index) ?? { id: "", name: "", arguments: "" };
+          partials.set(index, {
+            id: call.id || existing.id,
+            name: call.function?.name || existing.name,
+            arguments: existing.arguments + (call.function?.arguments ?? ""),
+          });
+          // Text written before the model committed to a tool call is a false
+          // start, never part of the answer.
+          if (streamed) {
+            streamed = false;
+            await options.onDiscard?.();
+          }
+          content = "";
+        }
+
+        const text = Array.isArray(delta.content) ? "" : delta.content;
+        if (text && !partials.size) {
+          content += text;
+          if (options.onDelta) {
+            streamed = true;
+            await options.onDelta(text);
+          }
+        }
+      });
+    } catch (streamError) {
+      const partial = buildReply();
+      if (partial.content || partial.toolCalls.length) return partial;
+      lastError = streamError instanceof Error ? streamError.message : lastError;
+      continue;
+    }
+
+    return buildReply();
+  }
+
+  throw new Error(lastError);
+}
+
 function looksLikeFind(text: string) {
-  return /\b(find|search|look(?:ing)? for|show me|who(?:'s| is) near|businesses? (?:in|near|around))\b/i.test(text);
+  return /\b(find|search|look(?:ing)? for|show me|who(?:'s| is) near|biz|business(?:es)?)\b/i.test(text);
 }
 
 function looksLikeSkip(text: string) {
@@ -523,16 +1111,33 @@ function formatTerritoryBroadbandReply(
   return `Across **${availability.addressesChecked}** addresses on your ${availability.territory} list, **${availability.addressesWithReportedService}** have provider-reported service${asOf}.\n\n${lines.join("\n")}\n\nThis is provider-reported FCC data, not a confirmed install at any one address.`;
 }
 
+function expandPlaceName(value: string) {
+  return value.replace(/\bgville\b/gi, "Greenville").replace(/\bgreenvlle\b/gi, "Greenville");
+}
+
 function extractLocation(text: string) {
   const quoted = text.match(/["“]([^"”]{3,80})["”]/);
-  if (quoted) return quoted[1];
+  if (quoted) return expandPlaceName(quoted[1]);
   const zip = text.match(/\b\d{5}(?:-\d{4})?\b/);
   if (zip) {
     const around = text.match(new RegExp(`([A-Za-z][A-Za-z .'-]{2,40},?\\s*[A-Z]{2}\\s*)?${zip[0]}`));
-    return (around?.[0] || zip[0]).trim();
+    return expandPlaceName((around?.[0] || zip[0]).trim());
   }
-  const near = text.match(/\b(?:in|near|around)\s+([A-Za-z0-9][A-Za-z0-9 .,'-]{2,60})$/i);
-  if (near) return near[1].replace(/[?.!]+$/, "").trim();
+  const street = text.match(
+    /\b(\d{1,6}\s+[A-Za-z][A-Za-z0-9'.-]*(?:\s+[A-Za-z0-9'.-]+){0,5}\s+(?:rd|road|dr|drive|st|street|ave|avenue|blvd|boulevard|ln|lane|way|ct|court|hwy|highway|pkwy|parkway|cir|circle|pl|place|ter|terrace))\b/i,
+  );
+  if (street) {
+    const after = text.slice((street.index ?? 0) + street[0].length);
+    const tail = after.match(/^\s+([A-Za-z][A-Za-z.']{1,40})(?:\s+([A-Za-z]{2}))?\b/);
+    const city = tail?.[1] ? expandPlaceName(tail[1]) : "";
+    const state = tail?.[2]?.toUpperCase() ?? (/^\s+([A-Z]{2})\b/.exec(after)?.[1] ?? "");
+    if (city && state && city.length > 2) return `${street[1]}, ${city}, ${state}`;
+    if (state) return `${street[1]}, ${state}`;
+    if (city && city.length > 2) return `${street[1]}, ${city}`;
+    return street[1];
+  }
+  const near = text.match(/\b(?:in|near|around|of)\s+([A-Za-z0-9][A-Za-z0-9 .,'-]{2,80})/i);
+  if (near) return expandPlaceName(near[1].replace(/[?.!]+$/, "").trim());
   const cityState = text.match(/\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s*[A-Z]{2}\b/);
   return cityState?.[0] ?? null;
 }
@@ -610,11 +1215,16 @@ async function heuristicReply(text: string, session: LiveSession, trace: TurnTra
   }
   const location = extractLocation(text);
   if (location && (looksLikeFind(text) || !currentProspect(session.queue))) {
-    await trackStep(trace, `Searching public listings near ${location}`, "PAI Places · OpenStreetMap");
+    await trackStep(trace, `Searching Google Maps near ${location}`, liveSearchDetail());
     const found = await findBusinesses({ location });
     session.queue = found.queue;
     trace.searched = true;
     await trackSources(trace, found.sources);
+    await trackStep(
+      trace,
+      `Ranking ${found.cards.length} ${found.cards.length === 1 ? "listing" : "listings"}`,
+      found.via,
+    );
     await rememberFact({ kind: "territory", text: `Working territory: ${found.queue.locationLabel} (${found.queue.radiusMiles} mi)` });
     return formatListReply(found.cards, found.queue.locationLabel);
   }
@@ -674,78 +1284,186 @@ export async function runLiveTurn(input: {
   session.messages = [...session.messages, userMessage].slice(-40);
 
   let memory = await loadMemory();
-  let attachedProspects: LiveProspectCard[] | undefined;
   let content = "";
 
-  if (groqConfigured()) {
-    await trackStep(trace, "Reading your message", null);
+  const groundedPhones = new Set<string>();
+  let streamed = false;
+
+  const publish = async (text: string) => {
+    if (streamed) {
+      streamed = false;
+      await emit({ type: "delta_reset" });
+    }
+    content = text.trim();
+    if (content) {
+      streamed = true;
+      await emit({ type: "delta", text: content });
+    }
+  };
+
+  const location = extractLocation(text);
+  const mostlyLocation = Boolean(location) && text.length <= (location?.length ?? 0) + 24;
+  const extraAsk = looksLikeBroadband(text) || looksLikeOutreach(text) || looksLikePrioritize(text);
+  const wantsList = Boolean(location) && (looksLikeFind(text) || !currentProspect(session.queue) || mostlyLocation);
+
+  if (wantsList && location) {
+    const trySearch = async (place: string) => {
+      await trackStep(trace, `Searching Google Maps near ${place}`, liveSearchDetail());
+      const found = await findBusinesses({ location: place });
+      session.queue = found.queue;
+      trace.searched = true;
+      await trackSources(trace, found.sources);
+      await trackStep(
+        trace,
+        `Ranking ${found.cards.length} ${found.cards.length === 1 ? "listing" : "listings"}`,
+        found.via,
+      );
+      await rememberFact({
+        kind: "territory",
+        text: `Working territory: ${found.queue.locationLabel} (${found.queue.radiusMiles} mi)`,
+      });
+      memory = await loadMemory();
+      if (!extraAsk) await publish(formatListReply(found.cards, found.queue.locationLabel));
+    };
+
+    try {
+      await trySearch(location);
+    } catch {
+      const fallback = location.split(",")[0]?.trim();
+      try {
+        if (!fallback || fallback === location) throw new Error("no fallback");
+        await trySearch(fallback);
+      } catch {
+        await publish(`I could not locate **${location}**. Try a full street address with city and ZIP.`);
+      }
+    }
+  }
+
+  if (!content && liveConfigured()) {
     const messages: ChatMessage[] = [
       { role: "system", content: systemPrompt(memory, session.queue) },
-      // The free tier caps tokens per minute, and an oversized history buys backoff, not accuracy.
-      ...session.messages.slice(-6).map((item) => ({ role: item.role, content: item.content.slice(0, 900) })),
+      ...historyMessages(session.messages),
     ];
+    const attempted = new Set<string>();
+
     try {
-      for (let round = 0; round < 4; round += 1) {
-        const reply = await groqChat(messages);
-        if (!reply) break;
-        if (reply.reasoning) {
-          const thinking = readableReasoning(reply.reasoning);
-          if (thinking) await trackStep(trace, thinking.label, null, thinking.thought);
+      for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+        const reply = await groqChat(messages, {
+          onDelta: async (chunk) => {
+            streamed = true;
+            await emit({ type: "delta", text: chunk });
+          },
+          onDiscard: async () => {
+            streamed = false;
+            await emit({ type: "delta_reset" });
+          },
+        });
+
+        if (reply.reasoning && trace.steps.length) {
+          const last = trace.steps[trace.steps.length - 1];
+          last.thought = reply.reasoning.replace(/\s+/g, " ").trim().slice(0, 500);
         }
-        if (reply.tool_calls?.length) {
-          const calls = reply.tool_calls;
-          messages.push({ role: "assistant", content: reply.content ?? null, tool_calls: calls });
 
-          // Lookups only read the queue, so fan them out. Anything that mutates
-          // session state still runs in order to keep writes deterministic.
-          const parallel = calls.length > 1 && calls.every((call) => READ_ONLY_TOOLS.has(call.function.name));
-          const results = parallel
-            ? await Promise.all(calls.map((call) => runTool(call.function.name, parseArgs(call.function.arguments), session, trace)))
-            : await calls.reduce<Promise<unknown[]>>(
-                async (chain, call) => [
-                  ...(await chain),
-                  await runTool(call.function.name, parseArgs(call.function.arguments), session, trace),
-                ],
-                Promise.resolve([]),
-              );
+        if (!reply.toolCalls.length) {
+          content = reply.content;
+          break;
+        }
 
-          for (const [index, call] of calls.entries()) {
-            if (call.function.name === "find_businesses" && session.queue) {
-              attachedProspects = session.queue.prospects.map(compactProspect);
-            }
-            if (call.function.name === "remember") memory = await loadMemory();
-            messages.push({
-              role: "tool",
-              tool_call_id: call.id,
-              content: JSON.stringify(results[index]),
-            });
+        const calls = reply.toolCalls;
+        messages.push({
+          role: "assistant",
+          content: reply.content || null,
+          tool_calls: calls,
+          ...(reply.reasoning ? { reasoning_content: reply.reasoning } : {}),
+        });
+
+        // Repeating a call verbatim is how these loops stall, so the second
+        // attempt gets an answer-now nudge instead of the same work again.
+        const runOnce = async (call: ToolCall) => {
+          const signature = `${call.function.name}:${call.function.arguments}`;
+          if (attempted.has(signature)) {
+            return { ok: false, error: "You already ran this exact call this turn. Answer from the result you have." };
           }
-          continue;
+          attempted.add(signature);
+          return runTool(call.function.name, parseArgs(call.function.arguments), session, trace);
+        };
+
+        // Lookups only read the queue, so fan them out. Anything that mutates
+        // session state still runs in order to keep writes deterministic.
+        const parallel = calls.length > 1 && calls.every((call) => READ_ONLY_TOOLS.has(call.function.name));
+        const results = parallel
+          ? await Promise.all(calls.map(runOnce))
+          : await calls.reduce<Promise<unknown[]>>(
+              async (chain, call) => [...(await chain), await runOnce(call)],
+              Promise.resolve([]),
+            );
+
+        for (const [index, call] of calls.entries()) {
+          const name = call.function.name;
+          if (name === "remember" || name === "forget" || name === "mark_contacted") memory = await loadMemory();
+          const payload = JSON.stringify(results[index]);
+          collectGroundedPhones(payload, groundedPhones);
+          messages.push({ role: "tool", tool_call_id: call.id, content: payload });
         }
-        content = (reply.content || "").trim();
-        break;
+
+        if (trace.searched && session.queue && !extraAsk) {
+          await publish(formatListReply(session.queue.prospects.map(compactProspect), session.queue.locationLabel));
+          break;
+        }
+
+        if (round === MAX_TOOL_ROUNDS - 1) {
+          messages.push({
+            role: "user",
+            content: "Stop using tools and answer the last question now from what you already pulled. Numbered list, no table.",
+          });
+        }
       }
-      await trackStep(trace, "Writing the answer", null);
     } catch (modelError) {
       // Tool results are already in hand, so answer from them instead of losing the turn.
       const reason = modelError instanceof Error ? modelError.message : "";
-      await trackStep(trace, "Answering from what I already pulled", /rate limit/i.test(reason) ? "Model was rate limited" : null);
+      await trackStep(trace, "Answering from what I already pulled", rateLimitDetail(reason));
     }
-    if (!content) content = await heuristicReply(text, session, trace);
-  } else {
+    if (!content) {
+      if (streamed) {
+        streamed = false;
+        await emit({ type: "delta_reset" });
+      }
+      content = await heuristicReply(text, session, trace);
+    }
+  } else if (!content) {
     await trackStep(trace, "Working from the live business list", null);
     content = await heuristicReply(text, session, trace);
-    if (session.queue) attachedProspects = session.queue.prospects.map(compactProspect);
   }
 
-  if (looksLikeFind(text) && session.queue) attachedProspects = session.queue.prospects.map(compactProspect);
+  if (looksLikeDemo(content) || looksIncomplete(content) || (hasBusinessTable(content) && session.queue)) {
+    if (session.queue) {
+      await publish(formatListReply(session.queue.prospects.map(compactProspect), session.queue.locationLabel));
+    } else if (looksLikeDemo(content) || looksIncomplete(content)) {
+      await publish(await heuristicReply(text, session, trace));
+    }
+  } else if (hasBusinessTable(content) || content.includes("|")) {
+    const flat = flattenMarkdownTables(content);
+    if (flat && flat !== content) await publish(flat);
+  }
+
+  for (const prospect of session.queue?.prospects ?? []) {
+    if (prospect.phone) collectGroundedPhones(prospect.phone, groundedPhones);
+  }
+  const guarded = stripUngroundedPhones(content, groundedPhones);
+  if (guarded.removed) {
+    content = guarded.content;
+    await trackStep(
+      trace,
+      `Pulled ${guarded.removed} phone ${guarded.removed === 1 ? "number" : "numbers"} I could not source`,
+      "Not present in any listing or tool result",
+    );
+  }
 
   const assistantMessage: LiveChatMessage = {
     id: liveId("msg"),
     role: "assistant",
     content,
     createdAt: new Date().toISOString(),
-    prospects: attachedProspects,
     sources: trace.sources.length ? trace.sources : undefined,
     thinking: trace.steps.length ? trace.steps : undefined,
   };
