@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { sanitizeRadarScan } from "@/lib/radar/sanitize";
@@ -10,6 +10,7 @@ import type {
   TerritorySnapshot,
   TimelineEvent,
 } from "@/lib/radar/types";
+import { ensureWritableStore, preferredStorePath } from "@/lib/writable-store";
 
 type RadarIndex = {
   version: 1;
@@ -17,21 +18,16 @@ type RadarIndex = {
   latestScanByTerritory: Record<string, string>;
 };
 
-function radarRoot() {
-  const configured = process.env.RADAR_STORE_PATH?.trim();
-  if (configured) {
-    return path.isAbsolute(configured) ? configured : path.join(process.cwd(), configured);
-  }
-  return path.join(/* turbopackIgnore: true */ process.cwd(), "data", "radar");
-}
+let resolvedRoot: string | null = null;
 
 async function ensureRoot() {
-  const root = radarRoot();
-  await mkdir(/* turbopackIgnore: true */ root, { recursive: true });
-  await mkdir(/* turbopackIgnore: true */ path.join(root, "scans"), { recursive: true });
-  await mkdir(/* turbopackIgnore: true */ path.join(root, "snapshots"), { recursive: true });
-  await mkdir(/* turbopackIgnore: true */ path.join(root, "timelines"), { recursive: true });
-  return root;
+  if (resolvedRoot) return resolvedRoot;
+  resolvedRoot = await ensureWritableStore(preferredStorePath(process.env.RADAR_STORE_PATH, "radar"), [
+    "scans",
+    "snapshots",
+    "timelines",
+  ]);
+  return resolvedRoot;
 }
 
 async function readJson<T>(file: string, fallback: T): Promise<T> {
@@ -177,9 +173,10 @@ export function compactSignals(signals: RadarSignal[]): TerritorySnapshot["signa
 }
 
 export async function radarStoreStatus() {
+  const root = await ensureRoot();
   const index = await loadRadarIndex();
   return {
-    path: "data/radar",
+    path: root,
     territories: index.territories.length,
     scans: Object.keys(index.latestScanByTerritory).length,
   };
