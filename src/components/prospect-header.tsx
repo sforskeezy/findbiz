@@ -6,6 +6,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Pencil } from "lucide-react";
 
+import { beginPageTransition } from "@/components/page-transition";
 import { cn } from "@/components/ui";
 
 const GITHUB_URL = process.env.NEXT_PUBLIC_GITHUB_URL || "https://github.com/sforskeezy/findbiz";
@@ -158,67 +159,68 @@ function RewriteBackLink({ href, label }: { href: string; label: string }) {
   );
 }
 
-function ModeSegment({
-  href,
-  active,
-  small,
-  transitionTypes,
-  children,
-}: {
-  href: string;
-  active: boolean;
-  small: boolean;
-  transitionTypes?: string[];
-  children: React.ReactNode;
-}) {
-  return (
-    <Link
-      href={href}
-      aria-current={active ? "page" : undefined}
-      transitionTypes={transitionTypes}
-      className={cn(
-        "relative inline-flex items-center justify-center rounded-[9px] font-medium tracking-[-0.01em] transition duration-200",
-        small
-          ? "h-7 px-3.5 text-[12.5px]"
-          : "h-8 px-3.5 text-[13px] sm:h-10 sm:rounded-[11px] sm:px-6 sm:text-[15px]",
-        active ? "text-[#14140f]" : "text-[#6f6f69] hover:text-[#26261f]",
-      )}
-    >
-      {active && (
-        <span
-          aria-hidden="true"
-          className={cn(
-            "absolute inset-0 rounded-[9px] border border-[#e2e2dd] bg-white shadow-[0_1px_2px_rgba(20,20,16,0.10),0_2px_6px_rgba(20,20,16,0.05)]",
-            !small && "sm:rounded-[11px]",
-          )}
-        />
-      )}
-      <span className="relative">{children}</span>
-    </Link>
-  );
+type Mode = "normal" | "live";
+
+const MODES: Array<{ mode: Mode; href: string; label: string }> = [
+  { mode: "normal", href: "/", label: "Normal" },
+  { mode: "live", href: "/live", label: "Live" },
+];
+
+function modeForPath(pathname: string): Mode {
+  return pathname.startsWith("/live") || pathname.startsWith("/radar") ? "live" : "normal";
 }
 
-/** Shared Normal/Live switch. Reads the route itself so callers only pick a size. */
+/**
+ * Shared Normal/Live switch. Reads the route itself so callers only pick a size.
+ * The indicator moves the moment you click rather than when the next route
+ * commits, so the pill is the one thing that holds still across the navigation.
+ */
 export function ModeSwitch({ small = false }: { small?: boolean }) {
   const pathname = usePathname();
-  const liveActive = pathname.startsWith("/live") || pathname.startsWith("/radar");
+  const routeMode = modeForPath(pathname);
+  const [pending, setPending] = useState<{ target: Mode; from: Mode } | null>(null);
+
+  // The optimistic pill position holds only while we are still on the route the
+  // click came from. Nothing has to clear it: each mode renders its own switch,
+  // so arriving anywhere else mounts a fresh one with no pending state.
+  const mode = pending && pending.from === routeMode ? pending.target : routeMode;
 
   return (
     <div
       className={cn(
-        "inline-flex shrink-0 items-center bg-[#ededea] p-[3px]",
+        "relative inline-grid shrink-0 grid-cols-2 items-center bg-[#ededea] p-[3px]",
         small ? "rounded-[10px]" : "rounded-[11px] sm:rounded-[13px]",
       )}
       role="group"
       aria-label="PAI mode"
-      style={{ viewTransitionName: "mode-switch" }}
     >
-      <ModeSegment href="/" active={!liveActive} small={small} transitionTypes={["mode-switch"]}>
-        Normal
-      </ModeSegment>
-      <ModeSegment href="/live" active={liveActive} small={small} transitionTypes={["mode-switch"]}>
-        Live
-      </ModeSegment>
+      <span
+        aria-hidden="true"
+        className={cn(
+          "pointer-events-none absolute inset-y-[3px] left-[3px] w-[calc(50%-3px)] border border-[#e2e2dd] bg-white shadow-[0_1px_2px_rgba(20,20,16,0.10),0_2px_6px_rgba(20,20,16,0.05)] transition-transform duration-[460ms] ease-[cubic-bezier(0.34,1.26,0.38,1)] motion-reduce:transition-none",
+          small ? "rounded-[8px]" : "rounded-[9px] sm:rounded-[11px]",
+        )}
+        style={{ transform: mode === "live" ? "translateX(100%)" : "translateX(0)" }}
+      />
+      {MODES.map((item) => (
+        <Link
+          key={item.mode}
+          href={item.href}
+          aria-current={mode === item.mode ? "page" : undefined}
+          onClick={() => {
+            if (item.mode === routeMode) return;
+            setPending({ target: item.mode, from: routeMode });
+            beginPageTransition("mode");
+          }}
+          className={cn(
+            "relative inline-flex items-center justify-center font-medium tracking-[-0.01em] transition-colors duration-200",
+            small ? "h-7 px-3.5 text-[12.5px]" : "h-8 px-3.5 text-[13px] sm:h-10 sm:px-6 sm:text-[15px]",
+            mode === item.mode ? "text-[#14140f]" : "text-[#6f6f69] hover:text-[#26261f]",
+          )}
+        >
+          {item.label}
+        </Link>
+      ))}
     </div>
   );
 }
@@ -248,11 +250,11 @@ export function ProspectHeader({
       <div className="flex min-w-0 items-center gap-3 sm:gap-5">
         <Link href="/" className="flex shrink-0 items-center" aria-label="PAI home">
           <Image
-            src="/PAINEWLOGO.png"
+            src="/pai-logo-lockup.png"
             alt="PAI"
-            width={1536}
-            height={1024}
-            className={compact ? "h-10 w-auto sm:h-14" : "h-14 w-auto sm:h-24"}
+            width={960}
+            height={321}
+            className={compact ? "h-[19px] w-auto sm:h-6" : "h-6 w-auto sm:h-9"}
             priority
           />
         </Link>

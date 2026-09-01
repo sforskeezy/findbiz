@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import Image from "next/image";
 import {
   ArrowUp,
   Brain,
@@ -21,7 +22,7 @@ import { LiveMarkdown } from "@/components/live/live-markdown";
 import { LiveSidebar, type SessionGroup } from "@/components/live/live-sidebar";
 import { LiveSources } from "@/components/live/live-sources";
 import { LiveThinking, LiveThoughtTrace } from "@/components/live/live-thinking";
-import { useWorkingTitle } from "@/components/live/use-working-title";
+import { WorkingDots } from "@/components/live/working-dots";
 import { cn } from "@/components/ui";
 import type {
   LiveChatMessage,
@@ -41,17 +42,12 @@ const QUICK_ACTIONS: Array<{ label: string; icon: typeof MapPin; prompt?: string
   { label: "What do you remember?", icon: Brain, prompt: "What do you remember about my territory?" },
 ];
 
-const STARTERS = [
-  "Find businesses in 29607",
-  "Who is worth calling first?",
-  "Skip to the next one",
-  "Draft an opener for this one",
-];
-
 type StreamEvent =
   | { type: "status"; message: string }
   | { type: "step"; step: LiveThinkingStep }
   | { type: "sources"; sources: LiveSource[] }
+  | { type: "delta"; text: string }
+  | { type: "delta_reset" }
   | { type: "complete"; state: LivePublicState }
   | { type: "error"; error: string };
 
@@ -60,17 +56,31 @@ async function readStream(response: Response, onEvent: (event: StreamEvent) => v
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+
+  const consume = (chunk: string) => {
+    const line = chunk.split("\n").find((item) => item.startsWith("data: "));
+    if (!line) return;
+    try {
+      onEvent(JSON.parse(line.slice(6)) as StreamEvent);
+    } catch (error) {
+      if (error instanceof SyntaxError) return;
+      throw error;
+    }
+  };
+
   while (true) {
     const { done, value } = await reader.read();
-    if (done) break;
+    if (done) {
+      buffer += decoder.decode();
+      for (const chunk of buffer.split("\n\n")) {
+        if (chunk.trim()) consume(chunk);
+      }
+      break;
+    }
     buffer += decoder.decode(value, { stream: true });
     const chunks = buffer.split("\n\n");
     buffer = chunks.pop() ?? "";
-    for (const chunk of chunks) {
-      const line = chunk.split("\n").find((item) => item.startsWith("data: "));
-      if (!line) continue;
-      onEvent(JSON.parse(line.slice(6)) as StreamEvent);
-    }
+    for (const chunk of chunks) consume(chunk);
   }
 }
 
@@ -176,7 +186,7 @@ export function LivePage() {
   const [draft, setDraft] = useState("");
   const [status, setStatus] = useState("");
   const [steps, setSteps] = useState<LiveThinkingStep[]>([]);
-  const [liveSources, setLiveSources] = useState<LiveSource[]>([]);
+  const [answer, setAnswer] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   // Session titles come from disk, so hold them back until hydration matches.
@@ -190,7 +200,6 @@ export function LivePage() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [focused, setFocused] = useState(false);
 
-  useWorkingTitle(busy, status || steps[steps.length - 1]?.label || "Working");
   const scroller = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -219,6 +228,13 @@ export function LivePage() {
   useEffect(() => {
     scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: "smooth" });
   }, [messages, status, steps.length, busy]);
+
+  // Following the answer as it streams should not fight a rep who scrolled up.
+  useEffect(() => {
+    const node = scroller.current;
+    if (!node || !answer) return;
+    if (node.scrollHeight - node.scrollTop - node.clientHeight < 160) node.scrollTop = node.scrollHeight;
+  }, [answer]);
 
   useEffect(() => {
     const node = inputRef.current;
@@ -270,7 +286,7 @@ export function LivePage() {
     setMessages([]);
     setQueue(null);
     setSteps([]);
-    setLiveSources([]);
+    setAnswer("");
     setError("");
     inputRef.current?.focus();
   }
@@ -281,9 +297,9 @@ export function LivePage() {
     setDraft("");
     setError("");
     setSteps([]);
-    setLiveSources([]);
+    setAnswer("");
     setBusy(true);
-    setStatus("Reading your message");
+    setStatus("Thinking");
     setMessages((current) => [
       ...current,
       { id: `local_${Date.now()}`, role: "user", content: message, createdAt: new Date().toISOString() },
@@ -299,22 +315,53 @@ export function LivePage() {
         throw new Error(payload.error || "Live could not reply.");
       }
       let completed: LivePublicState | null = null;
+      let streamedAnswer = "";
+      let streamedSteps: LiveThinkingStep[] = [];
+      let streamedSources: LiveSource[] = [];
       await readStream(response, (event) => {
         if (event.type === "status") setStatus(event.message);
-        if (event.type === "step") setSteps((current) => [...current, event.step]);
-        if (event.type === "sources") setLiveSources(event.sources);
+        if (event.type === "step") {
+          streamedSteps = [...streamedSteps, event.step];
+          setSteps(streamedSteps);
+        }
+        if (event.type === "sources") {
+          streamedSources = event.sources;
+        }
+        if (event.type === "delta") {
+          streamedAnswer += event.text;
+          setAnswer(streamedAnswer);
+        }
+        if (event.type === "delta_reset") {
+          streamedAnswer = "";
+          setAnswer("");
+        }
         if (event.type === "error") throw new Error(event.error);
         if (event.type === "complete") completed = event.state;
       });
-      if (!completed) throw new Error("Live ended before a reply came back.");
-      applyState(completed);
+      if (completed) {
+        applyState(completed);
+      } else if (streamedAnswer.trim()) {
+        setMessages((current) => [
+          ...current,
+          {
+            id: `local_${Date.now()}`,
+            role: "assistant",
+            content: streamedAnswer,
+            createdAt: new Date().toISOString(),
+            sources: streamedSources.length ? streamedSources : undefined,
+            thinking: streamedSteps.length ? streamedSteps : undefined,
+          },
+        ]);
+      } else {
+        throw new Error("Live ended before a reply came back.");
+      }
     } catch (sendError) {
       setError(sendError instanceof Error ? sendError.message : "Live could not reply.");
     } finally {
       setBusy(false);
       setStatus("");
       setSteps([]);
-      setLiveSources([]);
+      setAnswer("");
       inputRef.current?.focus();
     }
   }
@@ -357,11 +404,22 @@ export function LivePage() {
         memory={memory}
         queue={queue}
         atHome={atHome}
+        busy={busy}
       />
 
       <section className="flex min-w-0 flex-1 flex-col">
-        <div className="relative flex h-[72px] shrink-0 items-center px-4 sm:px-6">
-          <span className="text-[13px] font-semibold tracking-[-0.01em] text-[#14140f] lg:hidden">PAI Live</span>
+        <div className="relative flex h-[72px] shrink-0 items-center gap-2 px-4 sm:px-6">
+          <div className="flex min-w-0 items-center gap-2">
+            <Image
+              src="/pai-logo-lockup.png"
+              alt="PAI"
+              width={960}
+              height={321}
+              className="h-[22px] w-auto lg:hidden"
+              priority
+            />
+            {busy && <WorkingDots size={11} className="text-[#26261f] lg:hidden" />}
+          </div>
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
             <div className="pointer-events-auto">
               <ModeSwitch small />
@@ -370,7 +428,7 @@ export function LivePage() {
           <button
             type="button"
             onClick={newChat}
-            className="ml-auto inline-flex h-8 items-center gap-1.5 rounded-full border border-[#e4e4de] bg-white px-3 text-[12px] font-semibold text-[#171715] transition hover:border-[#d4d4cc]"
+            className="ml-auto inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border border-[#e4e4de] bg-white px-3 text-[12px] font-semibold text-[#171715] transition hover:border-[#d4d4cc]"
           >
             <SquarePen size={13} /> New
           </button>
@@ -513,10 +571,16 @@ export function LivePage() {
               })}
 
               {busy && (
-                <div className="animate-enter space-y-3">
-                  <LiveThinking steps={steps} status={status} />
-                  {liveSources.length > 0 && <LiveSources sources={liveSources} />}
-                </div>
+                <article className="animate-enter">
+                  {answer ? (
+                    <>
+                      {steps.length > 0 && <LiveThoughtTrace steps={steps} />}
+                      <LiveMarkdown content={answer} streaming />
+                    </>
+                  ) : (
+                    <LiveThinking steps={steps} status={status} />
+                  )}
+                </article>
               )}
             </div>
           )}
@@ -645,21 +709,6 @@ export function LivePage() {
                 </div>
               </form>
             </BorderBeam>
-
-            {atHome && (
-              <div className="mt-2.5 flex flex-wrap justify-center gap-1.5">
-                {STARTERS.map((item) => (
-                  <button
-                    key={item}
-                    type="button"
-                    onClick={() => void send(item)}
-                    className="shrink-0 whitespace-nowrap rounded-full border border-[#eaeae4] bg-white px-3 py-1.5 text-[12px] font-medium text-[#5f5f59] transition hover:border-[#dcdcd4] hover:text-[#26261f]"
-                  >
-                    {item}
-                  </button>
-                ))}
-              </div>
-            )}
 
             <p className="mt-2.5 text-center text-[11px] text-[#b4b4ac]">
               Live works from public listings. It will not invent businesses.

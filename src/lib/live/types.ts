@@ -22,6 +22,7 @@ export type LiveProspectCard = {
   website: string | null;
   score: number;
   why: string;
+  source?: string;
 };
 
 export type LiveChatRole = "user" | "assistant";
@@ -94,6 +95,9 @@ export type LiveChatEvent =
   | { type: "status"; message: string }
   | { type: "step"; step: LiveThinkingStep }
   | { type: "sources"; sources: LiveSource[] }
+  /** One chunk of the answer as the model writes it. */
   | { type: "delta"; text: string }
+  /** The model restarted its answer, so drop whatever was streamed so far. */
+  | { type: "delta_reset" }
   | { type: "complete"; state: LivePublicState }
   | { type: "error"; error: string };

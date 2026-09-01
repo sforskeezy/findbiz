@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import { researchCompany } from "@/lib/company-intelligence";
 import { researchAcrossSources } from "@/lib/discovery";
 import { lookupFccAvailability } from "@/lib/fcc";
+import { researchGoogleWeb } from "@/lib/google-research-engine";
+import { googleMapsScraperEnabled } from "@/lib/google-maps-scraper";
 import { PLACE_CATEGORIES } from "@/lib/place-candidate";
 import { classifyServiceability } from "@/lib/serviceability";
 import { LIVE_RADII } from "@/lib/live/types";
@@ -52,6 +54,7 @@ export function compactProspect(prospect: Prospect): LiveProspectCard {
     website: prospect.website,
     score: prospect.score,
     why: why.slice(0, 180),
+    source: prospect.source,
   };
 }
 
@@ -68,11 +71,21 @@ function matchCategory(value: string | null | undefined) {
   return PLACE_CATEGORIES.find((item) => item.toLowerCase() === needle || item.toLowerCase().includes(needle) || needle.includes(item.toLowerCase())) ?? null;
 }
 
+export function liveSearchDetail() {
+  return googleMapsScraperEnabled()
+    ? "Google Maps scraper · public listings as backstop"
+    : "PAI Places · OpenStreetMap";
+}
+
+function fromGoogleMaps(prospect: Prospect) {
+  return /google maps/i.test(prospect.source);
+}
+
 export async function findBusinesses(input: {
   location: string;
   radiusMiles?: number | null;
   category?: string | null;
-}): Promise<{ queue: LiveQueue; cards: LiveProspectCard[]; warnings: string[]; sources: LiveSource[] }> {
+}): Promise<{ queue: LiveQueue; cards: LiveProspectCard[]; warnings: string[]; sources: LiveSource[]; via: string }> {
   const location = input.location.replace(/\s+/g, " ").trim();
   if (location.length < 3) throw new Error("Give Live a city, ZIP, or address to search.");
   const radiusMiles = clampRadius(input.radiusMiles, /\d{5}/.test(location) ? 2 : 2);
@@ -82,11 +95,14 @@ export async function findBusinesses(input: {
   const ranked = [...filtered]
     .filter((item) => item.operatingStatus !== "Temporarily closed")
     .sort((a, b) => {
+      const aMaps = fromGoogleMaps(a) ? 1 : 0;
+      const bMaps = fromGoogleMaps(b) ? 1 : 0;
       const aContact = a.phone || a.website ? 1 : 0;
       const bContact = b.phone || b.website ? 1 : 0;
-      return bContact - aContact || b.score - a.score || a.distanceMiles - b.distanceMiles;
+      return bMaps - aMaps || bContact - aContact || b.score - a.score || a.distanceMiles - b.distanceMiles;
     })
     .slice(0, 8);
+  const mapsCount = ranked.filter(fromGoogleMaps).length;
   const queue: LiveQueue = {
     locationLabel: research.target.formattedAddress || location,
     radiusMiles,
@@ -98,6 +114,14 @@ export async function findBusinesses(input: {
     queue,
     cards: ranked.map(compactProspect),
     warnings: research.warnings ?? [],
+    via:
+      mapsCount > 0
+        ? mapsCount === ranked.length
+          ? "Google Maps scraper"
+          : `Google Maps scraper · ${ranked.length - mapsCount} public backstop`
+        : googleMapsScraperEnabled()
+          ? "Google Maps scraper found none · public listings as backstop"
+          : "PAI Places · OpenStreetMap",
     sources: dedupeSources(
       ranked.map((item) =>
         toSource({
@@ -263,4 +287,70 @@ export async function checkBroadbandAcrossQueue(queue: LiveQueue, limit = 6) {
 export function currentProspect(queue: LiveQueue | null) {
   if (!queue || !queue.prospects.length) return null;
   return queue.prospects[Math.min(queue.currentIndex, queue.prospects.length - 1)] ?? null;
+}
+
+function cityContext(address: string) {
+  const parts = address.split(",").map((value) => value.trim()).filter(Boolean);
+  return parts.slice(-2).join(" ").slice(0, 80);
+}
+
+/**
+ * Targeted public-web lookup for one business, for questions the cached listing
+ * cannot answer (ownership, locations, recent coverage).
+ */
+export async function webLookup(prospect: Prospect, question: string) {
+  const topic = question.replace(/\s+/g, " ").trim().slice(0, 120);
+  const name = `"${prospect.name.replace(/["“”]/g, "").trim().slice(0, 120)}"`;
+  const location = cityContext(prospect.address);
+  const research = await researchGoogleWeb(prospect, [
+    `${name} ${topic}`,
+    `${name} ${location} ${topic}`,
+  ]);
+  const results = research.results.slice(0, 6);
+
+  return {
+    sources: dedupeSources(results.map((item) => toSource({ title: item.title, url: item.url, snippet: item.snippet }))),
+    findings: results.map((item) => ({
+      title: item.title.slice(0, 140),
+      url: item.url,
+      snippet: (item.snippet || "").slice(0, 320),
+    })),
+    engine: research.diagnostics.providers.join(", ") || research.diagnostics.engine,
+  };
+}
+
+export type QueueFilters = {
+  category?: string | null;
+  maxDistanceMiles?: number | null;
+  requirePhone?: boolean;
+  sortBy?: "fit" | "distance" | null;
+};
+
+/**
+ * Narrow and re-order the list the rep already has. Nothing is dropped: matches
+ * move to the front so a follow-up question can still reach the rest.
+ */
+export function refineQueue(queue: LiveQueue, filters: QueueFilters) {
+  const category = matchCategory(filters.category);
+  const limit = Number.isFinite(filters.maxDistanceMiles) ? Number(filters.maxDistanceMiles) : null;
+
+  const matches = queue.prospects.filter((item) => {
+    if (category && item.category !== category) return false;
+    if (limit != null && item.distanceMiles > limit) return false;
+    if (filters.requirePhone && !item.phone) return false;
+    return true;
+  });
+
+  const sorted = [...matches].sort((a, b) =>
+    filters.sortBy === "distance"
+      ? a.distanceMiles - b.distanceMiles || b.score - a.score
+      : b.score - a.score || a.distanceMiles - b.distanceMiles,
+  );
+  const rest = queue.prospects.filter((item) => !sorted.includes(item));
+
+  return {
+    category,
+    matches: sorted.map(compactProspect),
+    queue: { ...queue, currentIndex: 0, prospects: [...sorted, ...rest] } satisfies LiveQueue,
+  };
 }
