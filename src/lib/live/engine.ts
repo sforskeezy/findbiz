@@ -11,17 +11,29 @@ import {
 import {
   checkBroadband,
   checkBroadbandAcrossQueue,
+  checkListing,
   compactProspect,
   currentProspect,
   dedupeSources,
   findBusinesses,
+  identifyAddress,
   liveSearchDetail,
+  planWalkingRoute,
   refineQueue,
   researchProspect,
+  scanLocalNews,
+  scanLocalNewsForQueue,
   skipQueue,
   toSource,
   webLookup,
 } from "@/lib/live/tools";
+import {
+  briefNeedsFollowThrough,
+  describeBrief,
+  mergeLiveBrief,
+  parseLiveBrief,
+  type LiveBrief,
+} from "@/lib/live/intent";
 import type {
   LiveChatEvent,
   LiveChatMessage,
@@ -39,6 +51,9 @@ type TurnTrace = {
   steps: LiveThinkingStep[];
   sources: LiveSource[];
   searched: boolean;
+  /** Prospect ids already scanned this turn, so a second ask is not a repeat. */
+  scannedNews: Set<string>;
+  checkedListings: boolean;
   emit: (event: LiveChatEvent) => Promise<void>;
 };
 
@@ -244,8 +259,33 @@ const TOOLS = [
           location: { type: "string", description: "City, ZIP, address, or area the user named." },
           radiusMiles: { type: "number", description: "Search radius in miles. Default 2." },
           category: { type: "string", description: "Optional industry filter such as Legal & accounting." },
+          limit: { type: "number", description: "Only set this when the user asked for a specific count." },
+          profile: {
+            type: "string",
+            enum: ["home_based", "independent", "any"],
+            description: "home_based when they asked for at-home / owner-run shops. independent when they want non-chains.",
+          },
+          excludeNational: {
+            type: "boolean",
+            description: "Default true. Set false only if they asked for gas, grocery, or a named chain.",
+          },
         },
         required: ["location"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "identify_address",
+      description:
+        "Look up what business sits at one street address. Use when they ask what is this address, what is at, who is at, or drop a street address as a question. Do not use find_businesses for that.",
+      parameters: {
+        type: "object",
+        properties: {
+          address: { type: "string", description: "The street address they named." },
+        },
+        required: ["address"],
       },
     },
   },
@@ -290,6 +330,15 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "plan_route",
+      description:
+        "Put the current list in walking order from where the rep is standing, shortest path between doors. Use when they ask about a route, walking order, what order to hit these, or how to work the street.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "draft_outreach",
       description:
         "Draft a call opener or short cold email for a business already on the current list. Uses only public facts on file. Use when they ask to write, draft, open, or email.",
@@ -316,6 +365,38 @@ const TOOLS = [
           maxDistanceMiles: { type: "number", description: "Drop anything farther than this." },
           requirePhone: { type: "boolean", description: "Keep only listings with a public phone." },
           sortBy: { type: "string", enum: ["fit", "distance"], description: "Default fit." },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "scan_local_news",
+      description:
+        "Scan public news for a recent expansion, new location, or community event. Use when they ask what's new, for a local news scan, or to check recent expansions. Never invent an expansion.",
+      parameters: {
+        type: "object",
+        properties: {
+          scope: { type: "string", enum: ["business", "list"], description: "Default business." },
+          prospectId: { type: "string" },
+          name: { type: "string" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "check_listing",
+      description:
+        "Genuine-check a listing: independent vs national chain, whether it looks like a real local shop, public contact on file. Use when they ask if it is real, legit, or worth calling.",
+      parameters: {
+        type: "object",
+        properties: {
+          scope: { type: "string", enum: ["business", "list"], description: "Default business." },
+          prospectId: { type: "string" },
+          name: { type: "string" },
         },
       },
     },
@@ -483,7 +564,7 @@ export function publicState(session: LiveSession, memory: LiveMemoryFact[]): Liv
   };
 }
 
-function systemPrompt(memory: LiveMemoryFact[], queue: LiveQueue | null) {
+function systemPrompt(memory: LiveMemoryFact[], queue: LiveQueue | null, brief: LiveBrief | null) {
   const recalled = usefulMemory(memory);
   const memoryBlock = recalled.length
     ? recalled.map((item) => `- (${item.kind}) ${item.text}`).join("\n")
@@ -492,7 +573,8 @@ function systemPrompt(memory: LiveMemoryFact[], queue: LiveQueue | null) {
     ? queue.prospects
         .map((item, index) => {
           const mark = index === queue.currentIndex ? " ← current" : "";
-          return `${index + 1}. ${item.name} · ${item.category} · ${item.distanceMiles.toFixed(1)} mi · fit ${item.score} · ${item.phone || "no phone"} · ${item.topOpportunity || item.summary || item.category}${mark}`;
+          const flags = item.signals?.map((signal) => signal.label).join(", ");
+          return `${index + 1}. ${item.name} · ${item.category} · ${item.distanceMiles.toFixed(1)} mi · fit ${item.score} · ${item.phone || "no phone"} · ${item.topOpportunity || item.summary || item.category}${flags ? ` · ${flags}` : ""}${mark}`;
         })
         .join("\n")
     : "No current list.";
@@ -502,6 +584,10 @@ function systemPrompt(memory: LiveMemoryFact[], queue: LiveQueue | null) {
     day: "numeric",
     year: "numeric",
   });
+  const briefBlock = brief
+    ? `This turn they said: "${brief.raw}"
+Do every part of that, in order, before you write the answer. Brief: ${describeBrief(brief)}.`
+    : "No extra brief this turn.";
 
   return `You are Live, PAI's full-time sales prospecting assistant. Today is ${today}.
 
@@ -510,20 +596,38 @@ You help a field rep find nearby businesses worth contacting, brief them in chat
 Grounding, in order of importance:
 - Never invent businesses, phone numbers, websites, addresses, hours, owners, or events. A number you did not read in a tool result does not exist.
 - Only use tool results, the current list, and remembered facts. If you do not know, say so in one line and either look it up or ask.
+- Never write a business name that did not come back from a tool. No placeholders, no examples, no "The Local Bakery". If there is no list yet, say so and ask for a city or ZIP.
+- If the rep points at the chat ("look in the chat", "the one above"), read the conversation and the list. Do not treat their words as a place to search.
 - Attribute anything soft: "the listing says", "FCC reports", "public web". Never upgrade reported to confirmed.
 - This is not recruiting. Ignore hiring, jobs, and careers.
 
+Listening:
+- Do every part of what they asked, in the order they asked it. A request with "and then" or "also" is not finished until the last clause is done.
+- Only mention a count if they asked for one ("give me 8", "find 3"). Never open with "I found 8 businesses" because that is the old default cap.
+- If they asked to find AND research AND check what's new, run find_businesses, then research_business or check_listing, then scan_local_news. Do not stop after the list.
+- National chains and convenience stops are out unless they named that kind of place.
+
+What home-based means, because this is where you get it wrong:
+- Home-based means the business runs out of a residence: a house, a garage, a barn, a spare room, or a truck the owner parks at home. Nothing else counts.
+- A suite or unit number, a business park, an office building, a storefront, a clinic, a restaurant, a school, or a place with hundreds of reviews is NOT home-based, no matter how quiet the street name sounds. "Gary Paterson" in an office suite is an office.
+- Only the listings carrying a Home-based flag are confirmed. Recommend those.
+- If the flag count is short, say so in one line and offer a wider radius. Never relabel an office as home-based to fill the list, and never quietly hand them offices as if they matched.
+
 Picking the right tool:
-- find_businesses only with a place the rep actually named, or the remembered territory. Never guess a location from a business name, and never search a place they did not give you.
+- find_businesses only with a place the rep actually named, or the remembered territory. Pass profile=home_based when they asked for at-home shops. Pass limit only when they asked for a number.
+- identify_address when they ask what is at an address, what is this address, or who is at a street. Answer with the business at that pin. Do not run find_businesses and dump nearby shops.
 - Already have a list and they ask who to call? Rank from the current list. Do not search again.
 - refine_list when they want fewer: one industry, a tighter radius, only ones with a phone, closest first.
 - research_business when you need public facts about one company on the list that you do not already have.
-- web_lookup after research_business when the answer is still missing: ownership, number of locations, recent news, still open.
+- scan_local_news when they ask what's new, for a local news scan, or expansions. It defaults to the business currently on screen, which is the one they mean after they press Next. Pass scope "list" only when they clearly asked about the whole list. Quote only what the snippet actually says.
+- check_listing when they ask if a shop is real, independent, or worth calling.
+- web_lookup after research_business when the answer is still missing: ownership, number of locations, still open.
 - check_broadband when they ask who is available, who serves an address, what providers are there, or what speeds they can get. scope "territory" for the area or the whole list, scope "business" for one company. Never answer availability from memory.
 - skip_to_next when they say skip, next, or similar.
+- plan_route when they ask what order to work these, a walking order, or how to cover the street on foot.
 - draft_outreach when they ask to write, draft, open, or email. Ground every line in the returned facts.
 - mark_contacted when they say they called, emailed, left a voicemail, or that one is a dead end.
-- remember only for durable facts (territory, industries they sell, working style). forget when they correct or retire one. Never remember the whole chat.
+- remember only for durable facts (territory, industries they sell, working style, "home-based only"). forget when they correct or retire one. Never remember the whole chat.
 - If they name a business that is not on the list and you have no territory, ask which city or ZIP. Do not search blind.
 
 Reading broadband results: providerCount and providers cover every provider at the address. charterSpectrum describes Charter/Spectrum only, so a not_reported Charter tier never means "no providers serve this address".
@@ -531,10 +635,13 @@ Reading broadband results: providerCount and providers cover every provider at t
 How to write:
 - Answer in the first sentence. Do not narrate a plan, list capabilities, or stall before a tool.
 - If they named a place, search it. Never reply with a demo, fake businesses, or a sample table.
-- If you found businesses, say how many are worth talking to, then the strongest two or three with why, distance, and phone as a numbered list. The full list is already on screen, so never repeat every row.
-- Keep it tight: usually under 80 words. Emails can run a short paragraph.
+- After a search, name the strongest fits with why, distance, and phone. If a listing has a news flag (Just opened, Recent expansion, Just moved, New ownership, In the news), put it next to the phone and open with it instead of the internet pitch. Do not recite every row — the full list is on screen.
+- When a news scan finds nothing, say that in one line and move on. "Nothing public on them" is a real answer.
+- Keep it tight: usually under 80 words unless they asked for research or news. Emails can run a short paragraph.
 - Markdown: **bold** names, numbered lists when ranking, a short ## heading only when splitting a brief from a draft. No tables, no boxed grids, no backtick-wrapping ordinary words, no emoji, no horizontal rules.
 - One idea per bullet. Do not pad with a summary of what you just said.
+
+${briefBlock}
 
 Remembered facts:
 ${memoryBlock}
@@ -560,7 +667,7 @@ function findInQueue(queue: LiveQueue | null, prospectId?: string, name?: string
 }
 
 /** Tools that only read state, so several of them can be answered at once. */
-const READ_ONLY_TOOLS = new Set(["research_business", "check_broadband", "web_lookup"]);
+const READ_ONLY_TOOLS = new Set(["research_business", "check_broadband", "web_lookup", "scan_local_news", "check_listing"]);
 
 const OUTCOME_LABELS: Record<string, string> = {
   reached: "reached someone",
@@ -597,12 +704,24 @@ async function runTool(
         note: "Already searched this turn. Brief from this list as a numbered list, not a table. Do not invent businesses.",
       };
     }
-    const location = typeof args.location === "string" ? args.location : "";
+    const location = cleanLocationArg(typeof args.location === "string" ? args.location : "");
+    const brief = session.brief;
+    const profile =
+      args.profile === "home_based" || args.profile === "independent" || args.profile === "any"
+        ? args.profile
+        : brief?.profile ?? "any";
+    const limit =
+      typeof args.limit === "number"
+        ? args.limit
+        : brief?.requestedCount ?? null;
     await trackStep(trace, `Searching Google Maps near ${location || "that area"}`, liveSearchDetail());
     const found = await findBusinesses({
       location,
       radiusMiles: typeof args.radiusMiles === "number" ? args.radiusMiles : null,
-      category: typeof args.category === "string" ? args.category : null,
+      category: typeof args.category === "string" ? args.category : brief?.categoryHint ?? null,
+      limit,
+      profile,
+      excludeNational: args.excludeNational === false ? false : brief?.excludeNational !== false,
     });
     session.queue = found.queue;
     trace.searched = true;
@@ -610,14 +729,21 @@ async function runTool(
     await trackStep(
       trace,
       `Ranking ${found.cards.length} ${found.cards.length === 1 ? "listing" : "listings"}`,
-      found.via,
+      found.dropped ? `${found.via} · dropped ${found.dropped} chain/retail stops` : found.via,
     );
     await rememberFact({ kind: "territory", text: `Working territory: ${found.queue.locationLabel} (${found.queue.radiusMiles} mi)` });
+    if (profile === "home_based") {
+      await rememberFact({ kind: "preference", text: "Look for home-based / owner-run shops. Skip gas, big-box, and national chains." });
+    }
     return {
       ok: true,
       location: found.queue.locationLabel,
       radiusMiles: found.queue.radiusMiles,
       count: found.cards.length,
+      requestedCount: limit,
+      dropped: found.dropped,
+      confirmedHomeBased: found.homeConfirmed,
+      paddedWithQuietIndependents: found.relaxed,
       businesses: found.cards.map((card) => ({
         id: card.id,
         name: card.name,
@@ -627,12 +753,61 @@ async function runTool(
         score: card.score,
         why: card.why.slice(0, 110),
         source: card.source ?? null,
+        signals: card.signals ?? [],
       })),
       via: found.via,
-      note: found.cards.length
-        ? "These are real listings from the Google Maps scraper. Public map data is only a backstop. Recommend only these. The full list is already rendered for the user, so highlight two or three."
-        : "No strong listings came back. Ask for a tighter address or a different area. Do not invent businesses.",
+      note: !found.cards.length
+        ? "No listings survived the filter. Ask for a different area or a wider radius — do not invent businesses or fall back to Circle K / Walmart."
+        : profile === "home_based"
+          ? `Only the ${found.homeConfirmed} carrying a Home-based flag are confirmed home-based. ${
+              found.relaxed
+                ? "The rest are the quietest independents nearby — say so plainly and offer a wider radius. Never call them home-based."
+                : "Recommend from those."
+            }`
+          : limit
+            ? `They asked for ${limit}. Recommend only these. Do not pad the count. The full list is already on screen.`
+            : "These are real listings. Do not announce a default headcount. Highlight the strongest fits. The full list is already on screen.",
     };
+  }
+
+  if (name === "identify_address") {
+    const address = typeof args.address === "string" ? args.address.trim() : "";
+    if (address.length < 6) return { ok: false, error: "Need a street address to look up." };
+    await trackStep(trace, `Looking up what is at ${address}`, liveSearchDetail());
+    try {
+      const identified = await identifyAddress(address);
+      if (identified.prospects.length) {
+        session.queue = {
+          locationLabel: identified.resolved,
+          radiusMiles: 0.15,
+          category: null,
+          currentIndex: 0,
+          prospects: identified.prospects,
+        };
+      }
+      await trackSources(trace, identified.sources);
+      return {
+        ok: true,
+        resolved: identified.resolved,
+        exactMatch: identified.exactMatch,
+        atAddress: identified.atAddress.map((item) => ({
+          name: item.name,
+          category: item.category,
+          phone: item.phone,
+          address: item.address,
+        })),
+        nearby: identified.neighbours.map((item) => ({
+          name: item.name,
+          category: item.category,
+          distanceMiles: Number(item.distanceMiles.toFixed(2)),
+        })),
+        note: identified.exactMatch
+          ? "Name the business at this pin. Nearby listings are next door, not this address. Drag the address onto Normal for the full report."
+          : "Nothing public is pinned to this exact number. Say that. Nearby listings are not this address.",
+      };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : "Could not resolve that address." };
+    }
   }
 
   if (name === "research_business") {
@@ -675,6 +850,24 @@ async function runTool(
     const checked = await checkBroadband(prospect);
     await trackSources(trace, checked.sources);
     return { ok: true, availability: checked.availability };
+  }
+
+  if (name === "plan_route") {
+    if (!session.queue?.prospects.length) {
+      return { ok: false, error: "There is no list to route yet. Find businesses in an area first." };
+    }
+    const route = planWalkingRoute(session.queue);
+    if (!route) return { ok: false, error: "The list is empty." };
+    await trackStep(
+      trace,
+      `Putting ${route.stops.length} stops in walking order`,
+      `${route.totalMiles.toFixed(1)} mi on foot`,
+    );
+    return {
+      ok: true,
+      ...route,
+      note: "The list is now in this order, so Next follows the walk. Give them the first three stops, not all of them.",
+    };
   }
 
   if (name === "skip_to_next") {
@@ -756,6 +949,112 @@ async function runTool(
         ? "The list on screen is already re-ordered to match. Name the top two or three."
         : "Nothing on the current list matches. Offer a wider radius or a different industry instead of inventing listings.",
     };
+  }
+
+  if (name === "scan_local_news") {
+    if (!session.queue?.prospects.length) {
+      return { ok: false, error: "There is no list yet. Find businesses in an area first." };
+    }
+    const listScope = args.scope === "list" && !args.prospectId && !args.name;
+    if (listScope) {
+      const scanned = await scanLocalNewsForQueue(session.queue, 4, trace.scannedNews);
+      if (scanned.businesses.length) {
+        await trackStep(
+          trace,
+          `Scanning local news around ${session.queue.locationLabel}`,
+          `${scanned.businesses.length} ${scanned.businesses.length === 1 ? "listing" : "listings"}`,
+        );
+        for (const item of scanned.businesses) trace.scannedNews.add(item.id);
+        await trackSources(trace, scanned.sources);
+      }
+      const flagged = session.queue.prospects
+        .map((item) => ({
+          name: item.name,
+          flag: item.signals?.find((signal) => signal.kind === "expansion")?.label,
+          detail: item.signals?.find((signal) => signal.kind === "expansion")?.detail,
+        }))
+        .filter((item) => item.flag);
+      return {
+        ok: true,
+        flagged,
+        scanned: scanned.businesses.map((item) => item.name),
+        note: flagged.length
+          ? "Only these snippets are real. Put the flag next to the phone and open with it. Do not invent more."
+          : "Public news said nothing about these businesses. Say that plainly — do not invent an opening or a move.",
+      };
+    }
+    // Default to whoever is on screen so pressing Next then asking "what's new"
+    // reads the new current business, not row one.
+    const prospect = findInQueue(
+      session.queue,
+      typeof args.prospectId === "string" ? args.prospectId : undefined,
+      typeof args.name === "string" ? args.name : undefined,
+    );
+    if (!prospect) return { ok: false, error: "That business is not in the current list." };
+    const existing = prospect.signals?.find((signal) => signal.kind === "expansion") ?? null;
+    if (trace.scannedNews.has(prospect.id)) {
+      return {
+        ok: true,
+        business: prospect.name,
+        signal: existing,
+        note: existing
+          ? "Already scanned this turn. Quote the flag you have."
+          : "Already scanned this turn and public news said nothing. Do not invent one.",
+      };
+    }
+    await trackStep(trace, `Scanning local news on ${prospect.name}`, prospect.address);
+    try {
+      const scanned = await scanLocalNews(prospect);
+      if (scanned.signal) {
+        prospect.signals = [...(prospect.signals ?? []).filter((item) => item.kind !== "expansion"), scanned.signal];
+      }
+      trace.scannedNews.add(prospect.id);
+      await trackSources(trace, scanned.sources);
+      return {
+        ok: true,
+        business: prospect.name,
+        address: prospect.address,
+        signal: scanned.signal,
+        findings: scanned.findings,
+        pagesChecked: scanned.checked,
+        pagesAboutThisBusiness: scanned.matched,
+        note: scanned.signal
+          ? `Quote the snippet and open the call with it. The ${scanned.signal.label} flag is now on ${prospect.name}.`
+          : `Nothing public about ${prospect.name} mentions an opening, move, or event. Say that in one line — do not invent one.`,
+      };
+    } catch (scanError) {
+      return {
+        ok: false,
+        error: scanError instanceof Error ? scanError.message : "The news scan failed.",
+        note: "Say you could not confirm recent news.",
+      };
+    }
+  }
+
+  if (name === "check_listing") {
+    if (args.scope === "list") {
+      if (!session.queue?.prospects.length) {
+        return { ok: false, error: "There is no list yet. Find businesses in an area first." };
+      }
+      const checks = session.queue.prospects.slice(0, 8).map(checkListing);
+      trace.checkedListings = true;
+      await trackStep(trace, "Checking which listings look like real local shops", `${checks.length} on the list`);
+      return {
+        ok: true,
+        checks,
+        note: "Drop anything marked National chain unless they asked for that kind of stop.",
+      };
+    }
+    const prospect = findInQueue(
+      session.queue,
+      typeof args.prospectId === "string" ? args.prospectId : undefined,
+      typeof args.name === "string" ? args.name : undefined,
+    );
+    if (!prospect) return { ok: false, error: "That business is not in the current list." };
+    const checked = checkListing(prospect);
+    trace.checkedListings = true;
+    await trackStep(trace, `Checking ${prospect.name}`, checked.signal.label);
+    return { ok: true, check: checked };
   }
 
   if (name === "web_lookup") {
@@ -1071,7 +1370,13 @@ async function chatWithProvider(
 }
 
 function looksLikeFind(text: string) {
-  return /\b(find|search|look(?:ing)? for|show me|who(?:'s| is) near|biz|business(?:es)?)\b/i.test(text);
+  return /\b(find|search|look(?:ing)? for|show me|who(?:'s| is) near|biz|businesses)\b/i.test(text);
+}
+
+/** A numbered or bulleted run of bolded proper names reads as a prospect list. */
+function looksLikeInventedList(content: string) {
+  const named = content.match(/^\s*(?:\d+\.|[-*])\s+\*\*([^*]{3,80})\*\*/gm) ?? [];
+  return named.length >= 2;
 }
 
 function looksLikeSkip(text: string) {
@@ -1115,31 +1420,158 @@ function expandPlaceName(value: string) {
   return value.replace(/\bgville\b/gi, "Greenville").replace(/\bgreenvlle\b/gi, "Greenville");
 }
 
-function extractLocation(text: string) {
+/**
+ * The model sometimes hands back the whole phrase ("5 businesses near 477
+ * Haywood Rd"). Geocoding that returns nothing, so strip the ask off the front.
+ */
+function cleanLocationArg(value: string) {
+  let cleaned = value.replace(/\s+/g, " ").trim();
+  cleaned = cleaned.replace(
+    /^(?:find|show|get|give me|look for)?\s*\d*\s*(?:home[- ]?based\s+)?(?:businesses|business|shops|shop|companies|company|leads|prospects|places)\b\s*(?:that are\s+)?(?:home[- ]?based\s+)?(?:near|in|around|by|at|close to|within)?\s*/i,
+    "",
+  );
+  cleaned = cleaned.replace(/^(?:near|in|around|by|at|close to|the area of)\s+/i, "");
+  return cleaned.trim() || value.trim();
+}
+
+const LOCATION_NOISE = /^(?:near|around|in|at|by|of|businesses?|shops?|stores?|companies|company|leads?|prospects?|places?|home|based)$/i;
+
+/** Words that mean the rep is pointing at the screen, not naming a place. */
+const NOT_A_PLACE =
+  /\b(chat|screen|list|above|below|history|thread|conversation|message|earlier|before|there|here|them|those|these|it|one|ones|mine|yours|anything|something|nearby|around here|the area|my territory|my area)\b/i;
+
+/**
+ * The parser will happily hand back "the chat.." as a city. Geocoding that
+ * wastes a turn and tells the rep their own words are an unknown address.
+ */
+function looksLikePlace(value: string) {
+  const trimmed = value.trim();
+  if (trimmed.length < 3) return false;
+  if (/\b\d{5}(?:-\d{4})?\b/.test(trimmed)) return true;
+  if (/\b\d{1,6}\s+\w/.test(trimmed)) return true;
+  if (/,\s*[A-Za-z]{2,}\b/.test(trimmed)) return true;
+  if (NOT_A_PLACE.test(trimmed)) return false;
+  return /^[A-Za-z][A-Za-z .'-]{2,60}$/.test(trimmed);
+}
+
+/** The territory saved the last time a search actually ran. */
+function rememberedTerritory(memory: LiveMemoryFact[]) {
+  for (const fact of memory) {
+    if (fact.kind !== "territory") continue;
+    const match = fact.text.match(/Working territory:\s*(.+?)\s*(?:\(|$)/i);
+    const place = match?.[1]?.trim();
+    if (place && looksLikePlace(place)) return place;
+  }
+  return null;
+}
+
+function extractLocation(raw: string) {
+  // "find 5 businesses near 477 Haywood Rd" would otherwise geocode the whole
+  // phrase, because the 5 reads as a street number.
+  const text = cleanLocationArg(raw);
   const quoted = text.match(/["“]([^"”]{3,80})["”]/);
   if (quoted) return expandPlaceName(quoted[1]);
+
+  // A street address is checked before the ZIP. Otherwise "3618 Pelham Rd,
+  // Greenville, SC 29615" collapses to the ZIP and loses the door they meant.
+  const street = text.match(
+    /\b(\d{1,6}\s+(?!near\b|around\b|businesses?\b|shops?\b|companies\b|leads?\b)[A-Za-z][A-Za-z0-9'.-]*(?:\s+(?!near\b|around\b|businesses?\b|shops?\b)[A-Za-z0-9'.-]+){0,5}\s+(?:rd|road|dr|drive|st|street|ave|avenue|blvd|boulevard|ln|lane|way|ct|court|hwy|highway|pkwy|parkway|cir|circle|pl|place|ter|terrace))\b/i,
+  );
+  if (street) {
+    const after = text.slice((street.index ?? 0) + street[0].length);
+    const tail = after.match(/^[\s,]+([A-Za-z][A-Za-z.']{1,40})(?:[\s,]+([A-Za-z]{2}))?\b/);
+    const city = tail?.[1] ? expandPlaceName(tail[1]) : "";
+    const state = tail?.[2]?.toUpperCase() ?? (/^[\s,]+([A-Z]{2})\b/.exec(after)?.[1] ?? "");
+    const zipAfter = after.match(/\b\d{5}(?:-\d{4})?\b/)?.[0] ?? "";
+    const parts = [street[1], city && city.length > 2 ? city : "", state].filter(Boolean);
+    const joined = parts.join(", ");
+    return zipAfter ? `${joined} ${zipAfter}` : joined;
+  }
+
   const zip = text.match(/\b\d{5}(?:-\d{4})?\b/);
   if (zip) {
     const around = text.match(new RegExp(`([A-Za-z][A-Za-z .'-]{2,40},?\\s*[A-Z]{2}\\s*)?${zip[0]}`));
     return expandPlaceName((around?.[0] || zip[0]).trim());
   }
-  const street = text.match(
-    /\b(\d{1,6}\s+[A-Za-z][A-Za-z0-9'.-]*(?:\s+[A-Za-z0-9'.-]+){0,5}\s+(?:rd|road|dr|drive|st|street|ave|avenue|blvd|boulevard|ln|lane|way|ct|court|hwy|highway|pkwy|parkway|cir|circle|pl|place|ter|terrace))\b/i,
-  );
-  if (street) {
-    const after = text.slice((street.index ?? 0) + street[0].length);
-    const tail = after.match(/^\s+([A-Za-z][A-Za-z.']{1,40})(?:\s+([A-Za-z]{2}))?\b/);
-    const city = tail?.[1] ? expandPlaceName(tail[1]) : "";
-    const state = tail?.[2]?.toUpperCase() ?? (/^\s+([A-Z]{2})\b/.exec(after)?.[1] ?? "");
-    if (city && state && city.length > 2) return `${street[1]}, ${city}, ${state}`;
-    if (state) return `${street[1]}, ${state}`;
-    if (city && city.length > 2) return `${street[1]}, ${city}`;
-    return street[1];
-  }
   const near = text.match(/\b(?:in|near|around|of)\s+([A-Za-z0-9][A-Za-z0-9 .,'-]{2,80})/i);
-  if (near) return expandPlaceName(near[1].replace(/[?.!]+$/, "").trim());
+  if (near) {
+    const trimmed = near[1].replace(/[?.!]+$/, "").trim();
+    if (!LOCATION_NOISE.test(trimmed.split(/\s+/)[0] ?? "")) return expandPlaceName(trimmed);
+  }
   const cityState = text.match(/\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s*[A-Z]{2}\b/);
   return cityState?.[0] ?? null;
+}
+
+function extractPlace(text: string) {
+  const value = extractLocation(text);
+  return value && looksLikePlace(value) ? value : null;
+}
+
+function hostOf(url: string | null | undefined) {
+  if (!url) return null;
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return null;
+  }
+}
+
+/** "what is this 3618 Pelham Rd" is a question about one address, not a search. */
+function looksLikeIdentify(text: string) {
+  return (
+    /\b(what|what's|whats|who|who's|whos)\s+(?:is\s+|are\s+)?(?:this|that|at|there|in|inside)\b/i.test(text) ||
+    /\b(identify|look ?up|check)\s+(?:this\s+)?address\b/i.test(text) ||
+    /\bwhat(?:'s| is)\s+(?:at|on)\b/i.test(text) ||
+    /\bwho(?:'s| is)\s+(?:at|on)\b/i.test(text)
+  );
+}
+
+function formatIdentifyReply(result: Awaited<ReturnType<typeof identifyAddress>>) {
+  const [primary, ...alsoHere] = result.atAddress;
+  if (!primary) {
+    const nearby = result.neighbours.length
+      ? ` Closest public pins are ${result.neighbours
+          .slice(0, 3)
+          .map((item) => `**${item.name}** ${item.distanceMiles.toFixed(2)} mi`)
+          .join(", ")} — those are not this address.`
+      : "";
+    return `Nothing public is listed at **${result.resolved}**. It reads as a residence, a vacant unit, or a business with no Maps pin.${nearby} Drag the address onto Normal if you want the full workup.`;
+  }
+
+  const details = [primary.phone, hostOf(primary.website)].filter(Boolean);
+  const lines = [
+    `**${result.resolved}** is **${primary.name}** — ${primary.category}${details.length ? `, ${details.join(" · ")}` : ""}.`,
+  ];
+  if (alsoHere.length) {
+    lines.push(`Also at that address: ${alsoHere.map((item) => `**${item.name}** (${item.category})`).join(", ")}.`);
+  }
+  if (result.neighbours.length) {
+    lines.push(
+      `Next door: ${result.neighbours
+        .slice(0, 3)
+        .map((item) => `**${item.name}** ${item.distanceMiles.toFixed(2)} mi`)
+        .join(", ")}.`,
+    );
+  }
+  lines.push("Drag the address up to Normal for the full report, or drop it on the chat box to stay in Live.");
+  return lines.join("\n\n");
+}
+
+function looksLikeRoute(text: string) {
+  return /\b(walk(?:ing)? order|walk order|route|what order|which order|door to door|work the street|plan (?:my|the) (?:day|street|walk)|shortest (?:path|route)|most efficient)\b/i.test(
+    text,
+  );
+}
+
+function formatRouteReply(route: NonNullable<ReturnType<typeof planWalkingRoute>>) {
+  const lines = route.stops
+    .slice(0, 5)
+    .map(
+      (stop) =>
+        `${stop.order}. **${stop.name}** — ${stop.category}${stop.legMiles ? ` · ${stop.legMiles} mi from the last door` : " · you are here"}`,
+    );
+  const rest = route.stops.length > 5 ? `\n\n${route.stops.length - 5} more after that.` : "";
+  return `Walking order from **${route.start}** — ${route.stops.length} doors, ${route.totalMiles.toFixed(1)} mi, about ${route.walkingMinutes} minutes of walking.\n\n${lines.join("\n")}${rest}\n\nNext now follows the walk instead of the ranking.`;
 }
 
 function looksLikePrioritize(text: string) {
@@ -1152,15 +1584,94 @@ function looksLikeOutreach(text: string) {
   );
 }
 
-function formatListReply(cards: LiveProspectCard[], location: string) {
+function formatListReply(cards: LiveProspectCard[], location: string, brief: LiveBrief | null) {
   if (!cards.length) {
-    return `I looked around ${location} and did not find a business worth putting in front of you yet. Try a street address, a tighter ZIP, or a different category.`;
+    const wanted = brief?.profile === "home_based" ? "home-based business" : "business worth putting in front of you";
+    return `I looked around ${location} and did not find a ${wanted} yet. Try a street address, a tighter ZIP, or a different category.`;
   }
-  const lines = cards.slice(0, 3).map((item, index) => {
+  const homeBased = cards.filter((item) => item.signals?.some((signal) => signal.kind === "home"));
+  const pool = brief?.profile === "home_based" && homeBased.length ? homeBased : cards;
+  const show = brief?.requestedCount ? pool.slice(0, brief.requestedCount) : pool.slice(0, 3);
+  const lines = show.map((item, index) => {
     const contact = item.phone ? item.phone : item.website ? "website on file" : "no public phone";
-    return `${index + 1}. **${item.name}** — ${item.category}, ${item.distanceMiles.toFixed(1)} mi. ${item.why} · ${contact}`;
+    const flags = (item.signals ?? [])
+      .filter((signal) => signal.kind === "expansion" || signal.kind === "home" || signal.kind === "rival")
+      .map((signal) => signal.label)
+      .join(" · ");
+    return `${index + 1}. **${item.name}** — ${item.category}, ${item.distanceMiles.toFixed(1)} mi. ${item.why} · ${contact}${flags ? ` · ${flags}` : ""}`;
   });
-  return `I found **${cards.length} ${cards.length === 1 ? "business" : "businesses"}** near ${location} who could be worth talking to.\n\n${lines.join("\n")}\n\nI can brief the first one, skip to the next, or pull public details on any of them.`;
+
+  let opener: string;
+  if (brief?.profile === "home_based") {
+    opener = homeBased.length
+      ? `${homeBased.length === 1 ? "One listing near" : `${homeBased.length} listings near`} ${location} actually reads as home-based. Everything in a suite, a business park, or a storefront is out.`
+      : `Nothing near ${location} reads as genuinely home-based — the listings here are offices, suites, and storefronts. These are the quietest independents instead, and I would widen the radius.`;
+  } else if (brief?.requestedCount) {
+    opener = `Here ${show.length === 1 ? "is the" : "are the"} **${show.length}** you asked for near ${location}.`;
+  } else {
+    opener = `Here's who I'd actually put on a call list near ${location}.`;
+  }
+
+  const news = cards.filter((item) => item.signals?.some((signal) => signal.kind === "expansion"));
+  const closer = news.length
+    ? `${news
+        .map((item) => `**${item.name}** (${item.signals?.find((signal) => signal.kind === "expansion")?.label})`)
+        .join(", ")} — open with that instead of the internet pitch.`
+    : "I can brief one, scan what's new, or skip to the next.";
+  return `${opener}\n\n${lines.join("\n")}\n\n${closer}`;
+}
+
+/**
+ * True when the ask is about the business on screen rather than the whole list,
+ * so pressing Next then "what's new" reads the new current business.
+ */
+function targetsCurrentOnly(text: string, session: LiveSession) {
+  const current = currentProspect(session.queue);
+  if (!current) return false;
+  if (/\b(whole list|every business|all of them|each of them|the list)\b/i.test(text)) return false;
+  if (/\b(this one|current|the one (?:we|i)(?:'re| are) on|them\b)/i.test(text)) return true;
+  const tokens = current.name
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((token) => token.length >= 4);
+  const hay = text.toLowerCase();
+  return tokens.some((token) => hay.includes(token));
+}
+
+async function fulfillFollowThrough(session: LiveSession, brief: LiveBrief, trace: TurnTrace) {
+  if (!session.queue?.prospects.length) return;
+  if (brief.wantsNews) {
+    const current = currentProspect(session.queue);
+    const singleTarget = targetsCurrentOnly(brief.raw, session) && current;
+    if (singleTarget && current) {
+      if (!trace.scannedNews.has(current.id)) {
+        await trackStep(trace, `Scanning local news on ${current.name}`, current.address);
+        const scanned = await scanLocalNews(current);
+        if (scanned.signal) {
+          current.signals = [...(current.signals ?? []).filter((item) => item.kind !== "expansion"), scanned.signal];
+        }
+        trace.scannedNews.add(current.id);
+        await trackSources(trace, scanned.sources);
+      }
+    } else {
+      const scanned = await scanLocalNewsForQueue(session.queue, 4, trace.scannedNews);
+      if (scanned.businesses.length) {
+        await trackStep(
+          trace,
+          `Scanning local news around ${session.queue.locationLabel}`,
+          `${scanned.businesses.length} ${scanned.businesses.length === 1 ? "listing" : "listings"}`,
+        );
+        for (const item of scanned.businesses) trace.scannedNews.add(item.id);
+        await trackSources(trace, scanned.sources);
+      }
+    }
+  }
+  if (brief.wantsGenuineCheck && !trace.checkedListings) {
+    for (const prospect of session.queue.prospects) checkListing(prospect);
+    trace.checkedListings = true;
+    await trackStep(trace, "Checking which listings look like real local shops", `${session.queue.prospects.length} on the list`);
+  }
 }
 
 function formatSkipReply(card: LiveProspectCard, index: number, total: number) {
@@ -1186,6 +1697,9 @@ function formatOutreachReply(prospect: { name: string; callOpener: string; follo
 }
 
 async function heuristicReply(text: string, session: LiveSession, trace: TurnTrace) {
+  if (session.brief && briefNeedsFollowThrough(session.brief)) {
+    await fulfillFollowThrough(session, session.brief, trace);
+  }
   if (looksLikeSkip(text)) {
     const skipped = skipQueue(session.queue);
     if (!skipped) return "Find businesses in an area first, then I can skip through them.";
@@ -1211,12 +1725,18 @@ async function heuristicReply(text: string, session: LiveSession, trace: TurnTra
     return formatOutreachReply(currentForDraft, kind);
   }
   if (trace.searched && session.queue) {
-    return formatListReply(session.queue.prospects.map(compactProspect), session.queue.locationLabel);
+    return formatListReply(session.queue.prospects.map(compactProspect), session.queue.locationLabel, session.brief ?? null);
   }
-  const location = extractLocation(text);
+  const location = extractPlace(text);
   if (location && (looksLikeFind(text) || !currentProspect(session.queue))) {
     await trackStep(trace, `Searching Google Maps near ${location}`, liveSearchDetail());
-    const found = await findBusinesses({ location });
+    const found = await findBusinesses({
+      location,
+      limit: session.brief?.requestedCount,
+      profile: session.brief?.profile,
+      excludeNational: session.brief?.excludeNational,
+      category: session.brief?.categoryHint,
+    });
     session.queue = found.queue;
     trace.searched = true;
     await trackSources(trace, found.sources);
@@ -1226,7 +1746,7 @@ async function heuristicReply(text: string, session: LiveSession, trace: TurnTra
       found.via,
     );
     await rememberFact({ kind: "territory", text: `Working territory: ${found.queue.locationLabel} (${found.queue.radiusMiles} mi)` });
-    return formatListReply(found.cards, found.queue.locationLabel);
+    return formatListReply(found.cards, found.queue.locationLabel, session.brief ?? null);
   }
   const current = currentProspect(session.queue);
   if (session.queue?.prospects.length && looksLikeBroadband(text)) {
@@ -1269,7 +1789,14 @@ export async function runLiveTurn(input: {
   const emit = async (event: LiveChatEvent) => {
     await input.onEvent?.(event);
   };
-  const trace: TurnTrace = { steps: [], sources: [], searched: false, emit };
+  const trace: TurnTrace = {
+    steps: [],
+    sources: [],
+    searched: false,
+    scannedNews: new Set<string>(),
+    checkedListings: false,
+    emit,
+  };
 
   let session = input.sessionId ? await loadSession(input.sessionId) : null;
   if (!session) session = await createSession();
@@ -1282,6 +1809,8 @@ export async function runLiveTurn(input: {
     createdAt: new Date().toISOString(),
   };
   session.messages = [...session.messages, userMessage].slice(-40);
+  session.brief = mergeLiveBrief(session.brief ?? null, parseLiveBrief(text));
+  const brief = session.brief;
 
   let memory = await loadMemory();
   let content = "";
@@ -1301,29 +1830,86 @@ export async function runLiveTurn(input: {
     }
   };
 
-  const location = extractLocation(text);
-  const mostlyLocation = Boolean(location) && text.length <= (location?.length ?? 0) + 24;
-  const extraAsk = looksLikeBroadband(text) || looksLikeOutreach(text) || looksLikePrioritize(text);
-  const wantsList = Boolean(location) && (looksLikeFind(text) || !currentProspect(session.queue) || mostlyLocation);
+  const named = extractPlace(text);
+  // "find 3 businesses nearby" has no place in it, but the rep means the
+  // territory we already worked. Falling through here is how the model ends up
+  // inventing names, so resolve it before the model gets a chance.
+  const territory = rememberedTerritory(memory);
+  const wantsFreshList =
+    looksLikeFind(text) &&
+    (!session.queue?.prospects.length ||
+      /\b(nearby|near me|around here|in the area|this area|my territory|same area|more|another list|again)\b/i.test(text));
+  const location = named ?? (wantsFreshList ? territory : null);
+  const mostlyLocation = Boolean(named) && text.length <= (named?.length ?? 0) + 24;
+  const extraAsk =
+    looksLikeBroadband(text) ||
+    looksLikeOutreach(text) ||
+    looksLikePrioritize(text) ||
+    briefNeedsFollowThrough(brief);
+  // "What's new with Cory Hughes, LLC" reads as a place to the location parser.
+  // If they named the business already on screen, they want that one, not a search.
+  const aboutCurrent = targetsCurrentOnly(text, session);
+  const identifyAsked =
+    Boolean(named) && (looksLikeIdentify(text) || (/^\s*(?:what(?:'s| is)|who(?:'s| is)|this)\b/i.test(text) && !looksLikeFind(text))) &&
+    !looksLikeFind(text);
+  const wantsList =
+    Boolean(location) &&
+    !aboutCurrent &&
+    !identifyAsked &&
+    (looksLikeFind(text) || !currentProspect(session.queue) || mostlyLocation);
+
+  // Asking what sits at an address is a lookup, not a prospecting run. Handling
+  // it here keeps it to one scrape and skips the model round trip entirely.
+  if (identifyAsked && named) {
+    await trackStep(trace, `Looking up what is at ${named}`, liveSearchDetail());
+    try {
+      const identified = await identifyAddress(named);
+      if (identified.prospects.length) {
+        session.queue = {
+          locationLabel: identified.resolved,
+          radiusMiles: 0.15,
+          category: null,
+          currentIndex: 0,
+          prospects: identified.prospects,
+        };
+      }
+      await trackSources(trace, identified.sources);
+      await publish(formatIdentifyReply(identified));
+    } catch {
+      await publish(`I could not resolve **${named}**. Give me the street, city, and ZIP and I will try again.`);
+    }
+  }
 
   if (wantsList && location) {
     const trySearch = async (place: string) => {
       await trackStep(trace, `Searching Google Maps near ${place}`, liveSearchDetail());
-      const found = await findBusinesses({ location: place });
+      const found = await findBusinesses({
+        location: place,
+        limit: brief.requestedCount,
+        profile: brief.profile,
+        excludeNational: brief.excludeNational,
+        category: brief.categoryHint,
+      });
       session.queue = found.queue;
       trace.searched = true;
       await trackSources(trace, found.sources);
       await trackStep(
         trace,
         `Ranking ${found.cards.length} ${found.cards.length === 1 ? "listing" : "listings"}`,
-        found.via,
+        found.dropped ? `${found.via} · dropped ${found.dropped} chain/retail stops` : found.via,
       );
       await rememberFact({
         kind: "territory",
         text: `Working territory: ${found.queue.locationLabel} (${found.queue.radiusMiles} mi)`,
       });
+      if (brief.profile === "home_based") {
+        await rememberFact({
+          kind: "preference",
+          text: "Look for home-based / owner-run shops. Skip gas, big-box, and national chains.",
+        });
+      }
       memory = await loadMemory();
-      if (!extraAsk) await publish(formatListReply(found.cards, found.queue.locationLabel));
+      if (!extraAsk) await publish(formatListReply(found.cards, found.queue.locationLabel, brief));
     };
 
     try {
@@ -1339,9 +1925,61 @@ export async function runLiveTurn(input: {
     }
   }
 
+  // No place, no memory, no list: there is nothing real to answer from, and the
+  // model will fill the gap with invented shops if we let it near the question.
+  if (!content && looksLikeFind(text) && !location && !session.queue?.prospects.length) {
+    await publish(
+      "I do not have a territory yet, and I will not guess business names. Give me a city, a ZIP, or a street address and I will pull real listings.",
+    );
+  }
+
+  if (!content && looksLikeRoute(text) && session.queue?.prospects.length) {
+    const route = planWalkingRoute(session.queue);
+    if (route) {
+      await trackStep(
+        trace,
+        `Putting ${route.stops.length} stops in walking order`,
+        `${route.totalMiles.toFixed(1)} mi on foot`,
+      );
+      await publish(formatRouteReply(route));
+    }
+  }
+
+  // Next has to move the queue itself. Left to the model it will happily narrate
+  // the next business without advancing, and then "what's new" reads row one.
+  if (!content && looksLikeSkip(text) && session.queue?.prospects.length) {
+    const skipped = skipQueue(session.queue);
+    if (skipped) {
+      session.queue = {
+        locationLabel: skipped.locationLabel,
+        radiusMiles: skipped.radiusMiles,
+        category: skipped.category,
+        currentIndex: skipped.currentIndex,
+        prospects: skipped.prospects,
+      };
+      const moved = currentProspect(session.queue);
+      if (moved) {
+        await trackStep(
+          trace,
+          `Moving to ${moved.name}`,
+          `${session.queue.currentIndex + 1} of ${session.queue.prospects.length}`,
+        );
+        if (!extraAsk) {
+          await publish(
+            formatSkipReply(compactProspect(moved), session.queue.currentIndex + 1, session.queue.prospects.length),
+          );
+        }
+      }
+    }
+  }
+
+  if (session.queue && extraAsk) {
+    await fulfillFollowThrough(session, brief, trace);
+  }
+
   if (!content && liveConfigured()) {
     const messages: ChatMessage[] = [
-      { role: "system", content: systemPrompt(memory, session.queue) },
+      { role: "system", content: systemPrompt(memory, session.queue, brief) },
       ...historyMessages(session.messages),
     ];
     const attempted = new Set<string>();
@@ -1407,7 +2045,7 @@ export async function runLiveTurn(input: {
         }
 
         if (trace.searched && session.queue && !extraAsk) {
-          await publish(formatListReply(session.queue.prospects.map(compactProspect), session.queue.locationLabel));
+          await publish(formatListReply(session.queue.prospects.map(compactProspect), session.queue.locationLabel, brief));
           break;
         }
 
@@ -1435,9 +2073,18 @@ export async function runLiveTurn(input: {
     content = await heuristicReply(text, session, trace);
   }
 
+  // Last line of defence. If there is no list, any reply that reads like one is
+  // invented, because every real name on screen comes from the queue.
+  if (!session.queue?.prospects.length && looksLikeInventedList(content)) {
+    await trackStep(trace, "Dropped an answer that named businesses I never pulled", "No list in this session");
+    await publish(
+      "I nearly answered with business names I never pulled, so I stopped. I only report listings from a real search. Give me a city, a ZIP, or a street address and I will run one.",
+    );
+  }
+
   if (looksLikeDemo(content) || looksIncomplete(content) || (hasBusinessTable(content) && session.queue)) {
     if (session.queue) {
-      await publish(formatListReply(session.queue.prospects.map(compactProspect), session.queue.locationLabel));
+      await publish(formatListReply(session.queue.prospects.map(compactProspect), session.queue.locationLabel, brief));
     } else if (looksLikeDemo(content) || looksIncomplete(content)) {
       await publish(await heuristicReply(text, session, trace));
     }

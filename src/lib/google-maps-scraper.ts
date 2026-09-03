@@ -393,10 +393,9 @@ function configuredQueries(input?: string[]) {
     .filter(Boolean);
   const requested = input?.length ? input : fromEnv.length ? fromEnv : [...DEFAULT_QUERIES];
   const maximum = numberEnv("GOOGLE_MAPS_SCRAPER_MAX_QUERIES", 28, 1, 40);
-  return [...new Set(requested.map((value) => value.trim()).filter((value) => value.length >= 2 && value.length <= 80))].slice(
-    0,
-    maximum,
-  );
+  return [...new Set(requested.map((value) => value.replace(/\s+/g, " ").trim()).filter((value) => value.length >= 2))]
+    .map((value) => value.slice(0, 80))
+    .slice(0, maximum);
 }
 
 function cacheKey(center: Coordinates, radiusMiles: number, queries: string[]) {
@@ -417,8 +416,8 @@ async function scrapeUncached(
   const retrievedAt = new Date().toISOString();
   // Each query costs two dependent round trips, so the queue depth is what sets
   // the wall clock. Both stay env-tunable if Google starts pushing back.
-  const concurrency = numberEnv("GOOGLE_MAPS_SCRAPER_CONCURRENCY", 4, 1, 6);
-  const delayMs = numberEnv("GOOGLE_MAPS_SCRAPER_DELAY_MS", 120, 0, 5_000);
+  const concurrency = numberEnv("GOOGLE_MAPS_SCRAPER_CONCURRENCY", 6, 1, 8);
+  const delayMs = numberEnv("GOOGLE_MAPS_SCRAPER_DELAY_MS", 60, 0, 5_000);
   const byId = new Map<string, PlaceCandidate>();
   const failures: string[] = [];
   let nextIndex = 0;

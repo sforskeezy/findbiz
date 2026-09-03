@@ -1,8 +1,9 @@
 "use client";
 
-import { Fragment, useState, type ReactNode } from "react";
+import { Fragment, createContext, useContext, useState, type ReactNode } from "react";
 import { Check, Copy } from "lucide-react";
 
+import { AddressChip, isStreetAddress } from "@/components/live/address-chip";
 import { WorkingDots } from "@/components/live/working-dots";
 import { cn } from "@/components/ui";
 
@@ -10,23 +11,62 @@ const PHONE =
   /(?:\+?1[\s.-]*)?(?:\(?\d{3}\)?[\s.-]*)\d{3}[\s.-]\d{4}(?:\s*(?:x|ext\.?|extension)\s*\d{1,6})?/gi;
 const URL = /https?:\/\/[^\s)<]+/gi;
 const EMAIL = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi;
+const STREET =
+  /\d{1,6}\s+[A-Za-z0-9'.#-]+(?:\s+[A-Za-z0-9'.#-]+){0,4}\s+(?:Rd|Road|St|Street|Ave|Avenue|Blvd|Boulevard|Ln|Lane|Dr|Drive|Ct|Court|Cir|Circle|Way|Pl|Place|Pkwy|Parkway|Hwy|Highway|Ter|Terrace|Trl|Trail)\b\.?(?:\s*(?:Ste\.?|Suite|Unit|#)\s*[\w-]+)?(?:,\s*[A-Za-z][A-Za-z .'-]{1,28})?(?:,\s*[A-Z]{2})?(?:\s+\d{5}(?:-\d{4})?)?/g;
 
 const linkClass =
   "underline decoration-[#c8c8c0] decoration-[1.5px] underline-offset-[3px] transition hover:decoration-[#5f5f59]";
 
-/** Bare URLs, emails, and phone numbers become tappable without any markdown syntax. */
+const StreamingContext = createContext(false);
+
+/**
+ * While an answer is streaming, each new word fades up on its own. Keys are
+ * positional, so words already on screen keep their identity and never replay
+ * the animation when the next chunk arrives.
+ */
+function Words({ value }: { value: string }) {
+  const streaming = useContext(StreamingContext);
+  if (!streaming || !value) return <>{value}</>;
+  const parts = value.split(/(\s+)/);
+  return (
+    <>
+      {parts.map((part, index) =>
+        part && !/^\s+$/.test(part) ? (
+          <span key={index} className="live-word">
+            {part}
+          </span>
+        ) : (
+          <Fragment key={index}>{part}</Fragment>
+        ),
+      )}
+    </>
+  );
+}
+
+/** Bare URLs, emails, phones, and street addresses — addresses can be picked up. */
 function linkifyPlain(text: string, keyPrefix: string): ReactNode[] {
   const nodes: ReactNode[] = [];
-  const pattern = new RegExp(`${URL.source}|${EMAIL.source}|${PHONE.source}`, "gi");
+  const pattern = new RegExp(`${URL.source}|${EMAIL.source}|${PHONE.source}|${STREET.source}`, "gi");
   let last = 0;
   let match: RegExpExecArray | null;
   let index = 0;
 
   while ((match = pattern.exec(text))) {
-    if (match.index > last) nodes.push(text.slice(last, match.index));
+    if (match.index > last) {
+      nodes.push(<Words key={`${keyPrefix}-w${index}`} value={text.slice(last, match.index)} />);
+    }
     const value = match[0];
     const trimmed = value.replace(/[.,;:]+$/, "");
     const trailing = value.slice(trimmed.length);
+
+    if (isStreetAddress(trimmed)) {
+      nodes.push(<AddressChip key={`${keyPrefix}-addr${index}`} value={trimmed} />);
+      if (trailing) nodes.push(trailing);
+      last = match.index + value.length;
+      index += 1;
+      continue;
+    }
+
     const href = /^https?:/i.test(trimmed)
       ? trimmed
       : trimmed.includes("@")
@@ -48,7 +88,7 @@ function linkifyPlain(text: string, keyPrefix: string): ReactNode[] {
     index += 1;
   }
 
-  if (last < text.length) nodes.push(text.slice(last));
+  if (last < text.length) nodes.push(<Words key={`${keyPrefix}-wt`} value={text.slice(last)} />);
   return nodes;
 }
 
@@ -532,11 +572,13 @@ export function LiveMarkdown({ content, streaming = false }: { content: string; 
   const blocks = parse(content);
 
   return (
-    <div className="text-[15px] leading-[1.68] tracking-[-0.008em] text-[#1c1c19] [&_a]:break-words">
-      <Blocks blocks={blocks} keyPrefix="md" />
-      {streaming && (
-        <WorkingDots size={12} className="ml-1.5 inline-block align-middle text-[#3a3a35]" />
-      )}
-    </div>
+    <StreamingContext.Provider value={streaming}>
+      <div className="text-[15px] leading-[1.68] tracking-[-0.008em] text-[#1c1c19] [&_a]:break-words">
+        <Blocks blocks={blocks} keyPrefix="md" />
+        {streaming && (
+          <WorkingDots size={12} className="ml-1.5 inline-block align-middle text-[#3a3a35]" />
+        )}
+      </div>
+    </StreamingContext.Provider>
   );
 }

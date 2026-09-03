@@ -518,8 +518,8 @@ async function runResearch(prospect: Prospect, queries: string[]): Promise<Googl
 
   const startIndex = firstResults ? 1 : 0;
   let nextIndex = startIndex;
-  const concurrency = numberEnv("GOOGLE_RESEARCH_CONCURRENCY", 2, 1, 4);
-  const delayMs = numberEnv("GOOGLE_RESEARCH_DELAY_MS", 200, 0, 3_000);
+  const concurrency = numberEnv("GOOGLE_RESEARCH_CONCURRENCY", 3, 1, 5);
+  const delayMs = numberEnv("GOOGLE_RESEARCH_DELAY_MS", 120, 0, 3_000);
 
   async function worker() {
     while (nextIndex < queries.length) {

@@ -1,5 +1,7 @@
 import type { Prospect } from "@/lib/types";
 
+export type LiveLeadSignal = import("@/lib/types").LiveLeadSignal;
+
 export const LIVE_RADII = [0.5, 1, 2, 5, 10] as const;
 export type LiveRadius = (typeof LIVE_RADII)[number];
 
@@ -23,6 +25,7 @@ export type LiveProspectCard = {
   score: number;
   why: string;
   source?: string;
+  signals?: LiveLeadSignal[];
 };
 
 export type LiveChatRole = "user" | "assistant";
@@ -68,6 +71,8 @@ export type LiveSession = {
   updatedAt: string;
   messages: LiveChatMessage[];
   queue: LiveQueue | null;
+  /** Last request Live is still working from, so compound asks survive the list. */
+  brief?: import("@/lib/live/intent").LiveBrief | null;
 };
 
 export type LiveSessionSummary = {

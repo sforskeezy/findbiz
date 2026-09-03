@@ -26,6 +26,12 @@ export type FollowUpEmail = {
   body: string;
 };
 
+export type LiveLeadSignal = {
+  kind: "expansion" | "rival" | "independent" | "chain" | "home";
+  label: string;
+  detail?: string | null;
+};
+
 export type Prospect = {
   id: string;
   name: string;
@@ -56,6 +62,8 @@ export type Prospect = {
   discoveryQuestions: string[];
   callOpener: string;
   followUpEmail: FollowUpEmail;
+  /** Live-only call flags. Search ignores this. */
+  signals?: LiveLeadSignal[];
 };
 
 export type BroadbandObservation = {
