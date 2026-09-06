@@ -15,7 +15,8 @@
     "fcc:import": "node scripts/import-fcc-availability.mjs",
     "places:probe": "node scripts/probe-osm-coverage.mjs",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --import ./scripts/test-register.mjs --test tests/*.test.mjs"
   },
   "dependencies": {
     "border-beam": "^1.3.0",

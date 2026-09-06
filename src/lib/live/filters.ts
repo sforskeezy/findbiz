@@ -208,11 +208,15 @@ export type BriefFilterResult = {
 
 export function filterProspectsForBrief(
   prospects: Prospect[],
-  input: { profile: LiveProfile; excludeNational: boolean; category?: string | null },
+  input: { profile: LiveProfile; excludeNational: boolean; category?: string | null; searchTerms?: string[] },
 ): BriefFilterResult {
   const category = input.category?.trim() || null;
   let kept = prospects.filter((item) => item.operatingStatus !== "Temporarily closed");
   if (category) kept = kept.filter((item) => item.category === category);
+  if (input.searchTerms?.length) {
+    const terms = input.searchTerms;
+    kept = kept.filter((item) => searchRelevance(item, terms) > 0);
+  }
 
   if (input.profile === "home_based") {
     const scored = kept
@@ -288,4 +292,27 @@ export function genuineSignal(prospect: Prospect): LiveLeadSignal {
     label: "Looks independent",
     detail: prospect.phone || prospect.website ? "Public contact on file" : "Thin listing — confirm before you call",
   };
+}
+
+function focusTokens(value: string) {
+  return value.toLowerCase()
+    .replace(/\bplumb(?:ers?|ing)?\b/g, "plumb")
+    .replace(/\b(?:dentists?|dentistry|dental)\b/g, "dent")
+    .replace(/\blandscap(?:e|ers?|ing)?\b/g, "landscap")
+    .replace(/\blawncare\b/g, "lawn care")
+    .replace(/\belectric(?:ians?|al)?\b/g, "electric")
+    .replace(/\broof(?:ers?|ing)?\b/g, "roof")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((token) => token.length >= 3 && !/^(?:and|the|service|services|business|businesses|company|companies|near|local|care|find|show|please|instead)$/.test(token))
+    .map((token) => token.length > 4 ? token.replace(/s$/, "") : token);
+}
+
+/** Use listing evidence, not generated sales copy or broad industry labels.
+ * Medical & dental, for example, is not proof that a clinic is a dentist. */
+export function searchRelevance(prospect: Pick<Prospect, "name" | "publicNotes">, terms: string[]) {
+  const wanted = new Set(focusTokens(terms.join(" ")));
+  if (!wanted.size) return 0;
+  const evidence = new Set(focusTokens(`${prospect.name} ${prospect.publicNotes ?? ""}`));
+  return [...wanted].reduce((score, token) => score + Number(evidence.has(token)), 0);
 }

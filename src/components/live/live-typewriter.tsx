@@ -27,14 +27,7 @@ export function LiveTypewriter({ active }: { active: boolean }) {
   const [typed, setTyped] = useState("");
 
   useEffect(() => {
-    if (!active) {
-      setTyped("");
-      return;
-    }
-    if (reduceMotion) {
-      setTyped(PLACEHOLDERS[0]);
-      return;
-    }
+    if (!active || reduceMotion) return;
 
     let phraseIndex = 0;
     let charIndex = 0;
@@ -74,7 +67,7 @@ export function LiveTypewriter({ active }: { active: boolean }) {
 
   return (
     <span className="live-typewriter" aria-hidden="true">
-      {typed}
+      {reduceMotion ? PLACEHOLDERS[0] : typed}
       {!reduceMotion && <i className="live-typewriter-caret" />}
     </span>
   );

@@ -335,13 +335,16 @@ function candidateFromPlace(place: UnknownArray, retrievedAt: string): PlaceCand
   const hours = hoursFor(place);
   const rating = numberAt(place, 4, 7);
   if (looksLikeRoadway(name, Boolean(phone || website || hours?.length || rating))) return null;
+  const nameCategory = normalizeCategory(name);
 
   return {
     id: `gmap-${placeId}`,
     name,
     address,
     coordinates,
-    category: normalizeCategory(types.join(" ")),
+    // A listing name is often more specific than Maps' broad internal type.
+    // For example, some "Lawn Care LLC" pins arrive with a legal-office type.
+    category: nameCategory === "Professional services" ? normalizeCategory(types.join(" ")) : nameCategory,
     phone,
     website,
     directoryUrl: mapsPlaceUrl(placeId, coordinates),

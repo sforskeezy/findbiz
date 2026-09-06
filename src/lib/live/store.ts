@@ -32,13 +32,17 @@ async function readJson<T>(file: string, fallback: T): Promise<T> {
 }
 
 async function writeJson(file: string, value: unknown) {
-  const tmp = `${file}.${process.pid}.tmp`;
+  const tmp = `${file}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
   await writeFile(/* turbopackIgnore: true */ tmp, JSON.stringify(value));
   await rename(/* turbopackIgnore: true */ tmp, file);
 }
 
 export function liveId(prefix: string) {
   return `${prefix}_${randomBytes(6).toString("hex")}`;
+}
+
+export function isLiveSessionId(id: string) {
+  return /^live_[a-f0-9]{12}$/.test(id);
 }
 
 function emptyIndex(): LiveIndex {
@@ -78,12 +82,14 @@ export async function createSession() {
 }
 
 export async function loadSession(id: string) {
+  if (!isLiveSessionId(id)) return null;
   const root = await ensureRoot();
   const session = await readJson<LiveSession | null>(path.join(root, "sessions", `${id}.json`), null);
   return session;
 }
 
 export async function saveSession(session: LiveSession) {
+  if (!isLiveSessionId(session.id)) throw new Error("Invalid Live session.");
   session.updatedAt = new Date().toISOString();
   const root = await ensureRoot();
   await writeJson(path.join(root, "sessions", `${session.id}.json`), session);

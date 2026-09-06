@@ -1,11 +1,14 @@
 "use client";
 
-import { Fragment, useEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
+import { Fragment, useEffect, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 
 import { cn } from "@/components/ui";
 
 export const ADDRESS_DRAG_TYPE = "application/x-pai-address";
+export const ADDRESS_DROP_EVENT = "pai-address-drop";
 const ADDRESS_DRAG_FLAG = "paiAddressDrag";
+
+export type AddressDropTarget = "live" | "normal";
 
 const STREET =
   /\d{1,6}\s+[A-Za-z0-9'.#-]+(?:\s+[A-Za-z0-9'.#-]+){0,4}\s+(?:Rd|Road|St|Street|Ave|Avenue|Blvd|Boulevard|Ln|Lane|Dr|Drive|Ct|Court|Cir|Circle|Way|Pl|Place|Pkwy|Parkway|Hwy|Highway|Ter|Terrace|Trl|Trail)\b\.?(?:\s*(?:Ste\.?|Suite|Unit|#)\s*[\w-]+)?(?:,\s*[A-Za-z][A-Za-z .'-]{1,28})?(?:,\s*[A-Z]{2})?(?:\s+\d{5}(?:-\d{4})?)?/g;
@@ -35,11 +38,23 @@ export function heldAddress() {
 }
 
 export function acceptsAddressDrag(event: DragEvent) {
-  return event.dataTransfer.types.includes(ADDRESS_DRAG_TYPE);
+  // Safari has returned DOMStringList here in older releases while Chromium
+  // returns an array. Array.from handles both without throwing during dragover.
+  return Array.from(event.dataTransfer.types ?? []).includes(ADDRESS_DRAG_TYPE);
 }
 
 export function addressFromDrop(event: DragEvent) {
-  return event.dataTransfer.getData(ADDRESS_DRAG_TYPE).trim() || heldAddress();
+  const custom = event.dataTransfer.getData(ADDRESS_DRAG_TYPE).trim();
+  if (custom) return custom;
+  const plain = event.dataTransfer.getData("text/plain").trim();
+  return (isStreetAddress(plain) ? plain : "") || heldAddress();
+}
+
+export function dropHeldAddress(target: AddressDropTarget, address = heldAddress()) {
+  const value = address.trim();
+  if (!value) return false;
+  window.dispatchEvent(new CustomEvent(ADDRESS_DROP_EVENT, { detail: { target, address: value } }));
+  return true;
 }
 
 /** Question-mark orb that holds the sentence open while the address is in the air. */
@@ -68,6 +83,7 @@ export function AddressChip({
 }) {
   const [lifted, setLifted] = useState(false);
   const dragged = useRef(false);
+  const touchPointer = useRef<{ id: number; x: number; y: number; active: boolean } | null>(null);
 
   function lift(event?: DragEvent<HTMLSpanElement>) {
     beginAddressDrag(value);
@@ -88,6 +104,35 @@ export function AddressChip({
     setLifted(false);
   }
 
+  function pointerDown(event: ReactPointerEvent<HTMLSpanElement>) {
+    if (event.pointerType === "mouse") return;
+    touchPointer.current = { id: event.pointerId, x: event.clientX, y: event.clientY, active: false };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function pointerMove(event: ReactPointerEvent<HTMLSpanElement>) {
+    const pointer = touchPointer.current;
+    if (!pointer || pointer.id !== event.pointerId) return;
+    if (!pointer.active && Math.hypot(event.clientX - pointer.x, event.clientY - pointer.y) >= 7) {
+      pointer.active = true;
+      dragged.current = true;
+      lift();
+    }
+    if (pointer.active && event.cancelable) event.preventDefault();
+  }
+
+  function pointerUp(event: ReactPointerEvent<HTMLSpanElement>) {
+    const pointer = touchPointer.current;
+    touchPointer.current = null;
+    if (!pointer?.active) return;
+    const dropZone = document
+      .elementFromPoint(event.clientX, event.clientY)
+      ?.closest<HTMLElement>("[data-pai-address-drop]");
+    const target = dropZone?.dataset.paiAddressDrop;
+    if (target === "live" || target === "normal") dropHeldAddress(target, value);
+    restore();
+  }
+
   useEffect(() => {
     function onDrag(event: Event) {
       const detail = (event as CustomEvent<{ address?: string; phase: string }>).detail;
@@ -104,8 +149,16 @@ export function AddressChip({
       role="button"
       tabIndex={0}
       title="Pick me up. Drop on Normal for a full report, or on the chat box to identify here."
+      aria-label={`${value}. Drag to Normal for a full report, or to the message box to identify it in Live.`}
       onDragStart={(event) => lift(event)}
       onDragEnd={restore}
+      onPointerDown={pointerDown}
+      onPointerMove={pointerMove}
+      onPointerUp={pointerUp}
+      onPointerCancel={() => {
+        touchPointer.current = null;
+        restore();
+      }}
       onClick={(event) => {
         if (dragged.current) {
           dragged.current = false;
@@ -125,7 +178,7 @@ export function AddressChip({
         if (event.key === "Escape" && lifted) restore();
       }}
       className={cn(
-        "cursor-grab select-none rounded-[5px] px-[0.2em] transition-colors active:cursor-grabbing",
+        "touch-none cursor-grab select-none rounded-[5px] px-[0.2em] transition-colors active:cursor-grabbing",
         lifted && "align-middle",
         !lifted && tone === "light" &&
           "bg-[#f3f3ee] text-[#2c2c26] underline decoration-dotted decoration-[#c8c8c0] underline-offset-[3px] hover:bg-[#e9e9e2] hover:decoration-[#8a8a84]",

@@ -169,10 +169,12 @@ export function useLiveVoice({
   const getDraftRef = useRef(getDraft);
   const getVocabularyRef = useRef(getVocabulary);
 
-  onNoticeRef.current = onNotice;
-  onSubmitRef.current = onSubmit;
-  getDraftRef.current = getDraft;
-  getVocabularyRef.current = getVocabulary;
+  useEffect(() => {
+    onNoticeRef.current = onNotice;
+    onSubmitRef.current = onSubmit;
+    getDraftRef.current = getDraft;
+    getVocabularyRef.current = getVocabulary;
+  }, [onNotice, onSubmit, getDraft, getVocabulary]);
 
   const ensureAudioContext = () => {
     const existing = audioContextRef.current;

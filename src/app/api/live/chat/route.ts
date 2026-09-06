@@ -1,5 +1,6 @@
 import { runLiveTurn } from "@/lib/live/engine";
 import type { LiveChatEvent } from "@/lib/live/types";
+import { isLiveSessionId } from "@/lib/live/store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -25,35 +26,41 @@ export async function POST(request: Request) {
   if (message.trim().length < 1) {
     return Response.json({ error: "Type a message for Live." }, { status: 400 });
   }
-
-  const encoder = new TextEncoder();
-  const stream = new TransformStream();
-  const writer = stream.writable.getWriter();
-
-  async function send(event: LiveChatEvent) {
-    await writer.write(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+  if (message.length > 2_000) {
+    return Response.json({ error: "Keep your message under 2,000 characters." }, { status: 400 });
+  }
+  if (sessionId && !isLiveSessionId(sessionId)) {
+    return Response.json({ error: "Invalid Live session." }, { status: 400 });
   }
 
-  void (async () => {
-    try {
-      await runLiveTurn({ sessionId, message, onEvent: send });
-    } catch (error) {
-      const text = error instanceof Error ? error.message : "Live could not finish that request.";
+  const encoder = new TextEncoder();
+  const cancellation = new AbortController();
+  const signal = AbortSignal.any([request.signal, cancellation.signal, AbortSignal.timeout(110_000)]);
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const send = (event: LiveChatEvent) => {
+        signal.throwIfAborted();
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+      };
       try {
-        await send({ type: "error", error: text });
-      } catch {
-        // Client gone.
+        await runLiveTurn({ sessionId, message, signal, onEvent: send });
+      } catch (error) {
+        if (!cancellation.signal.aborted && !request.signal.aborted) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+            type: "error",
+            error: signal.aborted ? "That took too long. Try your message again." : error instanceof Error ? error.message : "Live could not finish that request.",
+          })}\n\n`));
+        }
+      } finally {
+        if (!cancellation.signal.aborted) controller.close();
       }
-    } finally {
-      try {
-        await writer.close();
-      } catch {
-        // Already closed.
-      }
-    }
-  })();
+    },
+    cancel() {
+      cancellation.abort();
+    },
+  });
 
-  return new Response(stream.readable, {
+  return new Response(stream, {
     headers: {
       "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-cache, no-transform",

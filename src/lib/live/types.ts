@@ -73,6 +73,7 @@ export type LiveSession = {
   queue: LiveQueue | null;
   /** Last request Live is still working from, so compound asks survive the list. */
   brief?: import("@/lib/live/intent").LiveBrief | null;
+  awaitingLocation?: boolean;
 };
 
 export type LiveSessionSummary = {
@@ -97,6 +98,7 @@ export type LivePublicState = {
 };
 
 export type LiveChatEvent =
+  | { type: "session"; state: LivePublicState }
   | { type: "status"; message: string }
   | { type: "step"; step: LiveThinkingStep }
   | { type: "sources"; sources: LiveSource[] }

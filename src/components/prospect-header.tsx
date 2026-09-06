@@ -6,7 +6,15 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { Pencil } from "lucide-react";
 
-import { AddressDragGhost, acceptsAddressDrag, addressFromDrop, endAddressDrag, heldAddress } from "@/components/live/address-chip";
+import {
+  ADDRESS_DROP_EVENT,
+  AddressDragGhost,
+  acceptsAddressDrag,
+  addressFromDrop,
+  endAddressDrag,
+  heldAddress,
+  type AddressDropTarget,
+} from "@/components/live/address-chip";
 import { beginPageTransition } from "@/components/page-transition";
 import { cn } from "@/components/ui";
 
@@ -190,9 +198,20 @@ export function ModeSwitch({ small = false }: { small?: boolean }) {
       setHeldPlace(detail.phase === "start" && detail.address ? detail.address : "");
       if (detail.phase === "end") setDropArmed(false);
     }
+    function onAddressDrop(event: Event) {
+      const detail = (event as CustomEvent<{ target: AddressDropTarget; address: string }>).detail;
+      if (detail.target !== "normal" || !detail.address.trim()) return;
+      endAddressDrag();
+      beginPageTransition("mode");
+      router.push(`/search?address=${encodeURIComponent(detail.address.trim())}&radius=0.5`);
+    }
     window.addEventListener("pai-address-drag", onDrag);
-    return () => window.removeEventListener("pai-address-drag", onDrag);
-  }, []);
+    window.addEventListener(ADDRESS_DROP_EVENT, onAddressDrop);
+    return () => {
+      window.removeEventListener("pai-address-drag", onDrag);
+      window.removeEventListener(ADDRESS_DROP_EVENT, onAddressDrop);
+    };
+  }, [router]);
 
   function openNormalReport(address: string) {
     if (!address) return;
@@ -213,7 +232,10 @@ export function ModeSwitch({ small = false }: { small?: boolean }) {
             event.dataTransfer.dropEffect = "copy" as const;
             setDropArmed(true);
           },
-          onDragLeave: () => setDropArmed(false),
+          onDragLeave: (event: DragEvent<HTMLElement>) => {
+            if (event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) return;
+            setDropArmed(false);
+          },
           onDrop: (event: DragEvent<HTMLElement>) => {
             if (!acceptsAddressDrag(event) && !heldAddress()) return;
             event.preventDefault();
@@ -255,6 +277,7 @@ export function ModeSwitch({ small = false }: { small?: boolean }) {
               : item.href
           }
           aria-current={mode === item.mode ? "page" : undefined}
+          data-pai-address-drop={item.mode === "normal" ? "normal" : undefined}
           onClick={(event) => {
             if (item.mode === "normal" && heldPlace) {
               event.preventDefault();

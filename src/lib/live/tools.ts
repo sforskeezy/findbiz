@@ -13,6 +13,7 @@ import {
   genuineSignal,
   looksHomeBased,
   mergeSignals,
+  searchRelevance,
 } from "@/lib/live/filters";
 import type { LiveProfile } from "@/lib/live/intent";
 import { LIVE_RADII } from "@/lib/live/types";
@@ -68,6 +69,7 @@ export function compactProspect(prospect: Prospect): LiveProspectCard {
 }
 
 export function clampRadius(value: unknown, fallback = 2) {
+  if (value == null || value === "") return fallback;
   const number = Number(value);
   if (!Number.isFinite(number)) return fallback;
   const closest = LIVE_RADII.reduce((best, item) => (Math.abs(item - number) < Math.abs(best - number) ? item : best), LIVE_RADII[0]);
@@ -175,6 +177,7 @@ export async function findBusinesses(input: {
   location: string;
   radiusMiles?: number | null;
   category?: string | null;
+  searchTerms?: string[] | null;
   limit?: number | null;
   profile?: LiveProfile | null;
   excludeNational?: boolean;
@@ -192,35 +195,42 @@ export async function findBusinesses(input: {
   if (location.length < 3) throw new Error("Give Live a city, ZIP, or address to search.");
   const radiusMiles = clampRadius(input.radiusMiles, /\d{5}/.test(location) ? 2 : 2);
   const category = matchCategory(input.category);
+  const searchTerms = [...new Set((input.searchTerms ?? []).map((item) => item.replace(/\s+/g, " ").trim()).filter(Boolean))].slice(0, 6);
   const cap = Number.isFinite(input.limit) && Number(input.limit) > 0
     ? Math.min(40, Math.max(1, Math.round(Number(input.limit))))
     : 20;
+  const baseQueries = input.profile === "home_based" ? HOME_BASED_QUERIES : LIVE_QUERIES;
+  const queries = searchTerms.length
+    ? searchTerms
+    : baseQueries;
   const research = googleMapsScraperEnabled()
-    ? await researchWithGoogleMapsScraper(
-        location,
-        radiusMiles,
-        input.profile === "home_based" ? HOME_BASED_QUERIES : LIVE_QUERIES,
-      ).catch(() => researchAcrossSources(location, radiusMiles))
+    ? await researchWithGoogleMapsScraper(location, radiusMiles, queries)
+        .then((result) => (result.prospects.length ? result : researchAcrossSources(location, radiusMiles)))
+        .catch(() => researchAcrossSources(location, radiusMiles))
     : await researchAcrossSources(location, radiusMiles);
   const filtered = filterProspectsForBrief(research.prospects, {
     profile: input.profile ?? "any",
     excludeNational: input.excludeNational !== false,
     category,
+    searchTerms,
   });
   const dropped = Math.max(0, research.prospects.length - filtered.kept.length);
+  const relevance = (prospect: Prospect) => searchRelevance(prospect, searchTerms);
+  const candidates = filtered.kept;
   const ranked = attachRivalSignals(
-    [...filtered.kept].sort((a, b) => {
+    [...candidates].sort((a, b) => {
+      const focusBoost = relevance(b) - relevance(a);
       const homeBoost = input.profile === "home_based" ? Number(looksHomeBased(b)) - Number(looksHomeBased(a)) : 0;
       const aMaps = fromGoogleMaps(a) ? 1 : 0;
       const bMaps = fromGoogleMaps(b) ? 1 : 0;
       const aContact = a.phone || a.website ? 1 : 0;
       const bContact = b.phone || b.website ? 1 : 0;
-      return homeBoost || bMaps - aMaps || bContact - aContact || b.score - a.score || a.distanceMiles - b.distanceMiles;
+      return focusBoost || homeBoost || bMaps - aMaps || bContact - aContact || b.score - a.score || a.distanceMiles - b.distanceMiles;
     }).slice(0, cap),
   );
   const mapsCount = ranked.filter(fromGoogleMaps).length;
   const queue: LiveQueue = {
-    locationLabel: research.target.formattedAddress || location,
+    locationLabel: location,
     radiusMiles,
     category,
     currentIndex: 0,

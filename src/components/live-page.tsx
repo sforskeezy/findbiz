@@ -4,6 +4,12 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "reac
 import Image from "next/image";
 import {
   ArrowUp,
+  ArrowDown,
+  ArrowUpRight,
+  Check,
+  Copy,
+  ListFilter,
+  Square,
   Brain,
   Building2,
   ChevronRight,
@@ -24,7 +30,16 @@ import {
 
 import { BorderBeam } from "border-beam";
 import { ModeSwitch } from "@/components/prospect-header";
-import { AddressText, acceptsAddressDrag, addressFromDrop, endAddressDrag, heldAddress } from "@/components/live/address-chip";
+import {
+  ADDRESS_DROP_EVENT,
+  AddressText,
+  acceptsAddressDrag,
+  addressFromDrop,
+  dropHeldAddress,
+  endAddressDrag,
+  heldAddress,
+  type AddressDropTarget,
+} from "@/components/live/address-chip";
 import { LiveMarkdown } from "@/components/live/live-markdown";
 import { LiveSidebar, type SessionGroup } from "@/components/live/live-sidebar";
 import { LiveSources } from "@/components/live/live-sources";
@@ -34,13 +49,14 @@ import { LiveVoiceEdge } from "@/components/live/live-voice";
 import { useLiveVoice } from "@/components/live/use-live-voice";
 import { WorkingDots } from "@/components/live/working-dots";
 import { cn } from "@/components/ui";
+import { readEventStream } from "@/lib/live/stream";
 import type {
+  LiveChatEvent,
   LiveChatMessage,
   LiveMemoryFact,
   LiveProspectCard,
   LivePublicState,
   LiveSessionSummary,
-  LiveSource,
   LiveThinkingStep,
 } from "@/lib/live/types";
 
@@ -57,47 +73,6 @@ const QUICK_ACTIONS: Array<{ label: string; icon: typeof MapPin; prompt?: string
   { label: "What do you remember?", icon: Brain, prompt: "What do you remember about my territory?" },
 ];
 
-type StreamEvent =
-  | { type: "status"; message: string }
-  | { type: "step"; step: LiveThinkingStep }
-  | { type: "sources"; sources: LiveSource[] }
-  | { type: "delta"; text: string }
-  | { type: "delta_reset" }
-  | { type: "complete"; state: LivePublicState }
-  | { type: "error"; error: string };
-
-async function readStream(response: Response, onEvent: (event: StreamEvent) => void) {
-  if (!response.body) throw new Error("Live did not return a stream.");
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  const consume = (chunk: string) => {
-    const line = chunk.split("\n").find((item) => item.startsWith("data: "));
-    if (!line) return;
-    try {
-      onEvent(JSON.parse(line.slice(6)) as StreamEvent);
-    } catch (error) {
-      if (error instanceof SyntaxError) return;
-      throw error;
-    }
-  };
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) {
-      buffer += decoder.decode();
-      for (const chunk of buffer.split("\n\n")) {
-        if (chunk.trim()) consume(chunk);
-      }
-      break;
-    }
-    buffer += decoder.decode(value, { stream: true });
-    const chunks = buffer.split("\n\n");
-    buffer = chunks.pop() ?? "";
-    for (const chunk of chunks) consume(chunk);
-  }
-}
 
 function groupSessions(sessions: LiveSessionSummary[]): SessionGroup[] {
   const now = Date.now();
@@ -107,9 +82,13 @@ function groupSessions(sessions: LiveSessionSummary[]): SessionGroup[] {
     { label: "Earlier", items: [] },
   ];
   for (const session of sessions) {
-    const age = now - new Date(session.updatedAt).getTime();
-    if (age < 20 * 60 * 60 * 1000) groups[0].items.push(session);
-    else if (age < 48 * 60 * 60 * 1000) groups[1].items.push(session);
+    const today = new Date(now);
+    today.setHours(0, 0, 0, 0);
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const date = new Date(session.updatedAt).getTime();
+    if (date >= today.getTime()) groups[0].items.push(session);
+    else if (date >= yesterday.getTime()) groups[1].items.push(session);
     else groups[2].items.push(session);
   }
   return groups.filter((group) => group.items.length);
@@ -136,7 +115,7 @@ function HomeCard({
   return (
     <section
       className={cn(
-        "rounded-[16px] border border-[#eaeae4] bg-white p-3.5 shadow-[0_1px_2px_rgba(20,20,16,0.04)]",
+        "live-home-card rounded-[16px] border border-[#eaeae4] bg-white p-3.5 shadow-[0_1px_2px_rgba(20,20,16,0.04)]",
         className,
       )}
     >
@@ -250,6 +229,15 @@ export function LivePage() {
   const [voiceNotice, setVoiceNotice] = useState("");
   const [composerArmed, setComposerArmed] = useState(false);
   const [holdingAddress, setHoldingAddress] = useState(false);
+  const [listOpen, setListOpen] = useState(false);
+  const [awayFromBottom, setAwayFromBottom] = useState(false);
+  const [notice, setNotice] = useState("");
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const activeRequest = useRef<AbortController | null>(null);
+  const requestVersion = useRef(0);
+  const activeSession = useRef<string | null>(null);
+  const followAnswer = useRef(true);
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const scroller = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -268,7 +256,7 @@ export function LivePage() {
   );
 
   const atHome = messages.length === 0 && !busy;
-  draftRef.current = draft;
+  useEffect(() => { draftRef.current = draft; }, [draft]);
 
   useEffect(() => {
     let cancelled = false;
@@ -290,14 +278,31 @@ export function LivePage() {
   }, []);
 
   useEffect(() => {
-    scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: "smooth" });
-  }, [messages, status, steps.length, busy]);
+    function onAddressDrop(event: Event) {
+      const detail = (event as CustomEvent<{ target: AddressDropTarget; address: string }>).detail;
+      if (detail.target !== "live" || !detail.address.trim()) return;
+      endAddressDrag();
+      void sendRef.current(`What is at ${detail.address.trim()}?`);
+    }
+    window.addEventListener(ADDRESS_DROP_EVENT, onAddressDrop);
+    return () => window.removeEventListener(ADDRESS_DROP_EVENT, onAddressDrop);
+  }, []);
+
+  useEffect(() => {
+    if (!followAnswer.current) return;
+    scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: reduceMotion ? "instant" : "smooth" });
+  }, [messages, steps.length, busy, reduceMotion]);
+
+  useEffect(() => () => {
+    activeRequest.current?.abort();
+    if (copyTimer.current) clearTimeout(copyTimer.current);
+  }, []);
 
   // Following the answer as it streams should not fight a rep who scrolled up.
   useEffect(() => {
     const node = scroller.current;
     if (!node || !answer) return;
-    if (node.scrollHeight - node.scrollTop - node.clientHeight < 160) node.scrollTop = node.scrollHeight;
+    if (followAnswer.current) node.scrollTop = node.scrollHeight;
   }, [answer]);
 
   useEffect(() => {
@@ -341,6 +346,7 @@ export function LivePage() {
   }
 
   function applyState(state: LivePublicState) {
+    activeSession.current = state.session.id;
     setSessionId(state.session.id);
     setMessages(state.session.messages);
     setQueue(state.queue);
@@ -356,59 +362,115 @@ export function LivePage() {
     });
   }
 
+  function stopReply(showNotice = true) {
+    requestVersion.current += 1;
+    activeRequest.current?.abort();
+    activeRequest.current = null;
+    setBusy(false);
+    setStatus("");
+    setSteps([]);
+    setAnswer("");
+    if (showNotice) setNotice("Stopped. Send a new direction whenever you’re ready.");
+  }
+
   async function openSession(id: string) {
+    stopReply(false);
     cancelVoiceRef.current();
-    const response = await fetch(`/api/live/sessions?sessionId=${encodeURIComponent(id)}`);
-    const payload = (await response.json()) as { state?: LivePublicState };
-    if (payload.state) applyState(payload.state);
+    setError("");
+    setNotice("");
+    const version = requestVersion.current;
+    try {
+      const response = await fetch(`/api/live/sessions?sessionId=${encodeURIComponent(id)}`);
+      const payload = (await response.json()) as { state?: LivePublicState; error?: string };
+      if (version !== requestVersion.current) return;
+      if (!response.ok || !payload.state) throw new Error(payload.error || "Couldn’t open that chat.");
+      applyState(payload.state);
+      setDraft("");
+      setListOpen(false);
+      followAnswer.current = true;
+    } catch (error) {
+      if (version === requestVersion.current) setError(error instanceof Error ? error.message : "Couldn’t open that chat.");
+    }
   }
 
   function newChat() {
+    stopReply(false);
     cancelVoiceRef.current();
+    activeSession.current = null;
     setSessionId(null);
     setMessages([]);
     setQueue(null);
-    setSteps([]);
-    setAnswer("");
+    setDraft("");
     setError("");
+    setNotice("");
+    setVoiceNotice("");
+    setListOpen(false);
+    setListFilter("");
+    setAwayFromBottom(false);
+    followAnswer.current = true;
     inputRef.current?.focus();
   }
 
+  async function copyReply(message: LiveChatMessage) {
+    try {
+      await navigator.clipboard.writeText(message.content);
+      setCopiedId(message.id);
+      if (copyTimer.current) clearTimeout(copyTimer.current);
+      copyTimer.current = setTimeout(() => setCopiedId(null), 1800);
+    } catch {
+      setNotice("Couldn’t copy automatically. Select the reply to copy it.");
+    }
+  }
+
   async function send(text = draft) {
-    const message = text.replace(/\s+/g, " ").trim();
-    if (!message || busy) return;
+    const message = text.trim();
+    if (!message) return;
+    if (message.length > 2000) {
+      setError("Keep your message under 2,000 characters.");
+      return;
+    }
+    stopReply(false);
+    const version = requestVersion.current;
+    const controller = new AbortController();
+    activeRequest.current = controller;
+    const localId = `local_${crypto.randomUUID()}`;
+    let accepted = false;
     setDraft("");
     setError("");
-    setSteps([]);
-    setAnswer("");
+    setNotice("");
     setBusy(true);
     setStatus("Thinking");
+    followAnswer.current = true;
+    setAwayFromBottom(false);
     setMessages((current) => [
       ...current,
-      { id: `local_${Date.now()}`, role: "user", content: message, createdAt: new Date().toISOString() },
+      { id: localId, role: "user", content: message, createdAt: new Date().toISOString() },
     ]);
     try {
       const response = await fetch("/api/live/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, message }),
+        body: JSON.stringify({ sessionId: activeSession.current, message }),
+        signal: controller.signal,
       });
-      if (!response.ok && response.headers.get("content-type")?.includes("application/json")) {
-        const payload = (await response.json()) as { error?: string };
-        throw new Error(payload.error || "Live could not reply.");
+      if (!response.ok) {
+        const payload = response.headers.get("content-type")?.includes("application/json")
+          ? await response.json() as { error?: string } : null;
+        throw new Error(payload?.error || "Live could not reply. Try again.");
       }
       let completed: LivePublicState | null = null;
       let streamedAnswer = "";
       let streamedSteps: LiveThinkingStep[] = [];
-      let streamedSources: LiveSource[] = [];
-      await readStream(response, (event) => {
+      await readEventStream<LiveChatEvent>(response, (event) => {
+        if (version !== requestVersion.current) return;
+        if (event.type === "session") {
+          accepted = true;
+          applyState(event.state);
+        }
         if (event.type === "status") setStatus(event.message);
         if (event.type === "step") {
           streamedSteps = [...streamedSteps, event.step];
           setSteps(streamedSteps);
-        }
-        if (event.type === "sources") {
-          streamedSources = event.sources;
         }
         if (event.type === "delta") {
           streamedAnswer += event.text;
@@ -421,35 +483,26 @@ export function LivePage() {
         if (event.type === "error") throw new Error(event.error);
         if (event.type === "complete") completed = event.state;
       });
-      if (completed) {
-        applyState(completed);
-      } else if (streamedAnswer.trim()) {
-        setMessages((current) => [
-          ...current,
-          {
-            id: `local_${Date.now()}`,
-            role: "assistant",
-            content: streamedAnswer,
-            createdAt: new Date().toISOString(),
-            sources: streamedSources.length ? streamedSources : undefined,
-            thinking: streamedSteps.length ? streamedSteps : undefined,
-          },
-        ]);
-      } else {
-        throw new Error("Live ended before a reply came back.");
-      }
+      if (version !== requestVersion.current) return;
+      if (completed) applyState(completed);
+      else throw new Error("The connection ended before the reply was saved. Try your message again.");
     } catch (sendError) {
+      if (version !== requestVersion.current || controller.signal.aborted) return;
       setError(sendError instanceof Error ? sendError.message : "Live could not reply.");
+      setDraft((current) => current || message);
+      if (!accepted) setMessages((current) => current.filter((item) => item.id !== localId));
     } finally {
-      setBusy(false);
-      setStatus("");
-      setSteps([]);
-      setAnswer("");
-      inputRef.current?.focus();
+      if (version === requestVersion.current) {
+        activeRequest.current = null;
+        setBusy(false);
+        setStatus("");
+        setSteps([]);
+        setAnswer("");
+      }
     }
   }
 
-  sendRef.current = send;
+  useEffect(() => { sendRef.current = send; });
 
   const groups = useMemo(
     () => (mounted ? groupSessions(sessions.filter((item) => item.preview !== "New chat")) : []),
@@ -515,23 +568,23 @@ export function LivePage() {
       void sendRef.current(text);
     },
   });
-  cancelVoiceRef.current = voice.cancel;
+  useEffect(() => { cancelVoiceRef.current = voice.cancel; }, [voice.cancel]);
 
   useEffect(() => {
     if (!voice.listening && !voice.transcribing) return;
     function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") voice.cancel();
+      if (event.key === "Escape") cancelVoiceRef.current();
     }
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [voice.cancel, voice.listening, voice.transcribing]);
+  }, [voice.listening, voice.transcribing]);
 
   const composerIdle =
     !draft.trim() && !focused && !busy && !voice.listening && !voice.transcribing;
   const voiceOpen = voice.listening || voice.transcribing;
 
   return (
-    <main className="flex h-[100dvh] overflow-hidden bg-[#fbfbf9]">
+    <main className="live-workspace flex h-[100dvh] overflow-hidden bg-[#fbfbf9]">
       <LiveSidebar
         collapsed={collapsed}
         onToggleCollapse={() => setCollapsed((value) => !value)}
@@ -573,14 +626,35 @@ export function LivePage() {
           </button>
         </div>
 
-        <div ref={scroller} className={cn("min-h-0 flex-1 overflow-y-auto px-4 sm:px-8", atHome && "flex flex-col")}>
+        <div ref={scroller} onScroll={() => {
+          const node = scroller.current;
+          if (!node) return;
+          const away = node.scrollHeight - node.scrollTop - node.clientHeight > 160;
+          followAnswer.current = !away;
+          setAwayFromBottom(away);
+        }} className={cn("min-h-0 flex-1 overflow-y-auto px-4 sm:px-8", atHome && "flex flex-col")}>
           {atHome ? (
-            <div className="mx-auto my-auto w-full max-w-[720px] py-8">
-              <h1 className="text-center text-[30px] font-semibold leading-[1.18] tracking-[-0.035em] sm:text-[38px]">
-                <span className="live-hero-mark">Welcome back</span>
-                <br />
-                <span className="text-[#b4b4ac]">What are we working today?</span>
-              </h1>
+            <div className="live-welcome mx-auto my-auto w-full max-w-[720px] py-8">
+              <div className="live-welcome-heading">
+                <p className="live-eyebrow"><span aria-hidden="true" /> YOUR FIELD WORKSPACE</p>
+                <h1>Good leads start<br /><span className="live-hero-mark">with a conversation.</span></h1>
+                <p className="live-welcome-description">Find your next stop. Get the context. Make the call.<br className="hidden sm:block" /> Start anywhere — you can change direction as you go.</p>
+              </div>
+              <div className="live-starters" aria-label="Start a conversation">
+                {[
+                  { title: "Explore an area", detail: "Turn a city or ZIP into a shortlist", icon: MapPin, prefill: "Find businesses in " },
+                  { title: "Find the independents", detail: "Look for home-based businesses", icon: Home, prefill: "Find home-based businesses in " },
+                  { title: "Make a better first call", detail: "Work on an opener that sounds like you", icon: Phone, prefill: "Help me write a natural call opener for " },
+                ].map((starter) => (
+                  <button key={starter.title} type="button" className="live-starter" onClick={() => {
+                    setDraft(starter.prefill);
+                    inputRef.current?.focus();
+                  }}>
+                    <span className="live-starter-top"><starter.icon size={18} strokeWidth={1.6} /><ArrowUpRight size={16} /></span>
+                    <strong>{starter.title}</strong><span>{starter.detail}</span>
+                  </button>
+                ))}
+              </div>
 
               <div className="mt-8 grid gap-2.5 sm:grid-cols-2">
                 <HomeCard title="Pick up where you left off" icon={Clock3}>
@@ -641,66 +715,14 @@ export function LivePage() {
 
               </div>
 
-              {queue && queue.cards.length > 0 && (
-                <section className="mt-3 rounded-[18px] border border-[#eaeae4] bg-white p-4 shadow-[0_1px_2px_rgba(20,20,16,0.04)]">
-                  <div className="flex flex-wrap items-center gap-2 pb-3">
-                    <h2 className="flex items-center gap-1.5 text-[13px] font-semibold tracking-[-0.01em] text-[#14140f]">
-                      <MapPin size={13} strokeWidth={1.9} className="text-[#a4a49c]" />
-                      Your list
-                      <span className="text-[12px] font-medium text-[#a4a49c]">{queue.total}</span>
-                    </h2>
-                    <label className="ml-auto flex h-8 min-w-0 flex-1 items-center gap-1.5 rounded-full border border-[#eaeae4] bg-[#fbfbf9] px-3 sm:max-w-[240px]">
-                      <Search size={12} className="shrink-0 text-[#b4b4ac]" />
-                      <span className="sr-only">Filter your list</span>
-                      <input
-                        value={listFilter}
-                        onChange={(event) => setListFilter(event.target.value)}
-                        placeholder="Search for name…"
-                        className="min-w-0 flex-1 bg-transparent text-[12.5px] text-[#26261f] outline-none placeholder:text-[#b4b4ac]"
-                      />
-                    </label>
-                    <button
-                      type="button"
-                      onClick={() => void send("Who is worth calling first, and why?")}
-                      className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border border-[#e2e2db] px-3 text-[12px] font-medium text-[#3a3a35] transition hover:border-[#cfcfc7] hover:bg-[#f7f7f4]"
-                    >
-                      <Sparkles size={12} className="text-[#8a8a84]" /> Prioritize
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        void send(
-                          "Scan local news on the current list for recent expansions or new locations. Flag anything you can actually source next to the phone.",
-                        )
-                      }
-                      className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border border-[#e2e2db] px-3 text-[12px] font-medium text-[#3a3a35] transition hover:border-[#cfcfc7] hover:bg-[#f7f7f4]"
-                    >
-                      <Newspaper size={12} className="text-[#8a8a84]" /> What's new
-                    </button>
-                  </div>
-                  <div className="-mx-2">
-                    {filteredCards.map((card, index) => (
-                      <ProspectRow
-                        key={card.id}
-                        card={card}
-                        index={index}
-                        current={card.id === current?.id}
-                        onOpen={() => void send(`Tell me about ${card.name}`)}
-                      />
-                    ))}
-                    {filteredCards.length === 0 && (
-                      <p className="px-2 py-2 text-[12.5px] text-[#a4a49c]">Nothing on the list matches that.</p>
-                    )}
-                  </div>
-                </section>
-              )}
+
             </div>
           ) : (
             <div className="mx-auto w-full max-w-[720px] space-y-6 pb-8 pt-6">
               {messages.map((message, index) => {
                 if (message.role === "user") {
                   return (
-                    <article key={message.id} className="flex justify-end">
+                    <article key={message.id} className="live-message-in flex justify-end">
                       <div className="max-w-[86%] rounded-[20px] rounded-br-[8px] bg-[#171715] px-4 py-2.5">
                         <p className="whitespace-pre-wrap text-[14.5px] leading-6 text-white">
                           <AddressText text={message.content} tone="dark" />
@@ -714,10 +736,14 @@ export function LivePage() {
                   ? Math.round((new Date(message.createdAt).getTime() - new Date(previous.createdAt).getTime()) / 1000)
                   : 0;
                 return (
-                  <article key={message.id} className="animate-enter">
+                  <article key={message.id} className="live-message-in group/reply">
                     {message.thinking?.length ? <LiveThoughtTrace steps={message.thinking} seconds={elapsed} /> : null}
                     <LiveMarkdown content={message.content} />
                     {message.sources?.length ? <LiveSources sources={message.sources} /> : null}
+                    <button type="button" className="live-copy-reply" onClick={() => void copyReply(message)} aria-label={copiedId === message.id ? "Reply copied" : "Copy reply"}>
+                      {copiedId === message.id ? <Check size={13} /> : <Copy size={13} />}
+                      {copiedId === message.id ? "Copied" : "Copy"}
+                    </button>
                   </article>
                 );
               })}
@@ -740,56 +766,46 @@ export function LivePage() {
 
         <div className="shrink-0 px-4 pb-4 sm:px-8">
           <div className="mx-auto w-full max-w-[720px]">
+            {awayFromBottom && !atHome && <div className="mb-3 flex justify-center">
+              <button type="button" className="live-jump" onClick={() => {
+                followAnswer.current = true;
+                setAwayFromBottom(false);
+                scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: reduceMotion ? "instant" : "smooth" });
+              }}><ArrowDown size={14} /> Latest reply</button>
+            </div>}
+            {notice && <p role="status" className="mb-2 text-center text-[12px] text-[#73736b]">{notice}</p>}
             {(error || voiceNotice) && (
               <p role="alert" className="mb-2 text-[12.5px] font-medium text-[#a63a31]">
                 {error || voiceNotice}
               </p>
             )}
 
-            {current && !atHome && (
-              <div className="group/lead mb-1.5 flex items-center gap-2 px-1">
-                <p className="min-w-0 flex-1 truncate text-[11.5px] text-[#b4b4ac]">
-                  <span className="font-medium text-[#8a8a84]">{current.name}</span>
-                  <span className="text-[#c8c8c0]">
-                    {" "}
-                    · {queue && queue.total > 0 ? `${queue.currentIndex + 1}/${queue.total}` : "now"} · {current.category}
-                  </span>
-                </p>
-                <div className="flex shrink-0 items-center gap-2 text-[11px] text-[#c2c2ba] opacity-0 transition-opacity duration-200 group-hover/lead:opacity-100 group-focus-within/lead:opacity-100">
-                  {current.phone && (
-                    <a href={`tel:${current.phone}`} title={`Call ${current.phone}`} className="transition hover:text-[#171715]">
-                      Call
-                    </a>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() =>
-                      void send(
-                        `What's new with ${current.name}? Scan local news for this one business — openings, a new location, a move, new ownership, or a community event.`,
-                      )
-                    }
-                    disabled={busy}
-                    className="transition hover:text-[#171715] disabled:opacity-30"
-                  >
-                    New
+            {current && !atHome && queue && (
+              <section className="live-active-lead" aria-label="Current business">
+                <div className="live-queue-progress" aria-hidden="true"><span style={{ transform: `scaleX(${(queue.currentIndex + 1) / queue.total})` }} /></div>
+                <div className="live-active-lead-row">
+                  <button type="button" className="live-list-toggle" aria-expanded={listOpen} aria-controls="live-queue-list" onClick={() => setListOpen((value) => !value)}>
+                    <ListFilter size={16} /><span><strong>{current.name}</strong><small>{queue.currentIndex + 1} of {queue.total} · {queue.locationLabel}</small></span>
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => void send("Skip to the next one")}
-                    disabled={busy || (queue?.currentIndex ?? 0) >= (queue?.total ?? 1) - 1}
-                    className="transition hover:text-[#171715] disabled:opacity-30"
-                  >
-                    Next
-                  </button>
+                  <div className="live-lead-actions">
+                    {current.phone && <a href={`tel:${current.phone}`} aria-label={`Call ${current.name}`}><Phone size={14} /><span>Call</span></a>}
+                    <button type="button" onClick={() => void send(`Brief me on ${current.name}`)} disabled={busy}>Brief</button>
+                    <button type="button" onClick={() => void send("Skip to the next one")} disabled={busy || queue.currentIndex >= queue.total - 1}>Next <ChevronRight size={14} /></button>
+                  </div>
                 </div>
-              </div>
+                {listOpen && <div id="live-queue-list" className="live-queue-list">
+                  <label className="live-queue-filter"><Search size={14} /><span className="sr-only">Filter your list</span><input value={listFilter} onChange={(event) => setListFilter(event.target.value)} placeholder="Find a business in this list…" /></label>
+                  {filteredCards.map((card) => <ProspectRow key={card.id} card={card} index={queue.cards.findIndex((item) => item.id === card.id)} current={card.id === current.id} onOpen={() => void send(`Tell me about ${card.name}`)} />)}
+                  {!filteredCards.length && <p className="p-3 text-[13px] text-[#73736b]">No businesses match that filter.</p>}
+                </div>}
+              </section>
             )}
 
             <BorderBeam
               size="md"
               colorVariant="sunset"
               theme="light"
-              active={busy || focused || Boolean(draft.trim()) || voiceOpen}
+              active={!reduceMotion && (busy || focused || Boolean(draft.trim()) || voiceOpen)}
               duration={busy || voiceOpen ? 1.5 : 2.4}
               brightness={busy || voice.listening ? 1.25 : 1.05}
               saturation={1.45}
@@ -810,6 +826,7 @@ export function LivePage() {
                 </div>
               ) : (
               <form
+                data-pai-address-drop="live"
                 onSubmit={(event) => {
                   event.preventDefault();
                   void send();
@@ -820,12 +837,19 @@ export function LivePage() {
                   event.dataTransfer.dropEffect = "copy";
                   setComposerArmed(true);
                 }}
-                onDragLeave={() => setComposerArmed(false)}
+                onDragLeave={(event) => {
+                  if (event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) return;
+                  setComposerArmed(false);
+                }}
                 onDrop={(event) => {
                   if (!acceptsAddressDrag(event) && !heldAddress()) return;
                   event.preventDefault();
                   setComposerArmed(false);
                   identifyDroppedAddress(addressFromDrop(event));
+                }}
+                onPointerUp={() => {
+                  if (!heldAddress() || document.body.dataset.paiAddressNative === "on") return;
+                  dropHeldAddress("live");
                 }}
                 className={cn(
                   "rounded-[24px] border bg-white p-1.5 shadow-[0_2px_6px_rgba(20,20,16,0.04),0_16px_40px_rgba(20,20,16,0.06)] transition",
@@ -871,10 +895,6 @@ export function LivePage() {
                 </div>
                 <label
                   className="relative min-w-0 flex-1"
-                  onPointerUp={() => {
-                    if (!heldAddress() || document.body.dataset.paiAddressNative === "on") return;
-                    identifyDroppedAddress(heldAddress());
-                  }}
                 >
                   <span className="sr-only">Message Live</span>
                   {holdingAddress || composerArmed ? (
@@ -892,12 +912,14 @@ export function LivePage() {
                     onFocus={() => setFocused(true)}
                     onBlur={() => setFocused(false)}
                     onKeyDown={(event) => {
-                      if (event.key === "Enter" && !event.shiftKey) {
+                      if (event.key === "Escape" && busy) stopReply();
+                      if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
                         event.preventDefault();
                         void send();
                       }
                     }}
-                    placeholder=""
+                    maxLength={2000}
+                    placeholder={busy ? "Change direction or ask something else…" : focused ? "Ask a question or name an area…" : ""}
                     className="max-h-[168px] min-h-[38px] w-full resize-none bg-transparent py-2 text-[14px] leading-6 text-[#1c1c19] outline-none placeholder:text-[#b0b0a8]"
                   />
                 </label>
@@ -915,10 +937,11 @@ export function LivePage() {
                 >
                   <Mic size={16} strokeWidth={1.9} />
                 </button>
+                {busy && <button type="button" onClick={() => stopReply()} className="live-stop" aria-label="Stop response" title="Stop response (Esc)"><Square size={13} fill="currentColor" /></button>}
                 <button
                   type="submit"
-                  disabled={busy || !draft.trim()}
-                  aria-label="Send"
+                  disabled={!draft.trim()}
+                  aria-label={busy ? "Send new direction" : "Send"}
                   className="mb-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#171715] text-white transition hover:bg-black disabled:bg-[#e6e6e0] disabled:text-[#b0b0a8]"
                 >
                   <ArrowUp size={16} strokeWidth={2.2} />
@@ -928,8 +951,9 @@ export function LivePage() {
               )}
             </BorderBeam>
 
-            <p className="mt-2.5 text-center text-[11px] text-[#b4b4ac]">
-              Live works from public listings. It will not invent businesses.
+            <p className="mt-2.5 text-center text-[11px] text-[#85857d]">
+              {busy ? "You can stop or send a new direction at any time." : "Public sources. Useful context. You’re in control."}
+              <span className="ml-3 hidden sm:inline text-[#8a8a84]">Enter to send · Shift + Enter for a new line</span>
             </p>
           </div>
         </div>

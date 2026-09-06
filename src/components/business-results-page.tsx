@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type MouseEvent } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore, type MouseEvent } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { BorderBeam } from "border-beam";
@@ -58,12 +58,17 @@ function lookedAtKey(address: string, radius: number) {
 }
 
 function readLookedAt(key: string) {
-  try {
-    const raw = JSON.parse(window.sessionStorage.getItem(key) || "[]") as unknown;
-    return Array.isArray(raw) ? raw.filter((id): id is string => typeof id === "string") : [];
-  } catch {
-    return [];
-  }
+  try { return window.sessionStorage.getItem(key) || "[]"; }
+  catch { return "[]"; }
+}
+
+function subscribeLookedAt(onChange: () => void) {
+  window.addEventListener("storage", onChange);
+  window.addEventListener("pai-looked-at", onChange);
+  return () => {
+    window.removeEventListener("storage", onChange);
+    window.removeEventListener("pai-looked-at", onChange);
+  };
 }
 
 function csvCell(value: string | number | null) {
@@ -100,12 +105,14 @@ export function BusinessResultsPage() {
   const [error, setError] = useState("");
   const [category, setCategory] = useState("All");
   const [sort, setSort] = useState<"fit" | "distance" | "name">("fit");
-  const [lookedAt, setLookedAt] = useState<Set<string>>(() => new Set());
   const seenStorageKey = lookedAtKey(address, radius);
-
-  useEffect(() => {
-    setLookedAt(new Set(readLookedAt(seenStorageKey)));
-  }, [seenStorageKey]);
+  const lookedAtJson = useSyncExternalStore(subscribeLookedAt, () => readLookedAt(seenStorageKey), () => "[]");
+  const lookedAt = useMemo(() => {
+    try {
+      const ids: unknown = JSON.parse(lookedAtJson);
+      return new Set<string>(Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : []);
+    } catch { return new Set<string>(); }
+  }, [lookedAtJson]);
 
   useEffect(() => {
     let cancelled = false;
@@ -196,13 +203,15 @@ export function BusinessResultsPage() {
   }
 
   function toggleLookedAt(id: string) {
-    setLookedAt((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+    const next = new Set(lookedAt);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    try {
       window.sessionStorage.setItem(seenStorageKey, JSON.stringify([...next]));
-      return next;
-    });
+      window.dispatchEvent(new Event("pai-looked-at"));
+    } catch {
+      // Some private browsing modes block session storage.
+    }
   }
 
   function onBusinessClick(event: MouseEvent<HTMLAnchorElement>, prospect: Prospect) {

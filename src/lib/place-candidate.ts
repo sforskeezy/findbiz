@@ -81,7 +81,9 @@ export function normalizeCategory(value: string | null | undefined): string {
   if (/(dentist|dental|doctor|medical|clinic|pharmacy|veterinary|health care|healthcare)/.test(wanted)) {
     return "Medical & dental";
   }
-  if (/(law|attorney|account|tax|cpa)/.test(wanted)) return "Legal & accounting";
+  // Word boundaries matter here: without them every "lawn care" company is
+  // misclassified as a law office before the construction rules can run.
+  if (/\b(law|lawyer|attorney|accounting|accountant|tax|cpa)\b/.test(wanted)) return "Legal & accounting";
   if (/(logistic|warehouse|freight|truck|moving|storage)/.test(wanted)) return "Logistics & warehouse";
   if (/(realty|real estate|property|apartment)/.test(wanted)) return "Property management";
   if (/(bank|insur|financ|credit union)/.test(wanted)) return "Financial services";
@@ -89,7 +91,9 @@ export function normalizeCategory(value: string | null | undefined): string {
   if (/(auto|car|tire|tyre|mechanic|collision|customs|truck accessor)/.test(wanted)) return "Automotive";
   if (/(restaurant|cafe|coffee|bar|grill|hotel|motel|food|brew)/.test(wanted)) return "Hospitality & food";
   if (/(shop|store|retail|boutique|market)/.test(wanted)) return "Retail";
-  if (/(construct|contract|builder|roof|plumb|electric|hvac|homes|landscap)/.test(wanted)) return "Construction";
+  if (/(construct|contract|builder|roof|plumb|electric|hvac|homes|landscap|land scape|lawn ?care|yard service|handyman|pressure wash)/.test(wanted)) {
+    return "Construction";
+  }
   if (/(farm|equine|horse|stable|ranch|agri|nursery|kennel)/.test(wanted)) return "Agriculture & equine";
   if (/(church|worship|ministry|congregation|temple|mosque|synagogue|community centre|community center)/.test(wanted)) {
     return "Community & faith";
