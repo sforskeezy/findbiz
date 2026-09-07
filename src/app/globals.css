@@ -671,6 +671,25 @@ label:focus-within .live-typewriter {
   letter-spacing: -0.005em;
 }
 
+.live-voice-key {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 22px;
+  margin-top: 4px;
+  padding: 0 8px;
+  border: 1px solid rgba(23, 23, 21, 0.12);
+  border-bottom-width: 2px;
+  border-radius: 6px;
+  background: rgba(255, 255, 253, 0.88);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.7) inset;
+  color: #5c5c56;
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+}
+
 .live-voice-controls {
   position: relative;
   z-index: 2;
@@ -1059,6 +1078,138 @@ label:focus-within .live-typewriter {
 .live-copy-reply:hover {
   background: #eeefe8;
   color: #343b2b;
+}
+
+.live-thought {
+  margin-bottom: 12px;
+}
+
+.live-thought-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-height: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #8a8a82;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  cursor: pointer;
+  transition: color 160ms ease;
+}
+
+.live-thought-toggle:hover {
+  color: #454540;
+}
+
+.live-thought-caret {
+  flex: 0 0 auto;
+  color: #b4b4ac;
+  transition: transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.live-thought-clock {
+  flex: 0 0 auto;
+  color: #c2c2ba;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.live-thought-panel {
+  position: relative;
+  margin-top: 4px;
+  min-height: 0;
+}
+
+.live-thought-stream {
+  max-height: min(44vh, 360px);
+  overflow-x: hidden;
+  overflow-y: scroll;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+  overflow-anchor: none;
+  padding: 6px 10px 16px 13px;
+  border-left: 1px solid #e6e6e0;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: #b8b8b0 #f3f3ee;
+}
+
+.live-thought-stream::-webkit-scrollbar {
+  width: 8px;
+  background: #f3f3ee;
+}
+
+.live-thought-stream::-webkit-scrollbar-thumb {
+  border: 2px solid #f3f3ee;
+  border-radius: 999px;
+  background: #c5c5bd;
+}
+
+.live-thought-inner {
+  min-height: min-content;
+}
+
+.live-thought-fade {
+  pointer-events: none;
+  position: absolute;
+  left: 0;
+  right: 10px;
+  height: 28px;
+  z-index: 1;
+}
+
+.live-thought-fade-top {
+  top: 0;
+  background: linear-gradient(to bottom, #fbfbf9, transparent);
+}
+
+.live-thought-fade-bottom {
+  bottom: 0;
+  background: linear-gradient(to top, #fbfbf9, transparent);
+}
+
+.live-thought-item + .live-thought-item {
+  margin-top: 14px;
+}
+
+.live-thought-label {
+  color: #6d6d66;
+  font-size: 12px;
+  font-weight: 550;
+  letter-spacing: -0.01em;
+  line-height: 1.45;
+}
+
+.live-thought-detail {
+  margin-top: 2px;
+  color: #a3a39b;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.live-thought-copy,
+.live-thought-status {
+  margin-top: 6px;
+  color: #73736c;
+  font-size: 14px;
+  font-weight: 450;
+  line-height: 1.65;
+  letter-spacing: -0.011em;
+  white-space: pre-wrap;
+}
+
+.live-thought-item .live-thought-label + .live-thought-copy {
+  margin-top: 4px;
+}
+
+.live-thought-status {
+  font-style: italic;
 }
 
 .live-active-lead {

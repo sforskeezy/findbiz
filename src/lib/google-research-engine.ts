@@ -459,8 +459,8 @@ function rankAndDedupe(raw: RawSearchResult[], prospect: Prospect) {
     .slice(0, numberEnv("GOOGLE_RESEARCH_MAX_RESULTS", 30, 5, 60));
 }
 
-function cacheKey(prospect: Prospect, queries: string[]) {
-  return hashId(prospect.name, prospect.address, prospect.website || "", ...queries);
+function cacheKey(prospect: Prospect | null, queries: string[]) {
+  return hashId(prospect?.name || "public", prospect?.address || "", prospect?.website || "", ...queries);
 }
 
 function pruneCache() {
@@ -469,8 +469,64 @@ function pruneCache() {
   while (researchCache.size > 50) researchCache.delete(researchCache.keys().next().value!);
 }
 
-async function runResearch(prospect: Prospect, queries: string[]): Promise<GoogleResearchResult> {
-  const retrievedAt = new Date().toISOString();
+function providerLabel(provider: SearchProvider) {
+  if (provider === "google_custom_search") return "Google Programmable Search";
+  if (provider === "google_public_search") return "Google public search";
+  if (provider === "bing_public_search") return "Bing public search";
+  return "Keyless web index fallback";
+}
+
+function toWebResult(item: RawSearchResult, rank: number, authorityScore: number, sourceKind: SearchSourceKind): WebSearchResult {
+  return {
+    id: hashId(item.url),
+    title: item.title,
+    url: item.url,
+    snippet: item.snippet,
+    provider: providerLabel(item.provider),
+    query: item.query,
+    matchedQueries: [item.query],
+    rank,
+    authorityScore,
+    sourceKind,
+  };
+}
+
+function collectPublicResults(raw: RawSearchResult[]) {
+  const byUrl = new Map<string, WebSearchResult>();
+  for (const item of raw) {
+    const requiredHost = siteConstraint(item.query);
+    if (requiredHost) {
+      const hostname = new URL(item.url).hostname.toLowerCase().replace(/^www\./, "");
+      if (hostname !== requiredHost && !hostname.endsWith(`.${requiredHost}`)) continue;
+    }
+    const { sourceKind, authorityScore } = sourceClassification(item.url, null);
+    const rank = Math.round(authorityScore * 0.4 + Math.max(0, 18 - item.position * 1.5));
+    const key = resultKey(item.url);
+    const existing = byUrl.get(key);
+    if (existing) {
+      existing.matchedQueries = [...new Set([...existing.matchedQueries, item.query])];
+      if (rank > existing.rank) {
+        existing.title = item.title;
+        existing.snippet = item.snippet || existing.snippet;
+        existing.rank = rank;
+        existing.query = item.query;
+        existing.provider = providerLabel(item.provider);
+      }
+      continue;
+    }
+    byUrl.set(key, toWebResult(item, rank, authorityScore, sourceKind));
+  }
+  return [...byUrl.values()].sort((a, b) => b.rank - a.rank || b.authorityScore - a.authorityScore).slice(0, 10);
+}
+
+async function searchWithProvider(provider: SearchProvider, query: string) {
+  if (provider === "google_custom_search") return searchGoogleCustom(query);
+  if (provider === "google_public_search") return searchGooglePublic(query);
+  if (provider === "bing_public_search") return searchBingPublic(query);
+  return searchKeylessFallback(query);
+}
+
+async function gatherSearchResults(queries: string[]) {
   const failures: string[] = [];
   const providers: string[] = [];
   const raw: RawSearchResult[] = [];
@@ -526,15 +582,7 @@ async function runResearch(prospect: Prospect, queries: string[]): Promise<Googl
       const index = nextIndex++;
       const query = queries[index];
       try {
-        const results =
-          provider === "google_custom_search"
-            ? await searchGoogleCustom(query)
-            : provider === "google_public_search"
-              ? await searchGooglePublic(query)
-              : provider === "bing_public_search"
-                ? await searchBingPublic(query)
-                : await searchKeylessFallback(query);
-        raw.push(...results);
+        raw.push(...(await searchWithProvider(provider, query)));
         completed += 1;
       } catch (error) {
         failures.push(`${query}: ${error instanceof Error ? error.message : String(error)}`);
@@ -545,35 +593,36 @@ async function runResearch(prospect: Prospect, queries: string[]): Promise<Googl
     }
   }
 
-  await Promise.all(Array.from({ length: Math.min(concurrency, queries.length - startIndex) }, () => worker()));
-  const results = rankAndDedupe(raw, prospect);
+  await Promise.all(Array.from({ length: Math.min(concurrency, Math.max(0, queries.length - startIndex)) }, () => worker()));
+  return { raw, providers, failures, completed };
+}
+
+function asResearchResult(
+  queries: string[],
+  gathered: Awaited<ReturnType<typeof gatherSearchResults>>,
+  results: WebSearchResult[],
+): GoogleResearchResult {
   return {
     queries,
     results,
     diagnostics: {
       engine: "first_party_google_research",
-      providers,
+      providers: gathered.providers,
       queriesPlanned: queries.length,
-      queriesCompleted: completed,
-      rawResults: raw.length,
+      queriesCompleted: gathered.completed,
+      rawResults: gathered.raw.length,
       uniqueResults: results.length,
       pagesSelected: 0,
       pagesRead: 0,
-      failures,
+      failures: gathered.failures,
       cacheHit: false,
     },
-    retrievedAt,
+    retrievedAt: new Date().toISOString(),
   };
 }
 
-export async function researchGoogleWeb(
-  prospect: Prospect,
-  requestedQueries?: string[],
-): Promise<GoogleResearchResult> {
-  const queries = planCompanyResearchQueries(prospect, requestedQueries);
-  if (!queries.length) throw new Error("The Google research engine has no valid search queries.");
+async function cachedResearch(key: string, build: () => Promise<GoogleResearchResult>) {
   pruneCache();
-  const key = cacheKey(prospect, queries);
   const cached = researchCache.get(key);
   if (cached && cached.expiresAt > Date.now()) {
     return {
@@ -583,7 +632,7 @@ export async function researchGoogleWeb(
   }
   const pending = inFlight.get(key);
   if (pending) return pending;
-  const request = runResearch(prospect, queries)
+  const request = build()
     .then((result) => {
       const failedHard = result.diagnostics.uniqueResults === 0 && result.diagnostics.queriesCompleted === 0;
       if (!failedHard) {
@@ -595,4 +644,30 @@ export async function researchGoogleWeb(
     .finally(() => inFlight.delete(key));
   inFlight.set(key, request);
   return request;
+}
+
+async function runResearch(prospect: Prospect, queries: string[]): Promise<GoogleResearchResult> {
+  const gathered = await gatherSearchResults(queries);
+  return asResearchResult(queries, gathered, rankAndDedupe(gathered.raw, prospect));
+}
+
+export async function researchGoogleWeb(
+  prospect: Prospect,
+  requestedQueries?: string[],
+): Promise<GoogleResearchResult> {
+  const queries = planCompanyResearchQueries(prospect, requestedQueries);
+  if (!queries.length) throw new Error("The Google research engine has no valid search queries.");
+  return cachedResearch(cacheKey(prospect, queries), () => runResearch(prospect, queries));
+}
+
+/** Open Google-backed web search for any query, not just a listed prospect. */
+export async function searchPublicWeb(requestedQueries: string[]): Promise<GoogleResearchResult> {
+  const queries = [...new Set(requestedQueries.map((value) => value.replace(/\s+/g, " ").trim()).filter(Boolean))]
+    .filter((value) => value.length >= 2 && value.length <= 240)
+    .slice(0, 4);
+  if (!queries.length) throw new Error("Give Google something to search.");
+  return cachedResearch(cacheKey(null, queries), async () => {
+    const gathered = await gatherSearchResults(queries);
+    return asResearchResult(queries, gathered, collectPublicResults(gathered.raw));
+  });
 }

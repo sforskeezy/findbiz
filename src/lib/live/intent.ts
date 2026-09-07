@@ -17,6 +17,9 @@ export type LiveBrief = {
   wantsNews: boolean;
   wantsGenuineCheck: boolean;
   wantsCompetitors: boolean;
+  wantsWeb: boolean;
+  /** Distinct Google queries the rep asked for, if they named them. */
+  webQueries: string[];
 };
 
 const COUNT_PATTERN =
@@ -164,6 +167,7 @@ function cleanSearchPhrase(value: string) {
   return value
     .replace(/^[\s,;:.-]+|[\s,;:.-]+$/g, "")
     .replace(/^(?:is|that(?:'s| is))\s+(?:the\s+)?(?:zip|zip code|postal code)\b.*$/i, "")
+    .replace(/^(?:named|called)\s+/i, "")
     .replace(
       /^(?:and\s+)?(?:then\s+)?(?:research|look (?:them|it|these) up|check (?:what(?:'s| is) new|them|it)|scan (?:the )?news|genuine-check|verify|rank|prioritize|tell me about)\b.*$/i,
       "",
@@ -225,6 +229,42 @@ function targetName(text: string) {
   return distinctive.length ? phrase : null;
 }
 
+const WEB_QUERY_SPLIT = /\s+(?:and then|and also|then also|, then|; then)\b|[.!?]/i;
+
+function webQueries(text: string) {
+  const queries: string[] = [];
+  const patterns = [
+    /\bgoogle(?:\s+for)?\s+(.+)/i,
+    /\bsearch(?:\s+the)?\s+(?:web|google|internet)(?:\s+for)?\s+(.+)/i,
+    /\b(?:do a )?(?:google|web) search(?:\s+for)?\s+(.+)/i,
+    /\blook(?:ing)?\s+(?:it|this|that|them)?\s*up\s+(?:on\s+)?(?:google|the web|online)(?:\s+for)?\s*(.*)/i,
+  ];
+  for (const pattern of patterns) {
+    const match = pattern.exec(text);
+    if (!match) continue;
+    const rest = (match[1] ?? "").split(WEB_QUERY_SPLIT)[0] ?? "";
+    const cleaned = rest.replace(/^[:\-–]\s*/, "").replace(/\s+/g, " ").trim();
+    if (cleaned.length >= 3 && cleaned.length <= 160 && !/^(?:this|that|it|them)$/i.test(cleaned)) {
+      queries.push(cleaned);
+    }
+  }
+  return [...new Set(queries)].slice(0, 3);
+}
+
+function wantsWebSearch(text: string) {
+  return /\b(?:google(?:\s+(?:this|that|it|them|for|who|what|whether|if|the))?|search(?:\s+the)?\s+(?:web|google|internet)|look(?:ing)? (?:it |this |that |them )?up(?: online| on google| on the web)|web search|do a google search)\b/i.test(
+    text,
+  );
+}
+
+function namedCompanyLookup(text: string) {
+  return /\b(?:named|called)\s+[A-Za-z0-9'&.-]/i.test(text);
+}
+
+export function hasCompoundAsk(text: string) {
+  return /\b(?:and then|and also|then also|as well as|, then)\b/i.test(text) || /[.!?]\s+(?:also|then|and|plus)\b/i.test(text);
+}
+
 export function parseLiveBrief(text: string): LiveBrief {
   const lowered = text.toLowerCase();
   const homeBased = /\b(home[- ]?based|at[- ]home|in[- ]home|from home|work(?:ing)? from home|home business(?:es)?|cottage business|owner[- ]run)\b/.test(
@@ -258,6 +298,8 @@ export function parseLiveBrief(text: string): LiveBrief {
         text,
       ),
     wantsCompetitors: /\b(competitor|rival|near (?:a |their )?competitor|proximity)\b/i.test(text),
+    wantsWeb: wantsWebSearch(text),
+    webQueries: webQueries(text),
   };
 }
 
@@ -276,6 +318,8 @@ export function mergeLiveBrief(previous: LiveBrief | null, next: LiveBrief, carr
       requestedCount: next.requestedCount ?? previous.requestedCount,
       profile: "any",
       excludeNational: false,
+      wantsWeb: next.wantsWeb,
+      webQueries: next.webQueries.length ? next.webQueries : previous.webQueries,
     };
   }
   return {
@@ -293,11 +337,13 @@ export function mergeLiveBrief(previous: LiveBrief | null, next: LiveBrief, carr
     wantsNews: (carryActions && previous.wantsNews) || next.wantsNews,
     wantsGenuineCheck: (carryActions && previous.wantsGenuineCheck) || next.wantsGenuineCheck,
     wantsCompetitors: (carryActions && previous.wantsCompetitors) || next.wantsCompetitors,
+    wantsWeb: (carryActions && previous.wantsWeb) || next.wantsWeb,
+    webQueries: next.webQueries.length ? next.webQueries : carryActions ? previous.webQueries : [],
   };
 }
 
 export function briefNeedsFollowThrough(brief: LiveBrief) {
-  return brief.wantsResearch || brief.wantsNews || brief.wantsGenuineCheck;
+  return brief.wantsResearch || brief.wantsNews || brief.wantsGenuineCheck || brief.wantsWeb;
 }
 
 /** Dispatch only obvious searches without a model. Mentioning a business or
@@ -305,6 +351,14 @@ export function briefNeedsFollowThrough(brief: LiveBrief) {
 export function isLiveSearchRequest(text: string) {
   const value = text.trim();
   if (/^(?:how|why|what (?:does|do|is|are)|explain|tell me why)\b/i.test(value)) return false;
+  if (
+    wantsWebSearch(value) &&
+    (namedCompanyLookup(value) ||
+      (!/\b(?:find|show me|pull|get me|give me)\b/i.test(value) &&
+        !/\b(?:business(?:es)?|prospects?|leads?|listings?)\b/i.test(value)))
+  ) {
+    return false;
+  }
   const action = /\b(?:find|search(?: for)?|look(?:ing)? for|show me|pull(?: up)?|get me|give me)\b/i.test(value);
   const subject = /\b(?:business(?:es)?|biz|companies|shops?|prospects?|leads?|listings?|places?)\b/i.test(value)
     || SEARCH_TERM_PATTERNS.some((item) => item.pattern.test(value));
@@ -327,6 +381,11 @@ export function resolveLiveTurn(text: string, previous: LiveBrief | null, contex
   const reset = /\b(?:start (?:over|fresh)|new search|clear (?:the |my )?list|forget (?:the |that |my )?(?:list|search)|reset (?:the )?search)\b/i.test(text);
   const retry = !reset && isLiveRetry(text);
   const named = parsed.locationHint;
+  const webOnly =
+    parsed.wantsWeb &&
+    (namedCompanyLookup(text) ||
+      (!/\b(?:find|show me|pull|get me|give me)\b/i.test(text) &&
+        !/\b(?:business(?:es)?|prospects?|leads?|listings?)\b/i.test(text)));
   const locationOnly = Boolean(named) && (
     text.replace(/[.!?]/g, "").replace(/,/g, "").trim().toLowerCase() === named?.replace(/,/g, "").toLowerCase()
     || /^\d{5}(?:-\d{4})?(?:\s+is the (?:zip|zip code))?[.!?\s]*$/i.test(text)
@@ -335,7 +394,7 @@ export function resolveLiveTurn(text: string, previous: LiveBrief | null, contex
   const focusChange = parsed.searchTerms.length > 0 && /^(?:actually|instead|how about|what about|switch to|make (?:it|that)|now (?:find|show)|let'?s (?:do|try|find))\b/i.test(text);
   const locationWithTrade = Boolean(named) && parsed.searchTerms.length > 0
     && text.toLowerCase().replace(/[,\s]+/g, " ").startsWith(named!.toLowerCase().replace(/[,\s]+/g, " "));
-  const search = isLiveSearchRequest(text) || locationOnly || locationWithTrade || focusChange || (retry && Boolean(previous || context.locationLabel));
+  const search = !webOnly && (isLiveSearchRequest(text) || locationOnly || locationWithTrade || focusChange || (retry && Boolean(previous || context.locationLabel)));
   const continuing = !reset && (retry || (locationOnly && Boolean(previous)) || /\b(?:same|more|another|again|nearby|around here)\b/i.test(text));
   // A new trade releases old counts and filters. A location answer completes
   // the pending request, including its compound research clauses.
@@ -360,6 +419,11 @@ export function describeBrief(brief: LiveBrief) {
     brief.wantsNews ? "scan local news / what's new" : null,
     brief.wantsGenuineCheck ? "genuine-check each listing" : null,
     brief.wantsCompetitors ? "flag rivals sitting next to each other" : null,
+    brief.webQueries.length
+      ? `google: ${brief.webQueries.join("; ")}`
+      : brief.wantsWeb
+        ? "search Google for what they asked"
+        : null,
   ].filter(Boolean);
   return parts.length ? parts.join("; ") : "plain search — do not invent a count they did not ask for";
 }

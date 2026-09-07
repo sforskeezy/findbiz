@@ -165,10 +165,21 @@ export function useLiveVoice({
   const transcriptionRef = useRef<AbortController | null>(null);
   /** pointerdown already started the session — the following click must not toggle it off. */
   const pointerArmedRef = useRef(false);
+  /** Control is being held as push-to-talk, so silence should not auto-send. */
+  const holdToTalkRef = useRef(false);
+  /** Control is still physically down for this PTT press. */
+  const holdLiveRef = useRef(false);
+  const controlsDownRef = useRef(new Set<string>());
+  const controlIsShortcutRef = useRef(false);
   const onNoticeRef = useRef(onNotice);
   const onSubmitRef = useRef(onSubmit);
   const getDraftRef = useRef(getDraft);
   const getVocabularyRef = useRef(getVocabulary);
+  const startRef = useRef<() => Promise<void>>(async () => {});
+  const finishRef = useRef<() => void>(() => {});
+  const cancelRef = useRef<() => void>(() => {});
+
+  const [holding, setHolding] = useState(false);
 
   useEffect(() => {
     onNoticeRef.current = onNotice;
@@ -192,6 +203,9 @@ export function useLiveVoice({
     sessionRef.current = false;
     shouldSubmitRef.current = false;
     autoSendRef.current = false;
+    holdToTalkRef.current = false;
+    holdLiveRef.current = false;
+    setHolding(false);
     stopVoiceMonitor(monitorRef);
     if (timerRef.current) {
       window.clearTimeout(timerRef.current);
@@ -221,7 +235,7 @@ export function useLiveVoice({
   }, [finishSession]);
 
   const start = useCallback(async () => {
-    if (disabled || listening || transcribing) return;
+    if (disabled || sessionRef.current) return;
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
       onNoticeRef.current("Voice input is not available in this browser.");
       return;
@@ -229,18 +243,32 @@ export function useLiveVoice({
 
     const openId = openIdRef.current + 1;
     openIdRef.current = openId;
-    setStage("listening");
-    setListening(true);
+    sessionRef.current = true;
+    const fromHold = holdToTalkRef.current;
+    if (!fromHold) {
+      setStage("listening");
+      setListening(true);
+    }
     onNoticeRef.current("");
 
     try {
-      playLiveVoiceCue(ensureAudioContext(), "open");
+      if (!fromHold) playLiveVoiceCue(ensureAudioContext(), "open");
       const stream = isLiveAudioStream(mediaStreamRef.current)
         ? mediaStreamRef.current!
         : await navigator.mediaDevices.getUserMedia(AUDIO_CONSTRAINTS);
       if (openId !== openIdRef.current) {
         if (stream !== mediaStreamRef.current) stream.getTracks().forEach((track) => track.stop());
         return;
+      }
+      if (holdToTalkRef.current && !holdLiveRef.current) {
+        if (stream !== mediaStreamRef.current) stream.getTracks().forEach((track) => track.stop());
+        finishSession();
+        return;
+      }
+      if (fromHold) {
+        playLiveVoiceCue(ensureAudioContext(), "open");
+        setStage("listening");
+        setListening(true);
       }
       mediaStreamRef.current = stream;
 
@@ -263,8 +291,8 @@ export function useLiveVoice({
       sourceRef.current = source;
       analyserRef.current = analyser;
       sessionRef.current = true;
-      shouldSubmitRef.current = false;
-      autoSendRef.current = false;
+    shouldSubmitRef.current = false;
+    autoSendRef.current = false;
 
       recorder.ondataavailable = (event) => {
         if (openId === openIdRef.current && event.data.size > 0) chunksRef.current.push(event.data);
@@ -353,6 +381,14 @@ export function useLiveVoice({
       };
 
       recorder.start(250);
+      if (holdToTalkRef.current && !holdLiveRef.current) {
+        shouldSubmitRef.current = true;
+        autoSendRef.current = true;
+        setStage("sending");
+        playLiveVoiceCue(audioContext, "send");
+        recorder.stop();
+        return;
+      }
       timerRef.current = window.setTimeout(() => {
         if (recorder.state === "recording") {
           shouldSubmitRef.current = true;
@@ -410,6 +446,8 @@ export function useLiveVoice({
           loudSince = 0;
         }
 
+        if (holdToTalkRef.current) return;
+
         if (hasSpeech) {
           if (
             now - lastLoudAt >= VOICE_SILENCE_HOLD_MS &&
@@ -438,7 +476,7 @@ export function useLiveVoice({
         denied ? "Allow microphone access to use voice input." : "The microphone could not start.",
       );
     }
-  }, [disabled, finishSession, listening, transcribing]);
+  }, [disabled, finishSession]);
 
   const cancel = useCallback(() => {
     finishSession();
@@ -475,12 +513,108 @@ export function useLiveVoice({
     void start();
   }, [finish, listening, start]);
 
+  useEffect(() => {
+    startRef.current = start;
+    finishRef.current = finish;
+    cancelRef.current = cancel;
+  }, [cancel, finish, start]);
+
+  useEffect(() => {
+    function isControlKey(event: KeyboardEvent) {
+      return event.key === "Control";
+    }
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape" && (sessionRef.current || transcriptionRef.current)) {
+        cancelRef.current();
+        return;
+      }
+
+      if (!isControlKey(event)) {
+        if (event.ctrlKey && controlsDownRef.current.size > 0) {
+          controlIsShortcutRef.current = true;
+          if (holdToTalkRef.current) {
+            holdToTalkRef.current = false;
+            holdLiveRef.current = false;
+            setHolding(false);
+            cancelRef.current();
+          }
+        }
+        return;
+      }
+
+      if (event.repeat || event.metaKey || event.altKey || event.shiftKey || event.isComposing) return;
+
+      controlsDownRef.current.add(event.code || "Control");
+      if (controlsDownRef.current.size > 1) return;
+      if (disabled) return;
+
+      controlIsShortcutRef.current = false;
+      if (sessionRef.current || recorderRef.current || transcriptionRef.current) return;
+
+      holdToTalkRef.current = true;
+      holdLiveRef.current = true;
+      setHolding(true);
+      void startRef.current();
+    }
+
+    function onKeyUp(event: KeyboardEvent) {
+      if (!isControlKey(event)) return;
+      controlsDownRef.current.delete(event.code || "Control");
+      if (controlsDownRef.current.size > 0) return;
+
+      const wasHold = holdToTalkRef.current;
+      const usedAsShortcut = controlIsShortcutRef.current;
+      holdLiveRef.current = false;
+      controlIsShortcutRef.current = false;
+      setHolding(false);
+      if (!wasHold) return;
+      if (usedAsShortcut) {
+        holdToTalkRef.current = false;
+        cancelRef.current();
+        return;
+      }
+      if (recorderRef.current?.state === "recording") {
+        finishRef.current();
+        return;
+      }
+      if (sessionRef.current && !recorderRef.current) return;
+      holdToTalkRef.current = false;
+    }
+
+    function onLostFocus() {
+      controlsDownRef.current.clear();
+      controlIsShortcutRef.current = false;
+      holdLiveRef.current = false;
+      setHolding(false);
+      if (!holdToTalkRef.current) return;
+      holdToTalkRef.current = false;
+      cancelRef.current();
+    }
+
+    function onVisibility() {
+      if (document.hidden) onLostFocus();
+    }
+
+    window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("keyup", onKeyUp, true);
+    window.addEventListener("blur", onLostFocus);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("keyup", onKeyUp, true);
+      window.removeEventListener("blur", onLostFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [disabled]);
+
   return {
     analyserRef,
     cancel,
     finish,
     handleClick,
     handlePointerDown,
+    holding,
     listening,
     stage,
     transcribing,

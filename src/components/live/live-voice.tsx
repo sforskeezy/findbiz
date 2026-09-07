@@ -138,16 +138,27 @@ const STAGE_COPY: Record<LiveVoiceStage, { label: string; hint: string }> = {
   sending: { label: "Sending", hint: "Turning your words into a message…" },
 };
 
-export function LiveVoiceEdge({ analyserRef, onCancel, onFinish, reduceMotion, stage }: {
+function stageCopy(stage: LiveVoiceStage, pushToTalk: boolean) {
+  if (pushToTalk && stage !== "sending") {
+    return {
+      label: STAGE_COPY[stage].label,
+      hint: "Release Control to send.",
+    };
+  }
+  return STAGE_COPY[stage];
+}
+
+export function LiveVoiceEdge({ analyserRef, onCancel, onFinish, pushToTalk = false, reduceMotion, stage }: {
   analyserRef: { current: AnalyserNode | null };
   onCancel: () => void;
   onFinish: () => void;
+  pushToTalk?: boolean;
   reduceMotion: boolean;
   stage: LiveVoiceStage;
 }) {
-  const copy = STAGE_COPY[stage];
+  const copy = stageCopy(stage, pushToTalk);
   return (
-    <div className="live-voice-edge" data-stage={stage} aria-label="Live voice mode">
+    <div className="live-voice-edge" data-stage={stage} data-hold={pushToTalk || undefined} aria-label="Live voice mode">
       <LiveLiquidVoiceCanvas analyserRef={analyserRef} reduceMotion={reduceMotion} stage={stage} />
       <div className="live-voice-status">
         <span className="live-voice-status-pill">
@@ -155,6 +166,9 @@ export function LiveVoiceEdge({ analyserRef, onCancel, onFinish, reduceMotion, s
           <span role="status" aria-live="polite">{copy.label}</span>
         </span>
         <small className="live-voice-hint">{copy.hint}</small>
+        {pushToTalk && stage !== "sending" && (
+          <kbd className="live-voice-key">Control</kbd>
+        )}
       </div>
       <div className="live-voice-controls">
         <button type="button" onClick={onCancel} aria-label="Cancel voice recording">

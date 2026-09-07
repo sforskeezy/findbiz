@@ -43,7 +43,7 @@ import { LiveMarkdown } from "@/components/live/live-markdown";
 import { LiveHeroArt } from "@/components/live/live-hero-art";
 import { LiveSidebar, type SessionGroup } from "@/components/live/live-sidebar";
 import { LiveSources } from "@/components/live/live-sources";
-import { LiveThinking, LiveThoughtTrace } from "@/components/live/live-thinking";
+import { LiveThoughtTrace } from "@/components/live/live-thinking";
 import { LiveTypewriter } from "@/components/live/live-typewriter";
 import { LiveVoiceEdge } from "@/components/live/live-voice";
 import { useLiveVoice } from "@/components/live/use-live-voice";
@@ -435,7 +435,10 @@ export function LivePage() {
         }
         if (event.type === "status") setStatus(event.message);
         if (event.type === "step") {
-          streamedSteps = [...streamedSteps, event.step];
+          const index = streamedSteps.findIndex((item) => item.id === event.step.id);
+          streamedSteps = index >= 0
+            ? streamedSteps.map((item, itemIndex) => (itemIndex === index ? event.step : item))
+            : [...streamedSteps, event.step];
           setSteps(streamedSteps);
         }
         if (event.type === "delta") {
@@ -535,15 +538,9 @@ export function LivePage() {
     },
   });
   useEffect(() => { cancelVoiceRef.current = voice.cancel; }, [voice.cancel]);
-
   useEffect(() => {
-    if (!voice.listening && !voice.transcribing) return;
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") cancelVoiceRef.current();
-    }
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [voice.listening, voice.transcribing]);
+    if (voice.holding || voice.listening) setMenuOpen(false);
+  }, [voice.holding, voice.listening]);
 
   const composerIdle =
     !draft.trim() && !focused && !busy && !voice.listening && !voice.transcribing;
@@ -601,6 +598,7 @@ export function LivePage() {
                     analyserRef={voice.analyserRef}
                     onCancel={voice.cancel}
                     onFinish={voice.finish}
+                    pushToTalk={voice.holding}
                     reduceMotion={reduceMotion}
                     stage={voice.stage}
                   />
@@ -706,9 +704,16 @@ export function LivePage() {
                 </label>
                 <button
                   type="button"
-                  className="ml-auto mb-0.5 inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-full px-3 text-[#66685e] transition hover:bg-[#f2f2ee] hover:text-[#3a3a35] disabled:opacity-30"
+                  className={cn(
+                    "ml-auto mb-0.5 inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-full px-3 transition disabled:opacity-30",
+                    voice.holding
+                      ? "bg-[#171715] text-white"
+                      : "text-[#66685e] hover:bg-[#f2f2ee] hover:text-[#3a3a35]",
+                  )}
                   aria-label="Talk to Live"
-                  title="Talk to Live"
+                  aria-keyshortcuts="Control"
+                  aria-pressed={voice.holding || voiceOpen}
+                  title="Talk to Live · hold Control"
                   onPointerDown={(event) => {
                     setMenuOpen(false);
                     voice.handlePointerDown(event);
@@ -734,7 +739,7 @@ export function LivePage() {
 
             <p className={cn("mt-3 text-[10px] text-[#92938c]", atHome ? "flex flex-wrap justify-between gap-2 px-1" : "text-center")}>
               {busy ? "You can stop or send a new direction at any time." : "Research with public sources."}
-              <span className="ml-3 hidden sm:inline text-[#8a8a84]">Enter to send · Shift + Enter for a new line</span>
+              <span className="ml-3 hidden sm:inline text-[#8a8a84]">Hold Control to talk · Enter to send · Shift + Enter for a new line</span>
             </p>
           </div>
         </div>
@@ -865,14 +870,8 @@ export function LivePage() {
 
               {busy && (
                 <article className="animate-enter">
-                  {answer ? (
-                    <>
-                      {steps.length > 0 && <LiveThoughtTrace steps={steps} />}
-                      <LiveMarkdown content={answer} streaming />
-                    </>
-                  ) : (
-                    <LiveThinking steps={steps} status={status} />
-                  )}
+                  <LiveThoughtTrace steps={steps} live status={status || "Thinking"} />
+                  {answer ? <LiveMarkdown content={answer} streaming /> : null}
                 </article>
               )}
             </div>

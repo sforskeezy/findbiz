@@ -81,6 +81,31 @@ test('next question does not advance the queue', () => {
   assert.equal(isLiveNext('Skip to the next one'), true);
 });
 
+test('google this is a web lookup, not a new business search', () => {
+  const turn = resolveLiveTurn('Google who owns Spectrum in Lugoff SC', previous, context);
+  assert.equal(turn.search, false);
+  assert.equal(turn.brief.wantsWeb, true);
+  assert.match(turn.brief.webQueries[0] || '', /spectrum/i);
+});
+
+test('google a named company is a web lookup, not a failed maps list', () => {
+  const turn = resolveLiveTurn(
+    'google and find a company im looking for in lugoff sc named macons lawn and lanscape company',
+    null,
+    {},
+  );
+  assert.equal(turn.search, false);
+  assert.equal(turn.brief.wantsWeb, true);
+  assert.match(turn.brief.targetName || turn.brief.searchTerms.join(' '), /macon/i);
+});
+
+test('find plus google keeps both clauses', () => {
+  const turn = resolveLiveTurn('Find plumbers in Columbia, SC and also google their hours', previous, context);
+  assert.equal(turn.search, true);
+  assert.equal(turn.brief.wantsWeb, true);
+  assert.match(turn.brief.webQueries[0] || '', /hours/i);
+});
+
 test('counts and shorthand work for specific trades', () => {
   assert.equal(parseLiveBrief('Find 2 dentists in Greenville SC').requestedCount, 2);
   assert.equal(parseLiveBrief('Find a plumber near Lugoff SC').requestedCount, 1);

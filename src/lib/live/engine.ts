@@ -27,11 +27,13 @@ import {
   skipQueue,
   toSource,
   webLookup,
+  googleSearch,
 } from "@/lib/live/tools";
 import {
   briefNeedsFollowThrough,
   describeBrief,
   extractLiveLocation,
+  hasCompoundAsk,
   isLiveNext,
   isLiveSearchRequest,
   resolveLiveTurn,
@@ -240,7 +242,7 @@ type ModelReply = {
 };
 
 const LIVE_MODEL_FALLBACK = "openai/gpt-oss-120b";
-const MAX_TOOL_ROUNDS = 4;
+const MAX_TOOL_ROUNDS = 6;
 /** Free-tier keys are billed per minute, so the history is trimmed by size, not turn count. */
 const HISTORY_BUDGET_CHARS = 5_000;
 
@@ -403,9 +405,29 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "google_search",
+      description:
+        "Search Google for any public-web question: a person, a company that is not on the list, news, ownership, hours, a product, a fact, or anything the user asked you to google or look up online. Use this whenever they say google, search the web, look this up, or you need current public information that is not already in the list. Call it once per distinct question. You can call it alongside other tools in the same turn.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "The Google search, as a person would type it." },
+          extraQueries: {
+            type: "array",
+            items: { type: "string" },
+            description: "Optional extra Google queries if one search is not enough.",
+          },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "web_lookup",
       description:
-        "Search the public web about one business on the list for something the listing does not cover: who owns it, how many locations, recent news, whether it is still open. Use when research_business already ran and the answer is still missing.",
+        "Search the public web about one business on the list for something the listing does not cover: who owns it, how many locations, recent news, whether it is still open. If the name is not on the list, this still Googles it. Prefer google_search for general questions.",
       parameters: {
         type: "object",
         properties: {
@@ -606,9 +628,10 @@ Listening:
 - If they change the trade ("actually dentists instead"), replace the old trade and profile; reuse the area unless changed. If they say "same search in another ZIP", keep its filters.
 - Corrections override remembered preferences. A one-time home-based search is not a permanent preference. Only save preferences when explicitly asked to remember or described as an ongoing working preference.
 - Resolve short follow-ups from the conversation: "make it shorter" edits your last answer, "why?" explains it, and "the second one" refers to the displayed list. Ask one focused question only when the intended reference is actually ambiguous.
-- Do every part of what they asked, in the order they asked it. A request with "and then" or "also" is not finished until the last clause is done.
+- Do every part of what they asked, in the order they asked it. A request with "and then", "also", or a second sentence is not finished until the last clause is done. Call every tool you still need before you write the answer.
+- If they asked to find AND research AND check what's new AND google something, run find_businesses, then research_business or check_listing, then scan_local_news, then google_search. Do not stop after the list.
+- google_search when they say google, search the web, look this up online, or you need a public fact that is not already in the list or a tool result. Do not refuse because the topic is not a listed business. One call per distinct question.
 - Only mention a count if they asked for one ("give me 8", "find 3"). Never open with "I found 8 businesses" because that is the old default cap.
-- If they asked to find AND research AND check what's new, run find_businesses, then research_business or check_listing, then scan_local_news. Do not stop after the list.
 - National chains and convenience stops are out unless they named that kind of place.
 - Read natural place shorthand like a person. "Lugoff SC lawn care" means location "Lugoff, SC" and query "lawn care". A business name or trade is never part of the location argument.
 - A city or ZIP is enough for find_businesses. Never demand a full street address after they already gave a city, state, or ZIP.
@@ -628,19 +651,22 @@ Picking the right tool:
 - research_business when you need public facts about one company on the list that you do not already have.
 - scan_local_news when they ask what's new, for a local news scan, or expansions. It defaults to the business currently on screen, which is the one they mean after they press Next. Pass scope "list" only when they clearly asked about the whole list. Quote only what the snippet actually says.
 - check_listing when they ask if a shop is real, independent, or worth calling.
-- web_lookup after research_business when the answer is still missing: ownership, number of locations, still open.
+- google_search for anything they asked you to google or look up on the web, including companies that are not on the list, news, owners, hours, products, and general facts. Use it even when there is no current list.
+- web_lookup for a listed business when the listing is missing a public fact. If they named a company that is not on the list, google_search it instead of asking for a city first.
 - check_broadband when they ask who is available, who serves an address, what providers are there, or what speeds they can get. scope "territory" for the area or the whole list, scope "business" for one company. Never answer availability from memory.
 - skip_to_next when they say skip, next, or similar.
 - plan_route when they ask what order to work these, a walking order, or how to cover the street on foot.
 - draft_outreach when they ask to write, draft, open, or email. Ground every line in the returned facts.
 - mark_contacted when they say they called, emailed, left a voicemail, or that one is a dead end.
 - remember only for durable facts (territory, industries they sell, working style, "home-based only"). forget when they correct or retire one. Never remember the whole chat.
-- If they name a business that is not on the list and you have no territory, ask which city or ZIP. Do not search blind.
+- If they name a business that is not on the list, google_search it. Only ask which city or ZIP when they want nearby listings, not when they want a web lookup.
+- You may call several tools in one round. Keep going until every asked part is done. Do not answer after the first tool if later clauses are still unfinished.
 
 Reading broadband results: providerCount and providers cover every provider at the address. charterSpectrum describes Charter/Spectrum only, so a not_reported Charter tier never means "no providers serve this address".
 
 How to write:
 - Answer in the first sentence. Do not narrate a plan, list capabilities, or stall before a tool.
+- When a turn had several asks, answer each one. A short heading per clause is fine. Do not drop the last request.
 - Search a named place only when the latest message requests discovery or address identification. A place mentioned in an explanation is not a search request.
 - After a search, name the strongest fits with why, distance, and phone. If a listing has a news flag (Just opened, Recent expansion, Just moved, New ownership, In the news), put it next to the phone and open with it instead of the internet pitch. Do not recite every row — the full list is on screen.
 - When a news scan finds nothing, say that in one line and move on. "Nothing public on them" is a real answer.
@@ -678,7 +704,7 @@ function findInQueue(queue: LiveQueue | null, prospectId?: string, name?: string
 }
 
 /** Tools that only read state, so several of them can be answered at once. */
-const READ_ONLY_TOOLS = new Set(["check_broadband", "web_lookup"]);
+const READ_ONLY_TOOLS = new Set(["check_broadband", "web_lookup", "google_search", "research_business"]);
 
 const OUTCOME_LABELS: Record<string, string> = {
   reached: "reached someone",
@@ -1073,6 +1099,35 @@ async function runTool(
     return { ok: true, check: checked };
   }
 
+  if (name === "google_search") {
+    const query = typeof args.query === "string" ? args.query.trim() : "";
+    const extra = Array.isArray(args.extraQueries)
+      ? args.extraQueries.filter((item): item is string => typeof item === "string")
+      : [];
+    if (query.length < 2) return { ok: false, error: "Say what to Google." };
+    await trackStep(trace, "Searching Google", query.slice(0, 90));
+    try {
+      const looked = await abortable(trace.signal, () => googleSearch(query, extra));
+      await trackSources(trace, looked.sources);
+      return {
+        ok: true,
+        query,
+        queries: looked.queries,
+        findings: looked.findings,
+        engine: looked.engine,
+        note: looked.findings.length
+          ? "Quote only what these snippets support, name the source, and finish every other part of the user's request."
+          : "Google did not return usable results. Say you could not confirm it rather than guessing, then finish any other asked parts.",
+      };
+    } catch (searchError) {
+      return {
+        ok: false,
+        error: searchError instanceof Error ? searchError.message : "Google search failed.",
+        note: "Tell the rep you could not confirm it from public sources, then finish any other asked parts.",
+      };
+    }
+  }
+
   if (name === "web_lookup") {
     const question = typeof args.question === "string" ? args.question.trim() : "";
     if (question.length < 3) return { ok: false, error: "Say what you are trying to find out." };
@@ -1081,7 +1136,29 @@ async function runTool(
       typeof args.prospectId === "string" ? args.prospectId : undefined,
       typeof args.name === "string" ? args.name : undefined,
     );
-    if (!prospect) return { ok: false, error: "That business is not in the current list. Find businesses in an area first." };
+    const fallbackQuery = [typeof args.name === "string" ? args.name.trim() : "", question].filter(Boolean).join(" ");
+    if (!prospect) {
+      await trackStep(trace, "Searching Google", fallbackQuery.slice(0, 90));
+      try {
+        const looked = await abortable(trace.signal, () => googleSearch(fallbackQuery));
+        await trackSources(trace, looked.sources);
+        return {
+          ok: true,
+          question,
+          business: typeof args.name === "string" ? args.name : null,
+          findings: looked.findings,
+          note: looked.findings.length
+            ? "This name was not on the current list, so this is a Google result. Quote only the snippets."
+            : "The public web had nothing usable. Say you could not confirm it rather than guessing.",
+        };
+      } catch (lookupError) {
+        return {
+          ok: false,
+          error: lookupError instanceof Error ? lookupError.message : "The web lookup failed.",
+          note: "Tell the rep you could not confirm it from public sources.",
+        };
+      }
+    }
     await trackStep(trace, `Searching the public web on ${prospect.name}`, question.slice(0, 90));
     try {
       const looked = await abortable(trace.signal, () => webLookup(prospect, question));
@@ -1222,6 +1299,7 @@ async function groqChat(
     maxTokens?: number;
     effort?: "low" | "medium" | "high";
     onDelta?: (text: string) => Promise<void>;
+    onReasoning?: (text: string) => Promise<void>;
     onDiscard?: () => Promise<void>;
   } = {},
 ): Promise<ModelReply> {
@@ -1248,6 +1326,7 @@ async function chatWithProvider(
     maxTokens?: number;
     effort?: "low" | "medium" | "high";
     onDelta?: (text: string) => Promise<void>;
+    onReasoning?: (text: string) => Promise<void>;
     onDiscard?: () => Promise<void>;
   },
 ): Promise<ModelReply> {
@@ -1324,6 +1403,8 @@ async function chatWithProvider(
 
         if (delta.reasoning) reasoning += delta.reasoning;
         if (delta.reasoning_content) reasoning += delta.reasoning_content;
+        const thought = (delta.reasoning || delta.reasoning_content || "").toString();
+        if (thought) await options.onReasoning?.(thought);
 
         for (const call of delta.tool_calls ?? []) {
           const index = call.index ?? partials.size;
@@ -1366,10 +1447,23 @@ async function chatWithProvider(
 
 const looksLikeFind = isLiveSearchRequest;
 
-/** A numbered or bulleted run of bolded proper names reads as a prospect list. */
+/**
+ * A numbered dump of bold names with distances/phones is the model inventing a
+ * prospect list. A Google writeup that happens to use bold names is not.
+ */
 function looksLikeInventedList(content: string) {
   const named = content.match(/^\s*(?:\d+\.|[-*])\s+\*\*([^*]{3,80})\*\*/gm) ?? [];
-  return named.length >= 2;
+  if (named.length < 2) return false;
+  return /\b\d+(?:\.\d+)?\s*mi\b|\bno public phone\b|\bfit\s+\d+\b/i.test(content);
+}
+
+/** Keep a sourced Google answer. Only blank a discovery turn that invented shops. */
+export function shouldRejectUngroundedDiscovery(
+  content: string,
+  context: { discoverySearch: boolean; listingCount: number; sourceCount: number },
+) {
+  if (!context.discoverySearch || context.listingCount > 0 || context.sourceCount > 0) return false;
+  return looksLikeInventedList(content);
 }
 
 const looksLikeSkip = isLiveNext;
@@ -1706,10 +1800,34 @@ function formatOutreachReply(prospect: { name: string; callOpener: string; follo
   return `## Email for **${prospect.name}**\n\n**Subject:** ${prospect.followUpEmail.subject}\n\n${prospect.followUpEmail.body}`;
 }
 
+function formatGoogleReply(query: string, findings: Array<{ title: string; url: string; snippet: string }>) {
+  if (!findings.length) return `I searched Google for **${query}** and did not get a usable public result.`;
+  const lines = findings.slice(0, 4).map((item, index) => {
+    const detail = item.snippet || item.url;
+    return `${index + 1}. **${item.title}** — ${detail}`;
+  });
+  return `Here is what Google has on **${query}**:\n\n${lines.join("\n")}`;
+}
+
 async function heuristicReply(text: string, session: LiveSession, trace: TurnTrace) {
   if (/^(?:hi|hey|hello|good morning|good afternoon)[!.\s]*$/i.test(text)) return "Hey! What are you working on?";
   if (/^(?:thanks|thank you|great|perfect|got it|okay|ok)[!.\s]*$/i.test(text)) return "You're welcome.";
   if (/^(?:never mind|nevermind|stop|cancel|forget it)[!.\s]*$/i.test(text)) return "Okay, we can leave that there.";
+  if (trace.brief.wantsWeb) {
+    const query = (trace.brief.webQueries[0] || text).replace(/\s+/g, " ").trim().slice(0, 160);
+    if (query.length >= 3) {
+      await trackStep(trace, "Searching Google", query.slice(0, 90));
+      try {
+        const looked = await abortable(trace.signal, () => googleSearch(query, trace.brief.webQueries.slice(1)));
+        await trackSources(trace, looked.sources);
+        if (!trace.brief.wantsResearch && !trace.brief.wantsNews && !trace.brief.wantsGenuineCheck) {
+          return formatGoogleReply(query, looked.findings);
+        }
+      } catch {
+        // The rest of the heuristic can still answer from the list.
+      }
+    }
+  }
   if (briefNeedsFollowThrough(trace.brief)) {
     await fulfillFollowThrough(session, trace.brief, trace);
   }
@@ -1791,6 +1909,19 @@ async function heuristicReply(text: string, session: LiveSession, trace: TurnTra
   return "I couldn’t reach the conversation service for that reply. Your list is still here. Please try your message again.";
 }
 
+async function appendLiveThought(trace: TurnTrace, chunk: string) {
+  const piece = chunk.replace(/\s+/g, " ");
+  if (!piece.trim()) return;
+  if (!trace.steps.length) await trackStep(trace, "Thinking");
+  const last = trace.steps[trace.steps.length - 1];
+  if (!last) return;
+  const glued = `${last.thought || ""}${last.thought && !/\s$/.test(last.thought) && !/^\s/.test(piece) ? " " : ""}${piece}`;
+  const next = glued.replace(/\s+/g, " ").trim().slice(0, 8_000);
+  if (next === last.thought) return;
+  last.thought = next;
+  await trace.emit({ type: "step", step: { ...last } });
+}
+
 async function executeLiveTurn(input: {
   sessionId?: string | null;
   message: string;
@@ -1867,9 +1998,10 @@ async function executeLiveTurn(input: {
   const named = extractPlace(text);
   const retryAsked = turn.retry;
   const location = turn.search ? brief.locationHint : null;
-  const extraAsk = briefNeedsFollowThrough(brief) || looksLikeOutreach(brief.raw) || looksLikeBroadband(brief.raw) || looksLikePrioritize(brief.raw);
+  const extraAsk = briefNeedsFollowThrough(brief) || looksLikeOutreach(brief.raw) || looksLikeBroadband(brief.raw) || looksLikePrioritize(brief.raw) || hasCompoundAsk(brief.raw);
   const identifyAsked = Boolean(named) && looksLikeIdentify(text) && !turn.search;
-  const wantsList = turn.search && Boolean(location);
+  const namedCompanyAsk = /\b(?:named|called)\s+[A-Za-z0-9'&.-]/i.test(text);
+  const wantsList = turn.search && Boolean(location) && !(brief.wantsWeb && namedCompanyAsk);
 
   if (turn.reset && !turn.search) await publish("Fresh start. What would you like to work on?");
 
@@ -1993,6 +2125,19 @@ async function executeLiveTurn(input: {
       ...historyMessages(session.messages),
     ];
     const attempted = new Set<string>();
+    let thoughtBuffer = "";
+    let thoughtFlush: Promise<void> | null = null;
+    const queueThought = (chunk: string) => {
+      thoughtBuffer += chunk;
+      if (thoughtFlush) return thoughtFlush;
+      thoughtFlush = new Promise((resolve) => setTimeout(resolve, 70)).then(async () => {
+        const pending = thoughtBuffer;
+        thoughtBuffer = "";
+        thoughtFlush = null;
+        if (pending) await appendLiveThought(trace, pending);
+      });
+      return thoughtFlush;
+    };
 
     try {
       for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
@@ -2004,15 +2149,24 @@ async function executeLiveTurn(input: {
             streamed = true;
             await emit({ type: "delta", text: chunk });
           },
+          onReasoning: async (chunk) => {
+            void queueThought(chunk);
+          },
           onDiscard: async () => {
             streamed = false;
             await emit({ type: "delta_reset" });
           },
         });
+        if (thoughtFlush) await thoughtFlush;
+        if (thoughtBuffer) {
+          await appendLiveThought(trace, thoughtBuffer);
+          thoughtBuffer = "";
+        }
 
-        if (reply.reasoning && trace.steps.length) {
+        if (reply.reasoning) {
+          if (!trace.steps.length) await trackStep(trace, "Thinking");
           const last = trace.steps[trace.steps.length - 1];
-          last.thought = reply.reasoning.replace(/\s+/g, " ").trim().slice(0, 500);
+          if (last && !last.thought) last.thought = reply.reasoning.replace(/\s+/g, " ").trim().slice(0, 8_000);
         }
 
         if (!reply.toolCalls.length) {
@@ -2082,9 +2236,15 @@ async function executeLiveTurn(input: {
     content = await heuristicReply(text, session, trace);
   }
 
-  // Formatting is never a reason to replace a topical answer with the old list.
-  // Only a discovery turn may trigger the invented-prospect guard.
-  if (turn.search && !session.queue?.prospects.length && looksLikeInventedList(content)) {
+  // A sourced Google writeup is not an invented prospect list. Only blank a
+  // discovery turn that named shops with no listings and no public sources.
+  if (
+    shouldRejectUngroundedDiscovery(content, {
+      discoverySearch: wantsList,
+      listingCount: session.queue?.prospects.length ?? 0,
+      sourceCount: trace.sources.length,
+    })
+  ) {
     await publish("I couldn’t verify matching listings for that search. Try another area or a wider radius.");
   }
   if (hasBusinessTable(content)) {
@@ -2115,7 +2275,7 @@ async function executeLiveTurn(input: {
   };
   session.messages = [...session.messages, assistantMessage].slice(-40);
   if (session.brief && !session.awaitingLocation) {
-    session.brief = { ...session.brief, wantsResearch: false, wantsNews: false, wantsGenuineCheck: false, wantsCompetitors: false };
+    session.brief = { ...session.brief, wantsResearch: false, wantsNews: false, wantsGenuineCheck: false, wantsCompetitors: false, wantsWeb: false, webQueries: [] };
   }
   input.signal?.throwIfAborted();
   await saveSession(session);

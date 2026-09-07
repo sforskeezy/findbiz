@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { researchCompany } from "@/lib/company-intelligence";
 import { researchAcrossSources } from "@/lib/discovery";
 import { lookupFccAvailability } from "@/lib/fcc";
-import { researchGoogleWeb } from "@/lib/google-research-engine";
+import { researchGoogleWeb, searchPublicWeb } from "@/lib/google-research-engine";
 import { googleMapsScraperEnabled, researchWithGoogleMapsScraper } from "@/lib/google-maps-scraper";
 import { PLACE_CATEGORIES, distanceMiles } from "@/lib/place-candidate";
 import { classifyServiceability } from "@/lib/serviceability";
@@ -421,6 +421,33 @@ export function currentProspect(queue: LiveQueue | null) {
 function cityContext(address: string) {
   const parts = address.split(",").map((value) => value.trim()).filter(Boolean);
   return parts.slice(-2).join(" ").slice(0, 80);
+}
+
+function spellingVariants(query: string) {
+  const next = query
+    .replace(/\blanscape\b/gi, "landscape")
+    .replace(/\blanscaping\b/gi, "landscaping");
+  return next !== query ? [next] : [];
+}
+
+export async function googleSearch(query: string, extraQueries: string[] = []) {
+  const queries = [query, ...extraQueries, ...spellingVariants(query)]
+    .map((item) => item.replace(/\s+/g, " ").trim())
+    .filter((item) => item.length >= 2)
+    .slice(0, 4);
+  if (!queries.length) throw new Error("Give Google something to search.");
+  const research = await searchPublicWeb(queries);
+  const results = research.results.slice(0, 8);
+  return {
+    sources: dedupeSources(results.map((item) => toSource({ title: item.title, url: item.url, snippet: item.snippet }))),
+    findings: results.map((item) => ({
+      title: item.title.slice(0, 140),
+      url: item.url,
+      snippet: (item.snippet || "").slice(0, 360),
+    })),
+    engine: research.diagnostics.providers.join(", ") || research.diagnostics.engine,
+    queries: research.queries,
+  };
 }
 
 /**

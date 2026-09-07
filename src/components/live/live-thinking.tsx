@@ -1,90 +1,169 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { ChevronRight } from "lucide-react";
 
 import { WorkingDots } from "@/components/live/working-dots";
 import { cn } from "@/components/ui";
 import type { LiveThinkingStep } from "@/lib/live/types";
 
-function useElapsedSeconds() {
+function useElapsedSeconds(active: boolean) {
   const [seconds, setSeconds] = useState(0);
 
   useEffect(() => {
+    if (!active) return;
     const startedAt = Date.now();
     const timer = window.setInterval(() => {
       setSeconds(Math.floor((Date.now() - startedAt) / 1000));
     }, 250);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [active]);
 
   return seconds;
 }
 
-/** One line while a turn is in flight: the four-dot spinner and the current step. */
-export function LiveThinking({ steps, status }: { steps: LiveThinkingStep[]; status: string }) {
-  const current = status || steps[steps.length - 1]?.label || "Thinking";
-  const seconds = useElapsedSeconds();
+function visibleSteps(steps: LiveThinkingStep[]) {
+  return steps.filter((step) => step.label && !/^reading your message$/i.test(step.label));
+}
+
+function thoughtSignature(steps: LiveThinkingStep[], status?: string) {
+  return `${status ?? ""}|${steps.map((step) => `${step.id}:${step.label}:${step.detail ?? ""}:${step.thought ?? ""}`).join("¦")}`;
+}
+
+function ThoughtStream({
+  steps,
+  live,
+  status,
+}: {
+  steps: LiveThinkingStep[];
+  live?: boolean;
+  status?: string;
+}) {
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const innerRef = useRef<HTMLDivElement>(null);
+  const pinToBottom = useRef(true);
+  const items = visibleSteps(steps);
+  const [overflow, setOverflow] = useState(false);
+  const signature = thoughtSignature(items, status);
+
+  useEffect(() => {
+    const node = scrollerRef.current;
+    const inner = innerRef.current;
+    if (!node) return;
+
+    const sync = () => {
+      const canScroll = node.scrollHeight > node.clientHeight + 4;
+      setOverflow(canScroll);
+      if (pinToBottom.current) node.scrollTop = node.scrollHeight;
+    };
+
+    sync();
+    const frame = window.requestAnimationFrame(sync);
+    const observer = new ResizeObserver(sync);
+    observer.observe(node);
+    if (inner) observer.observe(inner);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [signature]);
 
   return (
-    <div className="flex items-center gap-2.5" aria-live="polite">
-      <WorkingDots size={14} className="text-[#3a3a35]" />
-      <p className="min-w-0 flex-1 truncate text-[13.5px] font-medium leading-5">
-        <span className="text-shimmer-loop">{current}</span>
-      </p>
-      {seconds >= 1 && (
-        <span className="shrink-0 text-[12px] tabular-nums text-[#c2c2ba]">{seconds}s</span>
-      )}
+    <div className="live-thought-panel" data-overflow={overflow || undefined}>
+      <div
+        ref={scrollerRef}
+        className="live-thought-stream"
+        onScroll={(event) => {
+          const node = event.currentTarget;
+          pinToBottom.current = node.scrollHeight - node.scrollTop - node.clientHeight < 32;
+        }}
+        onWheel={(event) => {
+          const node = event.currentTarget;
+          if (node.scrollHeight <= node.clientHeight + 4) return;
+          const atTop = node.scrollTop <= 0;
+          const atBottom = node.scrollHeight - node.scrollTop - node.clientHeight <= 1;
+          if ((event.deltaY < 0 && atTop) || (event.deltaY > 0 && atBottom)) return;
+          event.stopPropagation();
+        }}
+      >
+        <div ref={innerRef} className="live-thought-inner">
+          {items.map((step) => {
+            const thought = step.thought?.trim();
+            const showThought = Boolean(thought && thought !== step.label);
+            const generic = /^thinking$/i.test(step.label);
+            const showLabel = !showThought || (Boolean(live) && !generic);
+            return (
+              <div key={step.id} className="live-thought-item">
+                {showLabel && <p className="live-thought-label">{step.label}</p>}
+                {step.detail && <p className="live-thought-detail">{step.detail}</p>}
+                {showThought && <p className="live-thought-copy">{thought}</p>}
+              </div>
+            );
+          })}
+          {live && status && (!items.length || items[items.length - 1]?.label !== status) && (
+            <p className="live-thought-status">{status}</p>
+          )}
+        </div>
+      </div>
+      {overflow ? (
+        <>
+          <div className="live-thought-fade live-thought-fade-top" aria-hidden />
+          <div className="live-thought-fade live-thought-fade-bottom" aria-hidden />
+        </>
+      ) : null}
     </div>
   );
 }
 
-/** Post-turn recap. Cursor-style: a quiet "Thought for Ns" that opens the trail. */
-export function LiveThoughtTrace({ steps, seconds }: { steps: LiveThinkingStep[]; seconds?: number }) {
-  const [open, setOpen] = useState(false);
-  const bodyRef = useRef<HTMLDivElement>(null);
-  const [height, setHeight] = useState(0);
+/** In-flight: expanded, scrollable reasoning trail. */
+export function LiveThinking({ steps, status }: { steps: LiveThinkingStep[]; status: string }) {
+  return <LiveThoughtTrace steps={steps} live status={status} />;
+}
 
-  useEffect(() => {
-    setHeight(bodyRef.current?.scrollHeight ?? 0);
-  }, [open, steps.length]);
+/** ChatGPT-style thinking: muted toggle, independent scroll when open. */
+export function LiveThoughtTrace({
+  steps,
+  seconds,
+  live = false,
+  status,
+}: {
+  steps: LiveThinkingStep[];
+  seconds?: number;
+  live?: boolean;
+  status?: string;
+}) {
+  const panelId = useId();
+  const [open, setOpen] = useState(live);
+  const tick = useElapsedSeconds(live);
+  const items = visibleSteps(steps);
+  if (!items.length && !live) return null;
 
-  if (!steps.length) return null;
-
-  const visible = steps.filter((step) => step.label && !/^reading your message$/i.test(step.label));
-  if (!visible.length) return null;
-
-  const label =
-    seconds && seconds >= 1 ? `Thought for ${seconds}s` : `Thought · ${visible.length} ${visible.length === 1 ? "step" : "steps"}`;
+  const elapsed = live ? tick : seconds;
+  const label = live
+    ? status || items[items.length - 1]?.label || "Thinking"
+    : elapsed && elapsed >= 1
+      ? `Thought for ${elapsed}s`
+      : `Thought · ${items.length} ${items.length === 1 ? "step" : "steps"}`;
 
   return (
-    <div className="mb-2.5">
+    <div className="live-thought">
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
-        className="group inline-flex items-center gap-1.5 text-[12.5px] font-medium text-[#9a9a92] transition hover:text-[#5f5f59]"
+        aria-controls={panelId}
+        className="live-thought-toggle"
       >
-        <ChevronRight size={13} className={cn("transition-transform duration-200", open && "rotate-90")} />
-        {label}
+        <ChevronRight size={14} className={cn("live-thought-caret", open && "rotate-90")} />
+        {live && <WorkingDots size={13} className="text-[#5f5f59]" />}
+        <span className={cn("min-w-0 flex-1 truncate text-left", live && "text-shimmer-loop")}>{label}</span>
+        {live && elapsed && elapsed >= 1 ? <span className="live-thought-clock">{elapsed}s</span> : null}
       </button>
-      <div
-        className="overflow-hidden transition-[height,opacity] duration-300 ease-out"
-        style={{ height: open ? height : 0, opacity: open ? 1 : 0 }}
-      >
-        <div ref={bodyRef} className="mt-2 space-y-2 border-l border-[#e7e7e1] pl-3.5">
-          {visible.map((step) => (
-            <div key={step.id} className="relative">
-              <span className="absolute -left-[16px] top-[7px] h-1.5 w-1.5 rounded-full bg-[#d4d4cc]" />
-              <p className="text-[12.5px] leading-5 text-[#3a3a35]">{step.label}</p>
-              {step.detail && <p className="text-[11.5px] leading-5 text-[#a4a49c]">{step.detail}</p>}
-              {step.thought && step.thought !== step.label && (
-                <p className="mt-0.5 whitespace-pre-wrap text-[12px] leading-5 text-[#8a8a84]">{step.thought}</p>
-              )}
-            </div>
-          ))}
+      {open && (
+        <div id={panelId}>
+          <ThoughtStream steps={items} live={live} status={status} />
         </div>
-      </div>
+      )}
     </div>
   );
 }

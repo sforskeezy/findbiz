@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { runLiveTurn } from '../src/lib/live/engine.ts';
+import { runLiveTurn, shouldRejectUngroundedDiscovery } from '../src/lib/live/engine.ts';
 import { createSession, saveSession, loadSession } from '../src/lib/live/store.ts';
 import { parseLiveBrief } from '../src/lib/live/intent.ts';
 import { generateDemoResearch } from '../src/lib/demo-data.ts';
@@ -78,6 +78,29 @@ test('numbered advice without a queue is not treated as invented businesses', as
   assert.equal(state.session.messages.at(-1).content, responseText);
 });
 
+test('a sourced google writeup is not replaced with a failed listings message', () => {
+  const writeup = '1. **Macon Lawn** is in Lugoff.\n2. **Macon Jackson** owns it.';
+  assert.equal(shouldRejectUngroundedDiscovery(writeup, { discoverySearch: true, listingCount: 0, sourceCount: 7 }), false);
+  assert.equal(shouldRejectUngroundedDiscovery(writeup, { discoverySearch: false, listingCount: 0, sourceCount: 0 }), false);
+  assert.equal(
+    shouldRejectUngroundedDiscovery('1. **Acme Legal** — 0.4 mi\n2. **Bright Dental** — no public phone', {
+      discoverySearch: true,
+      listingCount: 0,
+      sourceCount: 0,
+    }),
+    true,
+  );
+});
+
+test('google a named company keeps the model answer instead of a maps miss', async () => {
+  responseText = 'I found **Macon Lawn** in Lugoff from public listings.';
+  const state = await runLiveTurn({
+    message: 'google and find a company im looking for in lugoff sc named macons lawn and lanscape company',
+  });
+  assert.match(state.session.messages.at(-1).content, /Macon Lawn/);
+  assert.doesNotMatch(state.session.messages.at(-1).content, /couldn’t verify matching listings/);
+});
+
 test('Next question does not advance, while Next one does', async () => {
   const session = await seededChat();
   const first = await runLiveTurn({ sessionId: session.id, message: 'Next question: how do I handle objections?' });
@@ -140,6 +163,17 @@ test('a replacement turn wins over a cancelled reply in the same chat', async ()
   assert.deepEqual(saved.messages, JSON.parse(JSON.stringify(replacement.session.messages)));
 });
 
+test('google and compound asks keep tools on, including google_search', async () => {
+  const session = await seededChat();
+  await runLiveTurn({ sessionId: session.id, message: 'Google who owns Spectrum and also give me a natural opener' });
+  assert.equal(requests.length, 1);
+  assert.ok(requests[0].tools.some((tool) => tool.function.name === 'google_search'));
+  const prompt = requests[0].messages[0].content;
+  assert.match(prompt, /google_search/);
+  assert.match(prompt, /every part of what they asked/);
+  assert.match(prompt.split('Only actions requested for THIS turn:')[1], /google:/i);
+});
+
 test('last model round has tools disabled and produces a final answer', async () => {
   const session = await seededChat();
   respond = (body) => {
@@ -147,7 +181,7 @@ test('last model round has tools disabled and produces a final answer', async ()
     return streamReply('Here is what I can tell you from the listing.');
   };
   const state = await runLiveTurn({ sessionId: session.id, message: 'Tell me about the first business' });
-  assert.equal(requests.length, 4);
+  assert.equal(requests.length, 6);
   assert.equal(requests.at(-1).tools, undefined);
   assert.equal(state.session.messages.at(-1).content, 'Here is what I can tell you from the listing.');
 });
