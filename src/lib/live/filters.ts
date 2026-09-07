@@ -110,19 +110,17 @@ export function homeBasedVerdict(prospect: Prospect): HomeBasedVerdict {
   let score = 0;
 
   const missingAddress = NO_ADDRESS.test(address) || address.trim().length < 6;
-  // Maps publishes service-area businesses without an address because the owner
-  // works out of a house or a truck. A directory record with a blank address is
-  // just missing data, so only trust this when it came from Maps.
+  // A hidden Maps address suggests a service-area operation, not necessarily a home.
   const fromMaps = /google maps/i.test(prospect.source ?? "");
   const serviceAreaListing = missingAddress && fromMaps && (prospect.reviewCount ?? 0) < 60;
 
   if (isMassRetail(prospect)) blockers.push("national chain or convenience stop");
   if (missingAddress && !serviceAreaListing) blockers.push("no public street address to judge");
-  if (UNIT_DESIGNATOR.test(address)) blockers.push("suite or unit number, so it leases space");
+  if (UNIT_DESIGNATOR.test(address)) blockers.push("suite or unit address; residential use is unclear");
   if (COMMERCIAL_PARK.test(address)) blockers.push("address sits in a business or industrial park");
   if (FACILITY.test(nameAndNotes)) blockers.push("the name describes a facility, not a residence");
   if ((prospect.locationCount ?? 1) > 1) blockers.push("more than one location");
-  if ((prospect.reviewCount ?? 0) >= 150) blockers.push("far too much walk-in traffic for a house");
+  if ((prospect.reviewCount ?? 0) >= 150) blockers.push("high review volume; a small home operation needs stronger evidence");
 
   const explicit = HOME_EXPLICIT.test(nameAndNotes);
   if (explicit) {
@@ -135,14 +133,14 @@ export function homeBasedVerdict(prospect: Prospect): HomeBasedVerdict {
   }
   if (HOME_TRADE.test(blob)) {
     score += 3;
-    reasons.push("trade usually run from a house or a truck");
+    reasons.push("trade can operate from a home or as a mobile service");
   }
   const residentialStreet = RESIDENTIAL_STREET.test(address) && !COMMERCIAL_STREET.test(address);
   if (residentialStreet) {
     score += 1;
-    reasons.push("quiet residential street");
+    reasons.push("street name suggests residential surroundings; not verified");
   }
-  // Maps hides the street number for service-area businesses that work out of a home.
+  // A missing street number is a weak service-area signal, not proof of a home.
   const noStreetNumber = !/^\s*\d/.test(address) && !missingAddress;
   if (noStreetNumber) {
     score += 1;
@@ -183,21 +181,9 @@ export function homeSignal(prospect: Prospect): LiveLeadSignal | null {
   if (!verdict.homeBased) return null;
   return {
     kind: "home",
-    label: "Home-based",
+    label: "Possibly home-based",
     detail: verdict.reasons.slice(0, 2).join("; ") || "runs out of a residence",
   };
-}
-
-/** A small independent that is not a chain, a facility, or a leased suite. */
-function quietIndependent(prospect: Prospect) {
-  const address = prospect.address || "";
-  if (isMassRetail(prospect)) return false;
-  if (FACILITY.test(`${prospect.name} ${prospect.publicNotes ?? ""}`)) return false;
-  if (BUILDING_CATEGORIES.has(prospect.category)) return false;
-  if (NO_ADDRESS.test(address) || address.trim().length < 6) return false;
-  if (UNIT_DESIGNATOR.test(address) || COMMERCIAL_PARK.test(address) || COMMERCIAL_STREET.test(address)) return false;
-  if ((prospect.reviewCount ?? 0) >= 40) return false;
-  return HOME_TRADE.test(`${prospect.name} ${prospect.category}`) || RESIDENTIAL_STREET.test(address);
 }
 
 export type BriefFilterResult = {
@@ -227,23 +213,12 @@ export function filterProspectsForBrief(
       ...entry.item,
       signals: mergeSignals(entry.item.signals, {
         kind: "home",
-        label: "Home-based",
+        label: "Possibly home-based",
         detail: entry.verdict.reasons.slice(0, 2).join("; ") || "runs out of a residence",
       }),
     }));
-    // Never pad a home-based ask with offices. If the area is thin, the extras
-    // are the quietest independents and stay unlabelled so nobody mistakes them.
-    if (confirmed.length >= 3) return { kept: confirmed, confirmed: confirmed.length, relaxed: false };
-    const confirmedIds = new Set(confirmed.map((item) => item.id));
-    const extras = kept
-      .filter((item) => !confirmedIds.has(item.id) && quietIndependent(item))
-      .sort((a, b) => (a.reviewCount ?? 0) - (b.reviewCount ?? 0))
-      .slice(0, 5);
-    return {
-      kept: [...confirmed, ...extras],
-      confirmed: confirmed.length,
-      relaxed: extras.length > 0,
-    };
+    // A short or empty result is better than silently changing the requested profile.
+    return { kept: confirmed, confirmed: confirmed.length, relaxed: false };
   }
 
   if (input.profile === "independent" || input.excludeNational) {

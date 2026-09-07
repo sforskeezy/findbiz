@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { matchesBusinessName } from "@/lib/business-identity";
 
 import type {
   Prospect,
@@ -65,7 +66,7 @@ function decodeEntities(value: string) {
 }
 
 function plainText(value: string) {
-  return decodeEntities(value.replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim();
+  return decodeEntities(value.replace(/<[^>]+>/g, " ")).replace(/&nbsp;/gi, " ").replace(/\s+/g, " ").trim();
 }
 
 function hashId(...parts: string[]) {
@@ -165,7 +166,7 @@ async function fetchText(url: URL, init?: RequestInit) {
     },
     cache: "no-store",
     redirect: "follow",
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    signal: init?.signal ? AbortSignal.any([init.signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]) : AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   const text = await responseText(response);
   if (
@@ -183,6 +184,10 @@ async function fetchText(url: URL, init?: RequestInit) {
 function canonicalResultUrl(value: string, base: string) {
   try {
     let url = new URL(decodeEntities(value), base);
+    if (/(^|\.)google\.com$/.test(url.hostname) && url.pathname === "/url") {
+      const destination = url.searchParams.get("q") || url.searchParams.get("url");
+      if (destination) url = new URL(destination);
+    }
     if (url.hostname.endsWith("duckduckgo.com") && url.pathname === "/l/") {
       const destination = url.searchParams.get("uddg");
       if (destination) url = new URL(destination);
@@ -218,7 +223,7 @@ function canonicalResultUrl(value: string, base: string) {
   }
 }
 
-async function searchGoogleCustom(query: string): Promise<RawSearchResult[]> {
+async function searchGoogleCustom(query: string, signal?: AbortSignal): Promise<RawSearchResult[]> {
   const key = process.env.GOOGLE_SEARCH_API_KEY?.trim() || process.env.GOOGLE_MAPS_API_KEY?.trim();
   const cx = process.env.GOOGLE_SEARCH_ENGINE_ID?.trim();
   if (!key || !cx) return [];
@@ -229,7 +234,7 @@ async function searchGoogleCustom(query: string): Promise<RawSearchResult[]> {
   url.searchParams.set("num", "10");
   url.searchParams.set("safe", "active");
   url.searchParams.set("gl", "us");
-  const response = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+  const response = await fetch(url, { cache: "no-store", signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]) : AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
   const payload = (await response.json()) as GoogleCustomSearchPayload;
   if (!response.ok) throw new Error(payload.error?.message || `Google Custom Search returned ${response.status}.`);
   return (payload.items ?? []).flatMap((item, index) => {
@@ -260,7 +265,7 @@ function parseGoogleHtml(html: string, query: string): RawSearchResult[] {
   return results.slice(0, 10);
 }
 
-async function searchGooglePublic(query: string) {
+async function searchGooglePublic(query: string, signal?: AbortSignal) {
   const url = new URL("/search", GOOGLE_ORIGIN);
   url.searchParams.set("q", query);
   url.searchParams.set("hl", "en");
@@ -268,7 +273,7 @@ async function searchGooglePublic(query: string) {
   url.searchParams.set("num", "10");
   url.searchParams.set("filter", "0");
   url.searchParams.set("pws", "0");
-  const html = await fetchText(url);
+  const html = await fetchText(url, {signal});
   const results = parseGoogleHtml(html, query);
   if (!results.length && /enablejs|sg_trbl|update your browser/i.test(html)) {
     throw new Error("Google returned a JavaScript-gated search page instead of result records.");
@@ -295,18 +300,18 @@ function parseBingHtml(html: string, query: string): RawSearchResult[] {
     const snippet = plainText(
       item.match(/class=["'][^"']*b_caption[^"']*["'][^>]*>([\s\S]*?)<\/(?:p|div|li)>/i)?.[1] || "",
     ).slice(0, 500);
-    const url = (cite ? bingUrlFromCite(cite) : null) || (href ? canonicalResultUrl(href, BING_ORIGIN) : null);
+    const url = (href ? canonicalResultUrl(href, BING_ORIGIN) : null) || (cite ? bingUrlFromCite(cite) : null);
     if (!url || !title) continue;
     results.push({ title, url, snippet, provider: "bing_public_search", query, position: results.length + 1 });
   }
   return results.slice(0, 10);
 }
 
-async function searchBingPublic(query: string) {
+async function searchBingPublic(query: string, signal?: AbortSignal) {
   const url = new URL("/search", BING_ORIGIN);
   url.searchParams.set("q", query);
   url.searchParams.set("setlang", "en-US");
-  const html = await fetchText(url);
+  const html = await fetchText(url, {signal});
   const results = parseBingHtml(html, query);
   if (!results.length) throw new Error("Bing returned no parseable public result records.");
   return results;
@@ -328,10 +333,10 @@ function parseDuckDuckGoHtml(html: string, query: string): RawSearchResult[] {
   }).slice(0, 10);
 }
 
-async function searchKeylessFallback(query: string) {
+async function searchKeylessFallback(query: string, signal?: AbortSignal) {
   const url = new URL("/html/", DUCKDUCKGO_ORIGIN);
   url.searchParams.set("q", query);
-  const html = await fetchText(url);
+  const html = await fetchText(url, {signal});
   if (/anomaly-modal|challenge-form|captcha/i.test(html)) {
     throw new Error("The keyless web index requested a challenge; no challenge was bypassed.");
   }
@@ -494,13 +499,15 @@ function toWebResult(item: RawSearchResult, rank: number, authorityScore: number
 function collectPublicResults(raw: RawSearchResult[]) {
   const byUrl = new Map<string, WebSearchResult>();
   for (const item of raw) {
+    const relevance = publicQueryRelevance(item);
+    if (relevance < 0.5) continue;
     const requiredHost = siteConstraint(item.query);
     if (requiredHost) {
       const hostname = new URL(item.url).hostname.toLowerCase().replace(/^www\./, "");
       if (hostname !== requiredHost && !hostname.endsWith(`.${requiredHost}`)) continue;
     }
     const { sourceKind, authorityScore } = sourceClassification(item.url, null);
-    const rank = Math.round(authorityScore * 0.4 + Math.max(0, 18 - item.position * 1.5));
+    const rank = Math.round(relevance * 75 + authorityScore * 0.1 + Math.max(0, 10 - item.position));
     const key = resultKey(item.url);
     const existing = byUrl.get(key);
     if (existing) {
@@ -519,82 +526,68 @@ function collectPublicResults(raw: RawSearchResult[]) {
   return [...byUrl.values()].sort((a, b) => b.rank - a.rank || b.authorityScore - a.authorityScore).slice(0, 10);
 }
 
-async function searchWithProvider(provider: SearchProvider, query: string) {
-  if (provider === "google_custom_search") return searchGoogleCustom(query);
-  if (provider === "google_public_search") return searchGooglePublic(query);
-  if (provider === "bing_public_search") return searchBingPublic(query);
-  return searchKeylessFallback(query);
+async function searchWithProvider(provider: SearchProvider, query: string, signal?: AbortSignal) {
+  if (provider === "google_custom_search") return searchGoogleCustom(query, signal);
+  if (provider === "google_public_search") return searchGooglePublic(query, signal);
+  if (provider === "bing_public_search") return searchBingPublic(query, signal);
+  return searchKeylessFallback(query, signal);
 }
 
-async function gatherSearchResults(queries: string[]) {
+/** Query relevance wins over the prominence of an unrelated publisher. */
+export function publicQueryRelevance(result: { query: string; title: string; snippet: string; url: string }) {
+  const ignored = new Set("a an the and or of for to in at near by on with from is are was were who what when where how can you me my it this that about find search google web please business businesses company companies info information south north carolina sc nc official website contact".split(" "));
+  const tokens = [...new Set(result.query.toLowerCase().replace(/site:\S+/g, "").split(/[^a-z0-9]+/).filter((word) => word.length >= 2 && !ignored.has(word)))];
+  if (!tokens.length) return 1;
+  const words = new Set(`${result.title} ${result.snippet}`.toLowerCase().split(/[^a-z0-9]+/));
+  const host = new URL(result.url).hostname.toLowerCase();
+  const matched = tokens.filter((token) => words.has(token) || (token.length >= 4 && (words.has(token.replace(/s$/, "")) || words.has(token + "s") || host.includes(token))));
+  return matched.length / tokens.length;
+}
+
+export type WebSearchOptions = { businessName?: string | null; fresh?: boolean; signal?: AbortSignal };
+
+async function gatherSearchResults(queries: string[], options: WebSearchOptions = {}) {
   const failures: string[] = [];
-  const providers: string[] = [];
+  const providers = new Set<string>();
   const raw: RawSearchResult[] = [];
   let completed = 0;
-  let provider: SearchProvider = "bing_public_search";
-  let firstResults: RawSearchResult[] | null = null;
-
-  if (googleCustomSearchConfigured()) {
-    provider = "google_custom_search";
-    providers.push("Google Programmable Search");
-  } else {
-    const probeQuery = queries[0];
-    if (process.env.ENABLE_GOOGLE_SEARCH_SCRAPER !== "false") {
-      try {
-        firstResults = await searchGooglePublic(probeQuery);
-        provider = "google_public_search";
-        providers.push("Google public search");
-      } catch (error) {
-        failures.push(`Google public search: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
-    if (!firstResults && process.env.ENABLE_BING_SEARCH_FALLBACK !== "false") {
-      try {
-        firstResults = await searchBingPublic(probeQuery);
-        provider = "bing_public_search";
-        providers.push("Google public search (runtime probe)", "Bing public search");
-      } catch (error) {
-        failures.push(`Bing public search: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
-    if (!firstResults && process.env.ENABLE_KEYLESS_WEB_SEARCH_FALLBACK !== "false") {
-      try {
-        firstResults = await searchKeylessFallback(probeQuery);
-        provider = "keyless_web_fallback";
-        providers.push("Keyless web index fallback");
-      } catch (error) {
-        failures.push(`Keyless web index: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
-    if (firstResults) {
-      raw.push(...firstResults);
-      completed += 1;
-    }
-  }
-
-  const startIndex = firstResults ? 1 : 0;
-  let nextIndex = startIndex;
-  const concurrency = numberEnv("GOOGLE_RESEARCH_CONCURRENCY", 3, 1, 5);
-  const delayMs = numberEnv("GOOGLE_RESEARCH_DELAY_MS", 120, 0, 3_000);
-
+  const candidates: SearchProvider[] = [
+    ...(googleCustomSearchConfigured() ? ["google_custom_search" as const] : []),
+    ...(process.env.ENABLE_GOOGLE_SEARCH_SCRAPER !== "false" ? ["google_public_search" as const] : []),
+    ...(process.env.ENABLE_BING_SEARCH_FALLBACK !== "false" ? ["bing_public_search" as const] : []),
+    ...(process.env.ENABLE_KEYLESS_WEB_SEARCH_FALLBACK !== "false" ? ["keyless_web_fallback" as const] : []),
+  ];
+  // Once a provider blocks this request, use the next configured provider.
+  const unavailable = new Set<SearchProvider>();
+  let nextIndex = 0;
   async function worker() {
     while (nextIndex < queries.length) {
-      const index = nextIndex++;
-      const query = queries[index];
-      try {
-        raw.push(...(await searchWithProvider(provider, query)));
-        completed += 1;
-      } catch (error) {
-        failures.push(`${query}: ${error instanceof Error ? error.message : String(error)}`);
+      const query = queries[nextIndex++];
+      let succeeded = false;
+      for (const provider of candidates) {
+        options.signal?.throwIfAborted();
+        if (unavailable.has(provider)) continue;
+        try {
+          const results = await searchWithProvider(provider, query, options.signal);
+          providers.add(providerLabel(provider));
+          succeeded = true;
+          const relevant = results.filter((item) => publicQueryRelevance(item) >= 0.5 && (!options.businessName || matchesBusinessName(item, options.businessName)));
+          raw.push(...relevant);
+          if (relevant.length) break;
+          failures.push(`${providerLabel(provider)}: no results matched the terms in "${query}".`);
+        } catch (error) {
+          options.signal?.throwIfAborted();
+          const detail = error instanceof Error ? error.message : String(error);
+          failures.push(`${providerLabel(provider)}: ${detail}`);
+          if (/blocked|challenge|429|403|401|not configured/i.test(detail)) unavailable.add(provider);
+        }
       }
-      if (delayMs && nextIndex < queries.length) {
-        await new Promise((resolve) => setTimeout(resolve, delayMs));
-      }
+      if (succeeded) completed += 1;
     }
   }
-
-  await Promise.all(Array.from({ length: Math.min(concurrency, Math.max(0, queries.length - startIndex)) }, () => worker()));
-  return { raw, providers, failures, completed };
+  // Share provider availability across queries and avoid concurrent public requests.
+  await worker();
+  return { raw, providers: [...providers], failures, completed };
 }
 
 function asResearchResult(
@@ -634,7 +627,7 @@ async function cachedResearch(key: string, build: () => Promise<GoogleResearchRe
   if (pending) return pending;
   const request = build()
     .then((result) => {
-      const failedHard = result.diagnostics.uniqueResults === 0 && result.diagnostics.queriesCompleted === 0;
+      const failedHard = result.diagnostics.uniqueResults === 0 || result.diagnostics.queriesCompleted < result.queries.length;
       if (!failedHard) {
         const ttl = numberEnv("GOOGLE_RESEARCH_CACHE_TTL_SECONDS", DEFAULT_CACHE_TTL_MS / 1_000, 30, 86_400);
         researchCache.set(key, { expiresAt: Date.now() + ttl * 1_000, result });
@@ -661,13 +654,16 @@ export async function researchGoogleWeb(
 }
 
 /** Open Google-backed web search for any query, not just a listed prospect. */
-export async function searchPublicWeb(requestedQueries: string[]): Promise<GoogleResearchResult> {
+export async function searchPublicWeb(requestedQueries: string[], options: WebSearchOptions = {}): Promise<GoogleResearchResult> {
   const queries = [...new Set(requestedQueries.map((value) => value.replace(/\s+/g, " ").trim()).filter(Boolean))]
     .filter((value) => value.length >= 2 && value.length <= 240)
     .slice(0, 4);
   if (!queries.length) throw new Error("Give Google something to search.");
-  return cachedResearch(cacheKey(null, queries), async () => {
-    const gathered = await gatherSearchResults(queries);
+  const build = async () => {
+    const gathered = await gatherSearchResults(queries, options);
     return asResearchResult(queries, gathered, collectPublicResults(gathered.raw));
-  });
+  };
+  // A live retry must run a new search. Cancellable requests must not share work.
+  if (options.fresh || options.signal) return build();
+  return cachedResearch(cacheKey(null, [...queries, options.businessName || ""]), build);
 }

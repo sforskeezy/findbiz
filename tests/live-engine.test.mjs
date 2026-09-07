@@ -14,6 +14,8 @@ const realFetch = globalThis.fetch;
 let requests;
 let responseText;
 let respond;
+let webResults;
+let webRequests;
 const encoder = new TextEncoder();
 
 function streamReply(content) {
@@ -26,14 +28,25 @@ before(async () => {
   process.env.GROQ_API_KEY = 'test-only';
   process.env.DASHSCOPE_API_KEY = '';
   process.env.LIVE_BASE_URL = 'https://model.test/v1';
+  process.env.GOOGLE_SEARCH_API_KEY = 'test-only';
+  process.env.GOOGLE_SEARCH_ENGINE_ID = 'test-only';
+  process.env.ENABLE_GOOGLE_SEARCH_SCRAPER = 'false';
+  process.env.ENABLE_BING_SEARCH_FALLBACK = 'false';
+  process.env.ENABLE_KEYLESS_WEB_SEARCH_FALLBACK = 'false';
 });
 
 after(async () => { globalThis.fetch = realFetch; await rm(root, { recursive: true, force: true }); });
 beforeEach(() => {
   requests = [];
+  webRequests = [];
+  webResults = [];
   responseText = 'Start with a short introduction and one useful question.';
   respond = () => streamReply(responseText);
   globalThis.fetch = async (url, init) => {
+    if (new URL(url).hostname === 'customsearch.googleapis.com') {
+      webRequests.push(new URL(url).searchParams.get('q'));
+      return Response.json({items: webResults});
+    }
     assert.equal(String(url), 'https://model.test/v1/chat/completions', `Unexpected lookup: ${url}`);
     const body = JSON.parse(init.body);
     requests.push(body);
@@ -93,12 +106,57 @@ test('a sourced google writeup is not replaced with a failed listings message', 
 });
 
 test('google a named company keeps the model answer instead of a maps miss', async () => {
-  responseText = 'I found **Macon Lawn** in Lugoff from public listings.';
+  webResults = [{title: 'Macon Lawn and Landscape Company', link: 'https://example.com/macon', snippet: 'Macon Lawn and Landscape Company serves Lugoff, SC.'}];
+  responseText = 'I found **Macon Lawn and Landscape Company** in Lugoff from [its listing](https://example.com/macon).';
   const state = await runLiveTurn({
     message: 'google and find a company im looking for in lugoff sc named macons lawn and lanscape company',
   });
   assert.match(state.session.messages.at(-1).content, /Macon Lawn/);
   assert.doesNotMatch(state.session.messages.at(-1).content, /couldn’t verify matching listings/);
+  assert.ok(webRequests.length > 0, 'A model answer alone is not evidence of a lookup');
+  assert.ok(requests[0].messages.some(message => message.role === 'tool' && message.content.includes('example.com/macon')));
+});
+
+test('named business lookup searches without trusting the model to request a tool', async () => {
+  webResults = [{title: 'L3 Installer Services', link: 'https://example.com/l3', snippet: 'Decks and screen enclosures in Lugoff, SC.'}];
+  responseText = 'I could not find that business. Try L3Harris.';
+  const state = await runLiveTurn({message: 'Find me L3 Installer in Lugoff, South Carolina. Find me info about it.'});
+  assert.match(webRequests[0], /^L3 Installer Lugoff, SC$/);
+  assert.match(state.session.messages.at(-1).content, /L3 Installer Services/);
+  assert.doesNotMatch(state.session.messages.at(-1).content, /L3Harris/);
+  assert.equal(state.queue, null);
+  assert.equal(state.session.messages.at(-1).sources[0].url, 'https://example.com/l3');
+});
+
+test('just Google it retries the user’s business, not the assistant’s unrelated guess', async () => {
+  const session = await seededChat();
+  session.messages = [
+    {id:'u', role:'user', content:'Find me L3 Services or whatever. They do decks in Lugoff, South Carolina.', createdAt:new Date().toISOString()},
+    {id:'a', role:'assistant', content:'The closest match is L3Harris.', createdAt:new Date().toISOString()},
+  ];
+  await saveSession(session);
+  webResults = [{title:'L3 Installer Services', link:'https://example.com/l3', snippet:'Lugoff SC deck builder.'}];
+  responseText = 'L3 Installer Services builds decks in Lugoff, SC.';
+  await runLiveTurn({sessionId:session.id, message:'Dude just Google it'});
+  assert.match(webRequests[0], /L3 Services Lugoff, SC/);
+  assert.ok(webRequests.every(query => !query.includes('L3Harris')));
+  const count = webRequests.length;
+  await runLiveTurn({sessionId:session.id, message:'Try again'});
+  assert.ok(webRequests.length > count, 'Retry must search again instead of replaying a cache');
+  const repeated = await runLiveTurn({sessionId:session.id, message:'Try again'});
+  assert.equal(repeated.queue.currentIndex, 0);
+  assert.match(webRequests.at(-1), /L3 Services Lugoff, SC/);
+});
+
+test('no named match never substitutes the old queue or calls the model with invented evidence', async () => {
+  const session = await seededChat();
+  webResults = [{title:'L3Harris Technologies', link:'https://example.com/unrelated', snippet:'Lugoff SC services'}];
+  const state = await runLiveTurn({sessionId:session.id, message:'Find L3 Installer in Lugoff, South Carolina'});
+  assert.match(state.session.messages.at(-1).content, /couldn’t verify a matching result/);
+  assert.doesNotMatch(state.session.messages.at(-1).content, /L3Harris|closest matching/);
+  assert.equal(requests.length, 0);
+  assert.ok(webRequests.length >= 2, 'Try grounded name/location variants before stopping');
+  assert.equal(state.queue.currentIndex, 0);
 });
 
 test('Next question does not advance, while Next one does', async () => {

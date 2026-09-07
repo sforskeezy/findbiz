@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 
 import { researchCompany } from "@/lib/company-intelligence";
+import { prepareOutreach } from "@/lib/live/prospecting";
 import { researchAcrossSources } from "@/lib/discovery";
 import { lookupFccAvailability } from "@/lib/fcc";
-import { researchGoogleWeb, searchPublicWeb } from "@/lib/google-research-engine";
+import { researchGoogleWeb, searchPublicWeb, type WebSearchOptions } from "@/lib/google-research-engine";
 import { googleMapsScraperEnabled, researchWithGoogleMapsScraper } from "@/lib/google-maps-scraper";
 import { PLACE_CATEGORIES, distanceMiles } from "@/lib/place-candidate";
 import { classifyServiceability } from "@/lib/serviceability";
@@ -275,6 +276,7 @@ function factValue(intelligence: CompanyIntelligence, kind: string) {
 
 export async function researchProspect(prospect: Prospect) {
   const intelligence = await researchCompany(prospect);
+  const outreach = prepareOutreach(prospect);
   const sources = dedupeSources([
     toSource({ title: `${prospect.name} — official site`, url: prospect.website, snippet: prospect.publicNotes }),
     toSource({ title: `${prospect.name} — public listing`, url: prospect.directoryUrl, snippet: prospect.address }),
@@ -295,11 +297,12 @@ export async function researchProspect(prospect: Prospect) {
       summary: intelligence.summary || prospect.summary,
       publicNotes: prospect.publicNotes,
       topOpportunity: prospect.topOpportunity,
-      callOpener: prospect.callOpener,
+      callOpener: outreach.callOpener,
       hypothesizedNeeds: prospect.hypothesizedNeeds.filter((item) => !/\bhiring\b/i.test(item)).slice(0, 3),
       facts: intelligence.facts.slice(0, 6).map((item) => ({ label: item.label, value: item.value.slice(0, 140) })),
       warnings: intelligence.warnings.slice(0, 2),
-      email: prospect.followUpEmail,
+      email: outreach.followUpEmail,
+      qualification: outreach.qualification,
     },
   };
 }
@@ -430,23 +433,24 @@ function spellingVariants(query: string) {
   return next !== query ? [next] : [];
 }
 
-export async function googleSearch(query: string, extraQueries: string[] = []) {
+export async function googleSearch(query: string, extraQueries: string[] = [], options: WebSearchOptions = {}) {
   const queries = [query, ...extraQueries, ...spellingVariants(query)]
     .map((item) => item.replace(/\s+/g, " ").trim())
     .filter((item) => item.length >= 2)
     .slice(0, 4);
   if (!queries.length) throw new Error("Give Google something to search.");
-  const research = await searchPublicWeb(queries);
+  const research = await searchPublicWeb(queries, options);
   const results = research.results.slice(0, 8);
   return {
     sources: dedupeSources(results.map((item) => toSource({ title: item.title, url: item.url, snippet: item.snippet }))),
     findings: results.map((item) => ({
       title: item.title.slice(0, 140),
       url: item.url,
-      snippet: (item.snippet || "").slice(0, 360),
+      snippet: (item.snippet || "").slice(0, 600),
     })),
     engine: research.diagnostics.providers.join(", ") || research.diagnostics.engine,
     queries: research.queries,
+    diagnostics: research.diagnostics,
   };
 }
 

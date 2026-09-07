@@ -58,8 +58,24 @@ const US_STATE_CODES =
 
 type LocationMatch = { value: string; start: number; end: number };
 
+const STATE_NAMES: Record<string, string> = {
+  "alabama": "AL", "alaska": "AK", "arizona": "AZ", "arkansas": "AR", "california": "CA",
+  "colorado": "CO", "connecticut": "CT", "delaware": "DE", "florida": "FL", "georgia": "GA",
+  "hawaii": "HI", "idaho": "ID", "illinois": "IL", "indiana": "IN", "iowa": "IA",
+  "kansas": "KS", "kentucky": "KY", "louisiana": "LA", "maine": "ME", "maryland": "MD",
+  "massachusetts": "MA", "michigan": "MI", "minnesota": "MN", "mississippi": "MS", "missouri": "MO",
+  "montana": "MT", "nebraska": "NE", "nevada": "NV", "new hampshire": "NH", "new jersey": "NJ",
+  "new mexico": "NM", "new york": "NY", "north carolina": "NC", "north dakota": "ND", "ohio": "OH",
+  "oklahoma": "OK", "oregon": "OR", "pennsylvania": "PA", "rhode island": "RI",
+  "south carolina": "SC", "south dakota": "SD", "tennessee": "TN", "texas": "TX", "utah": "UT",
+  "vermont": "VT", "virginia": "VA", "washington": "WA", "west virginia": "WV", "wisconsin": "WI", "wyoming": "WY",
+};
+function normalizeStates(text: string) {
+  return text.replace(new RegExp(`\\b(${Object.keys(STATE_NAMES).sort((a, b) => b.length - a.length).join("|")})\\b(?=\\s*(?:[,.;!?]|\\d{5}\\b|$|\\b(?:and|then|please)\\b))`, "gi"), (name) => STATE_NAMES[name.toLowerCase()]);
+}
+
 function locationMatch(raw: string): LocationMatch | null {
-  const text = raw.replace(/\s+/g, " ").trim();
+  const text = normalizeStates(raw).replace(/\s+/g, " ").trim();
 
   // Keep a complete street address intact. It is more precise than a ZIP that
   // may also be present later in the same sentence.
@@ -161,6 +177,7 @@ const GENERIC_SEARCH_WORDS = new Set([
   "land", "landscape", "landscaping", "lawn", "lawyer", "lawyers", "local", "medical", "mechanic", "mechanics",
   "office", "painting", "plumber", "plumbers", "plumbing", "prospect", "prospects", "restaurant", "restaurants",
   "roof", "roofer", "roofers", "roofing", "salon", "service", "services", "shop", "shops", "spa", "tax", "yard",
+  "based", "independent", "owner", "run", "nearby", "only", "some", "deck", "decks", "builder", "builders",
 ]);
 
 function cleanSearchPhrase(value: string) {
@@ -182,6 +199,7 @@ function cleanSearchPhrase(value: string) {
 }
 
 function searchPhrase(text: string) {
+  text = normalizeStates(text);
   const match = locationMatch(text);
   if (!match) return "";
   const normalized = text.replace(/\s+/g, " ").trim();
@@ -217,15 +235,24 @@ function searchTerms(text: string) {
 }
 
 function targetName(text: string) {
-  const phrase = searchPhrase(text);
+  const normalized = text;
+  const explicit = normalized.match(/\b(?:named|called)\s+(.+)/i)?.[1];
+  const direct = normalized.match(/\b(?:info(?:rmation)? (?:about|on)|tell me about|look up|research|find(?:\s+me)?|google(?:\s+for)?)\s+(.+)/i)?.[1]?.replace(/^(?:info(?:rmation)? (?:about|on))\s+/i, "");
+  const requested = explicit || direct;
+  const candidate = requested?.split(/\s+(?:in|near|around|or whatever|or something|they|that (?:does|do|builds)|and (?:find|research|tell|give))\b|[,!?;]|\.(?:\s|$)/i)[0]?.replace(/^(?:a|an|the)\s+(?:business|company)\s+(?:named|called)\s+/i, "").trim();
+  const phrase = candidate || searchPhrase(text);
   if (!phrase) return null;
+  if (phrase.split(/\s+/).length > 8 || /\b(?:mistake|answer|question|chat|conversation|above|tips|ideas|help|way|something|anything|information|info|my|your|these|them|those|best|first|next|current)\b/i.test(phrase)) return null;
+  // A bare concept is not a business. Explicit naming, a place, a trade suffix,
+  // or a short alphanumeric brand provides a concrete lookup cue.
+  if (!explicit && !extractLiveLocation(text) && !/\b(?:[a-z]+\d[a-z0-9]*|llc|inc|services|installers?|lawn|landscap\w*)\b/i.test(phrase)) return null;
   const distinctive = phrase
     .toLowerCase()
     .replace(/lawncare/g, "lawn care")
     .replace(/land\s*scape/g, "landscape")
     .replace(/[^a-z0-9\s]/g, " ")
     .split(/\s+/)
-    .filter((token) => token.length >= 3 && token !== "and" && !GENERIC_SEARCH_WORDS.has(token));
+    .filter((token) => /[a-z]/.test(token) && (token.length >= 3 || /\d/.test(token)) && token !== "and" && !GENERIC_SEARCH_WORDS.has(token));
   return distinctive.length ? phrase : null;
 }
 
@@ -276,11 +303,12 @@ export function parseLiveBrief(text: string): LiveBrief {
   );
   const independent = !homeBased && /\b(independent|locally owned|mom and pop|owner[- ]operated|not a chain)\b/.test(lowered);
 
+  const name = targetName(text);
   return {
     raw: text.replace(/\s+/g, " ").trim(),
     locationHint: extractLiveLocation(text),
-    searchTerms: searchTerms(text),
-    targetName: targetName(text),
+    searchTerms: name ? [name] : searchTerms(text),
+    targetName: name,
     requestedCount: requestedCount(text),
     profile: homeBased ? "home_based" : independent ? "independent" : "any",
     categoryHint: categoryHint(text),
@@ -350,6 +378,7 @@ export function briefNeedsFollowThrough(brief: LiveBrief) {
  * a place inside a question should not replace the current list. */
 export function isLiveSearchRequest(text: string) {
   const value = text.trim();
+  if (targetName(value)) return false;
   if (/^(?:how|why|what (?:does|do|is|are)|explain|tell me why)\b/i.test(value)) return false;
   if (
     wantsWebSearch(value) &&
@@ -382,7 +411,7 @@ export function resolveLiveTurn(text: string, previous: LiveBrief | null, contex
   const retry = !reset && isLiveRetry(text);
   const named = parsed.locationHint;
   const webOnly =
-    parsed.wantsWeb &&
+    Boolean(parsed.targetName) || parsed.wantsWeb &&
     (namedCompanyLookup(text) ||
       (!/\b(?:find|show me|pull|get me|give me)\b/i.test(text) &&
         !/\b(?:business(?:es)?|prospects?|leads?|listings?)\b/i.test(text)));

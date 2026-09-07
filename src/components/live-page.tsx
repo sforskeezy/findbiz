@@ -5,7 +5,6 @@ import Image from "next/image";
 import {
   ArrowUp,
   ArrowDown,
-  ArrowUpRight,
   Check,
   Copy,
   ListFilter,
@@ -40,7 +39,6 @@ import {
   type AddressDropTarget,
 } from "@/components/live/address-chip";
 import { LiveMarkdown } from "@/components/live/live-markdown";
-import { LiveHeroArt } from "@/components/live/live-hero-art";
 import { LiveSidebar, type SessionGroup } from "@/components/live/live-sidebar";
 import { LiveSources } from "@/components/live/live-sources";
 import { LiveThoughtTrace } from "@/components/live/live-thinking";
@@ -478,19 +476,6 @@ export function LivePage() {
     [sessions, mounted],
   );
   const current = queue?.current ?? null;
-  const recent = useMemo(() => {
-    const seen = new Set<string>();
-    return (groups[0]?.items ?? [])
-      .filter((item) => {
-        const key = item.title.toLowerCase();
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      })
-      .slice(0, 4);
-  }, [groups]);
-  // The territory already has its own row in the card, so drop the fact that duplicates it.
-  const facts = useMemo(() => memory.filter((item) => item.kind !== "territory").slice(0, 4), [memory]);
   const filteredCards = useMemo(() => {
     const cards = queue?.cards ?? [];
     const needle = listFilter.trim().toLowerCase();
@@ -531,16 +516,16 @@ export function LivePage() {
     disabled: busy,
     getDraft: () => draftRef.current,
     getVocabulary: () => voiceVocabulary,
-    onNotice: setVoiceNotice,
+    onNotice: (notice) => {
+      setVoiceNotice(notice);
+      if (!notice) setMenuOpen(false);
+    },
     onSubmit: (text) => {
       setDraft("");
       void sendRef.current(text);
     },
   });
   useEffect(() => { cancelVoiceRef.current = voice.cancel; }, [voice.cancel]);
-  useEffect(() => {
-    if (voice.holding || voice.listening) setMenuOpen(false);
-  }, [voice.holding, voice.listening]);
 
   const composerIdle =
     !draft.trim() && !focused && !busy && !voice.listening && !voice.transcribing;
@@ -794,48 +779,26 @@ export function LivePage() {
           setAwayFromBottom(away);
         }} className={cn("min-h-0 flex-1 overflow-y-auto px-4 sm:px-8", atHome && "flex flex-col")}>
           {atHome ? (
-            <div className="live-welcome mx-auto my-auto w-full max-w-[840px] py-12">
+            <div className="live-welcome mx-auto my-auto w-full max-w-[720px] py-12">
               <div className="live-welcome-heading">
-                <div>
-                  <h1>Make your<br /><span>next move.</span></h1>
-                  <p className="live-welcome-description">Find the right business. Get the context.<br />Take it from there.</p>
-                </div>
-                <LiveHeroArt />
+                <h1>What are you looking for?</h1>
               </div>
               <div className="live-home-composer">{composer}</div>
               <div className="live-starters" aria-label="Start a conversation">
                 {[
-                  { title: "Explore an area", detail: "Build a local shortlist", icon: MapPin, prefill: "Find businesses in " },
-                  { title: "Look up a business", detail: "Get the context before you call", icon: Building2, prefill: "Tell me about " },
-                  { title: "Talk through an idea", detail: "Plan your next move", icon: Phone, prefill: "Help me think through " },
+                  { title: "Home-based businesses", icon: Home, prefill: "Find home-based businesses in " },
+                  { title: "Look up a business", icon: Search, prefill: "Find information about " },
+                  { title: "Call opener", icon: Phone, prefill: "Help me write a natural call opener for " },
                 ].map((starter) => (
                   <button key={starter.title} type="button" className="live-starter" onClick={() => {
                     setDraft(starter.prefill);
                     inputRef.current?.focus();
                   }}>
-                    <span className="live-starter-icon"><starter.icon size={17} strokeWidth={1.5} /></span>
-                    <span><strong>{starter.title}</strong><small>{starter.detail}</small></span>
-                    <ArrowUpRight size={14} className="live-starter-arrow" />
+                    <starter.icon size={14} strokeWidth={1.6} />
+                    <span>{starter.title}</span>
                   </button>
                 ))}
               </div>
-              {(recent.length > 0 || facts.length > 0) && <div className="live-home-context">
-                {recent.length > 0 && <section className="min-w-0">
-                  <h2>Recent conversations</h2>
-                  <div className="mt-3">
-                    {recent.slice(0, 2).map((item) => <button key={item.id} type="button" onClick={() => void openSession(item.id)} title={item.title}
-                      className="group flex h-11 w-full items-center gap-3 rounded-lg text-left transition hover:bg-[#f1f2ed]">
-                      <Clock3 size={14} strokeWidth={1.6} className="shrink-0 text-[#9a9b92]" />
-                      <span className="min-w-0 flex-1 truncate text-[12px] text-[#64675d]">{item.title}</span>
-                      <ChevronRight size={13} className="mr-2 shrink-0 text-[#a5a69d]" />
-                    </button>)}
-                  </div>
-                </section>}
-                {facts.length > 0 && <section className="min-w-0">
-                  <h2>Working context</h2>
-                  <p className="mt-5 text-[12px] leading-[1.8] text-[#797c72]">{facts[0].text}</p>
-                </section>}
-              </div>}
             </div>
           ) : (
             <div className="mx-auto w-full max-w-[720px] space-y-6 pb-8 pt-6">
