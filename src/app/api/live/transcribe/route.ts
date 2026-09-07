@@ -46,7 +46,7 @@ function cleanTranscript(raw: string): string {
     .replace(/\s+([,.!?])/g, "$1")
     .trim();
 
-  if (/^(?:uh|um|hmm|mm|hm|ah|eh|mhm|uh huh|you|thank you|thanks|bye|okay|ok)[.!?]?$/i.test(text)) {
+  if (/^(?:uh|um|hmm|mm|hm|ah|eh)[.!?]?$/i.test(text)) {
     return "";
   }
 
@@ -109,6 +109,7 @@ export async function POST(request: Request) {
     process.env.QWEN_ASR_MODEL?.trim() ||
     (/(?:^|[.-])us(?:[.-]|$)/i.test(baseUrl) ? "qwen3-asr-flash-us" : "qwen3-asr-flash");
   const controller = new AbortController();
+  const signal = AbortSignal.any([controller.signal, request.signal]);
   const timeout = setTimeout(() => controller.abort(), 45_000);
 
   const audioMessage = {
@@ -140,13 +141,15 @@ export async function POST(request: Request) {
           enable_itn: true,
         },
       }),
-      signal: controller.signal,
+      signal,
     });
 
   try {
+    signal.throwIfAborted();
     let response = await callModel(true);
     // Context enhancement is model-version dependent; drop it rather than fail.
     if (!response.ok && response.status === 400) {
+      signal.throwIfAborted();
       response = await callModel(false);
     }
 
@@ -167,6 +170,9 @@ export async function POST(request: Request) {
 
     return Response.json({ transcript });
   } catch (error) {
+    if (request.signal.aborted) {
+      return Response.json({ error: "Voice transcription cancelled." }, { status: 499 });
+    }
     const message =
       error instanceof Error && error.name === "AbortError"
         ? "Voice transcription timed out."

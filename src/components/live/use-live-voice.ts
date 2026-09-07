@@ -162,6 +162,7 @@ export function useLiveVoice({
   const autoSendRef = useRef(false);
   /** Bumped on every open/cancel so a late getUserMedia can't attach to a closed session. */
   const openIdRef = useRef(0);
+  const transcriptionRef = useRef<AbortController | null>(null);
   /** pointerdown already started the session — the following click must not toggle it off. */
   const pointerArmedRef = useRef(false);
   const onNoticeRef = useRef(onNotice);
@@ -186,6 +187,8 @@ export function useLiveVoice({
 
   const finishSession = useCallback(() => {
     openIdRef.current += 1;
+    transcriptionRef.current?.abort();
+    transcriptionRef.current = null;
     sessionRef.current = false;
     shouldSubmitRef.current = false;
     autoSendRef.current = false;
@@ -200,6 +203,7 @@ export function useLiveVoice({
       if (recorder.state === "recording") recorder.stop();
     }
     recorderRef.current = null;
+    chunksRef.current = [];
     mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
     mediaStreamRef.current = null;
     sourceRef.current?.disconnect();
@@ -210,7 +214,11 @@ export function useLiveVoice({
     setTranscribing(false);
   }, []);
 
-  useEffect(() => () => finishSession(), [finishSession]);
+  useEffect(() => () => {
+    finishSession();
+    void audioContextRef.current?.close().catch(() => {});
+    audioContextRef.current = null;
+  }, [finishSession]);
 
   const start = useCallback(async () => {
     if (disabled || listening || transcribing) return;
@@ -223,16 +231,18 @@ export function useLiveVoice({
     openIdRef.current = openId;
     setStage("listening");
     setListening(true);
-    playLiveVoiceCue(ensureAudioContext(), "open");
+    onNoticeRef.current("");
 
     try {
+      playLiveVoiceCue(ensureAudioContext(), "open");
       const stream = isLiveAudioStream(mediaStreamRef.current)
         ? mediaStreamRef.current!
         : await navigator.mediaDevices.getUserMedia(AUDIO_CONSTRAINTS);
       if (openId !== openIdRef.current) {
-        if (!mediaStreamRef.current) stream.getTracks().forEach((track) => track.stop());
+        if (stream !== mediaStreamRef.current) stream.getTracks().forEach((track) => track.stop());
         return;
       }
+      mediaStreamRef.current = stream;
 
       const mimeType = preferredVoiceMime();
       const recorder = new MediaRecorder(stream, {
@@ -257,9 +267,10 @@ export function useLiveVoice({
       autoSendRef.current = false;
 
       recorder.ondataavailable = (event) => {
-        if (event.data.size > 0) chunksRef.current.push(event.data);
+        if (openId === openIdRef.current && event.data.size > 0) chunksRef.current.push(event.data);
       };
       recorder.onerror = () => {
+        if (openId !== openIdRef.current) return;
         setListening(false);
         setTranscribing(false);
         stream.getTracks().forEach((track) => track.stop());
@@ -267,6 +278,7 @@ export function useLiveVoice({
         finishSession();
       };
       recorder.onstop = async () => {
+        if (openId !== openIdRef.current) return;
         stopVoiceMonitor(monitorRef);
         if (timerRef.current) {
           window.clearTimeout(timerRef.current);
@@ -299,10 +311,14 @@ export function useLiveVoice({
         }
 
         setTranscribing(true);
+        const controller = new AbortController();
+        transcriptionRef.current = controller;
         try {
           const audio = await audioBlobToDataUrl(blob);
+          if (openId !== openIdRef.current) return;
           const response = await fetch("/api/live/transcribe", {
             method: "POST",
+            signal: controller.signal,
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ audio, context: getVocabularyRef.current() }),
           });
@@ -310,7 +326,7 @@ export function useLiveVoice({
           if (!response.ok || !payload.transcript?.trim()) {
             throw new Error(payload.error || "I could not transcribe that recording.");
           }
-          if (!sessionRef.current) return;
+          if (openId !== openIdRef.current || !sessionRef.current) return;
 
           const transcript = payload.transcript.trim();
           const pending = getDraftRef.current().trim();
@@ -323,12 +339,16 @@ export function useLiveVoice({
             return;
           }
         } catch (error) {
+          if (openId !== openIdRef.current || controller.signal.aborted) return;
           onNoticeRef.current(
             error instanceof Error ? error.message : "I could not transcribe that recording.",
           );
         } finally {
-          sessionRef.current = false;
-          setTranscribing(false);
+          if (openId === openIdRef.current) {
+            transcriptionRef.current = null;
+            sessionRef.current = false;
+            setTranscribing(false);
+          }
         }
       };
 
@@ -410,8 +430,7 @@ export function useLiveVoice({
       }, VOICE_MONITOR_INTERVAL_MS);
     } catch (error) {
       if (openId !== openIdRef.current) return;
-      openIdRef.current += 1;
-      setListening(false);
+      finishSession();
       const denied =
         error instanceof DOMException &&
         (error.name === "NotAllowedError" || error.name === "PermissionDeniedError");
@@ -422,15 +441,6 @@ export function useLiveVoice({
   }, [disabled, finishSession, listening, transcribing]);
 
   const cancel = useCallback(() => {
-    openIdRef.current += 1;
-    sessionRef.current = false;
-    shouldSubmitRef.current = false;
-    autoSendRef.current = false;
-    stopVoiceMonitor(monitorRef);
-    if (recorderRef.current?.state === "recording") {
-      recorderRef.current.stop();
-      return;
-    }
     finishSession();
   }, [finishSession]);
 

@@ -28,7 +28,6 @@ import {
   SquarePen,
 } from "lucide-react";
 
-import { BorderBeam } from "border-beam";
 import { ModeSwitch } from "@/components/prospect-header";
 import {
   ADDRESS_DROP_EVENT,
@@ -41,6 +40,7 @@ import {
   type AddressDropTarget,
 } from "@/components/live/address-chip";
 import { LiveMarkdown } from "@/components/live/live-markdown";
+import { LiveHeroArt } from "@/components/live/live-hero-art";
 import { LiveSidebar, type SessionGroup } from "@/components/live/live-sidebar";
 import { LiveSources } from "@/components/live/live-sources";
 import { LiveThinking, LiveThoughtTrace } from "@/components/live/live-thinking";
@@ -99,33 +99,6 @@ function rankTone(score: number) {
   if (score >= 75) return "bg-[#171715]";
   if (score >= 55) return "bg-[#8a8a84]";
   return "bg-[#cfcfc7]";
-}
-
-function HomeCard({
-  title,
-  icon: Icon,
-  children,
-  className,
-}: {
-  title: string;
-  icon: typeof MapPin;
-  children: React.ReactNode;
-  className?: string;
-}) {
-  return (
-    <section
-      className={cn(
-        "live-home-card rounded-[16px] border border-[#eaeae4] bg-white p-3.5 shadow-[0_1px_2px_rgba(20,20,16,0.04)]",
-        className,
-      )}
-    >
-      <div className="flex items-center gap-1.5 pb-2.5">
-        <Icon size={13} strokeWidth={1.9} className="text-[#a4a49c]" />
-        <h2 className="text-[12.5px] font-medium text-[#6f6f69]">{title}</h2>
-      </div>
-      {children}
-    </section>
-  );
 }
 
 function LeadFlags({
@@ -290,7 +263,7 @@ export function LivePage() {
 
   useEffect(() => {
     if (!followAnswer.current) return;
-    scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: reduceMotion ? "instant" : "smooth" });
+    scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: "instant" });
   }, [messages, steps.length, busy, reduceMotion]);
 
   useEffect(() => () => {
@@ -304,13 +277,6 @@ export function LivePage() {
     if (!node || !answer) return;
     if (followAnswer.current) node.scrollTop = node.scrollHeight;
   }, [answer]);
-
-  useEffect(() => {
-    const node = inputRef.current;
-    if (!node) return;
-    node.style.height = "0px";
-    node.style.height = `${Math.min(node.scrollHeight, 168)}px`;
-  }, [draft]);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -583,6 +549,197 @@ export function LivePage() {
     !draft.trim() && !focused && !busy && !voice.listening && !voice.transcribing;
   const voiceOpen = voice.listening || voice.transcribing;
 
+  useEffect(() => {
+    const node = inputRef.current;
+    if (!node) return;
+    node.style.height = "0px";
+    node.style.height = `${Math.min(node.scrollHeight, 168)}px`;
+  }, [draft, atHome, voiceOpen]);
+
+  const composer = (
+        <div className={cn("shrink-0", !atHome && "px-4 pb-4 sm:px-8")}>
+          <div className="mx-auto w-full max-w-[720px]">
+            {awayFromBottom && !atHome && <div className="mb-3 flex justify-center">
+              <button type="button" className="live-jump" onClick={() => {
+                followAnswer.current = true;
+                setAwayFromBottom(false);
+                scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: reduceMotion ? "instant" : "smooth" });
+              }}><ArrowDown size={14} /> Latest reply</button>
+            </div>}
+            {notice && <p role="status" className="mb-2 text-center text-[12px] text-[#73736b]">{notice}</p>}
+            {(error || voiceNotice) && (
+              <p role="alert" className="mb-2 text-[12.5px] font-medium text-[#a63a31]">
+                {error || voiceNotice}
+              </p>
+            )}
+
+            {current && !atHome && queue && (
+              <section className="live-active-lead" aria-label="Current business">
+                <div className="live-queue-progress" aria-hidden="true"><span style={{ transform: `scaleX(${(queue.currentIndex + 1) / queue.total})` }} /></div>
+                <div className="live-active-lead-row">
+                  <button type="button" className="live-list-toggle" aria-expanded={listOpen} aria-controls="live-queue-list" onClick={() => setListOpen((value) => !value)}>
+                    <ListFilter size={16} /><span><strong>{current.name}</strong><small>{queue.currentIndex + 1} of {queue.total} · {queue.locationLabel}</small></span>
+                  </button>
+                  <div className="live-lead-actions">
+                    {current.phone && <a href={`tel:${current.phone}`} aria-label={`Call ${current.name}`}><Phone size={14} /><span>Call</span></a>}
+                    <button type="button" onClick={() => void send(`Brief me on ${current.name}`)} disabled={busy}>Brief</button>
+                    <button type="button" onClick={() => void send("Skip to the next one")} disabled={busy || queue.currentIndex >= queue.total - 1}>Next <ChevronRight size={14} /></button>
+                  </div>
+                </div>
+                {listOpen && <div id="live-queue-list" className="live-queue-list">
+                  <label className="live-queue-filter"><Search size={14} /><span className="sr-only">Filter your list</span><input value={listFilter} onChange={(event) => setListFilter(event.target.value)} placeholder="Find a business in this list…" /></label>
+                  {filteredCards.map((card) => <ProspectRow key={card.id} card={card} index={queue.cards.findIndex((item) => item.id === card.id)} current={card.id === current.id} onOpen={() => void send(`Tell me about ${card.name}`)} />)}
+                  {!filteredCards.length && <p className="p-3 text-[13px] text-[#73736b]">No businesses match that filter.</p>}
+                </div>}
+              </section>
+            )}
+
+            <div className="live-composer-shell" data-voice={voiceOpen || undefined}>
+              {voiceOpen ? (
+                <div className="overflow-hidden rounded-[22px] bg-white">
+                  <LiveVoiceEdge
+                    analyserRef={voice.analyserRef}
+                    onCancel={voice.cancel}
+                    onFinish={voice.finish}
+                    reduceMotion={reduceMotion}
+                    stage={voice.stage}
+                  />
+                </div>
+              ) : (
+              <form
+                data-pai-address-drop="live"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void send();
+                }}
+                onDragOver={(event) => {
+                  if (!acceptsAddressDrag(event) && !heldAddress()) return;
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = "copy";
+                  setComposerArmed(true);
+                }}
+                onDragLeave={(event) => {
+                  if (event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) return;
+                  setComposerArmed(false);
+                }}
+                onDrop={(event) => {
+                  if (!acceptsAddressDrag(event) && !heldAddress()) return;
+                  event.preventDefault();
+                  setComposerArmed(false);
+                  identifyDroppedAddress(addressFromDrop(event));
+                }}
+                onPointerUp={() => {
+                  if (!heldAddress() || document.body.dataset.paiAddressNative === "on") return;
+                  dropHeldAddress("live");
+                }}
+                className={cn(
+                  "live-composer rounded-[22px] bg-white p-2.5 transition",
+                  composerArmed || holdingAddress ? "bg-[#fffaf3]" : "",
+                )}
+              >
+                <div className="flex flex-wrap items-end gap-1.5">
+                <div ref={menuRef} className="relative mb-0.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setMenuOpen((value) => !value)}
+                    aria-label="Quick actions"
+                    aria-expanded={menuOpen}
+                    className={cn(
+                      "inline-flex h-9 w-9 items-center justify-center rounded-full transition",
+                      menuOpen ? "bg-[#f2f2ee] text-[#3a3a35]" : "text-[#a4a49c] hover:bg-[#f2f2ee] hover:text-[#3a3a35]",
+                    )}
+                  >
+                    <Plus size={17} strokeWidth={1.9} className={cn("transition-transform duration-200", menuOpen && "rotate-45")} />
+                  </button>
+                  {menuOpen && (
+                    <div className="animate-enter absolute bottom-11 left-0 z-20 w-[248px] rounded-[16px] border border-[#eaeae4] bg-white p-1 shadow-[0_12px_40px_rgba(20,20,16,0.12)]">
+                      {QUICK_ACTIONS.map((action) => (
+                        <button
+                          key={action.label}
+                          type="button"
+                          onClick={() => {
+                            setMenuOpen(false);
+                            if (action.prompt) void send(action.prompt);
+                            else {
+                              setDraft(action.prefill ?? "");
+                              inputRef.current?.focus();
+                            }
+                          }}
+                          className="flex w-full items-center gap-2.5 rounded-[11px] px-2.5 py-2 text-left transition hover:bg-[#f7f7f4]"
+                        >
+                          <action.icon size={14} strokeWidth={1.8} className="shrink-0 text-[#a4a49c]" />
+                          <span className="min-w-0 flex-1 truncate text-[13px] text-[#26261f]">{action.label}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <label
+                  className="relative order-first w-full min-w-0 basis-full px-2"
+                >
+                  <span className="sr-only">Message Live</span>
+                  {holdingAddress || composerArmed ? (
+                    <span className="pointer-events-none absolute inset-0 flex items-center text-[13.5px] text-[#b08958]">
+                      Drop here to identify in Live
+                    </span>
+                  ) : (
+                    !atHome && <LiveTypewriter active={mounted && composerIdle} />
+                  )}
+                  <textarea
+                    ref={inputRef}
+                    value={draft}
+                    rows={atHome ? 2 : 1}
+                    onChange={(event) => setDraft(event.target.value)}
+                    onFocus={() => setFocused(true)}
+                    onBlur={() => setFocused(false)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Escape" && busy) stopReply();
+                      if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                        event.preventDefault();
+                        void send();
+                      }
+                    }}
+                    maxLength={2000}
+                    placeholder={busy ? "Change direction or ask something else…" : atHome ? "Ask anything, or drop in an address…" : focused ? "Ask a question or name an area…" : ""}
+                    className="max-h-[168px] min-h-[38px] w-full resize-none bg-transparent py-2 text-[14px] leading-6 text-[#1c1c19] outline-none placeholder:text-[#b0b0a8]"
+                  />
+                </label>
+                <button
+                  type="button"
+                  className="ml-auto mb-0.5 inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-full px-3 text-[#66685e] transition hover:bg-[#f2f2ee] hover:text-[#3a3a35] disabled:opacity-30"
+                  aria-label="Talk to Live"
+                  title="Talk to Live"
+                  onPointerDown={(event) => {
+                    setMenuOpen(false);
+                    voice.handlePointerDown(event);
+                  }}
+                  onClick={voice.handleClick}
+                  disabled={busy}
+                >
+                  <Mic size={16} strokeWidth={1.9} /><span className="text-[12px] font-medium">Talk to Live</span>
+                </button>
+                {busy && <button type="button" onClick={() => stopReply()} className="live-stop" aria-label="Stop response" title="Stop response (Esc)"><Square size={13} fill="currentColor" /></button>}
+                <button
+                  type="submit"
+                  disabled={!draft.trim()}
+                  aria-label={busy ? "Send new direction" : "Send"}
+                  className="mb-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#171715] text-white transition hover:bg-black disabled:bg-[#e6e6e0] disabled:text-[#b0b0a8]"
+                >
+                  <ArrowUp size={16} strokeWidth={2.2} />
+                </button>
+                </div>
+              </form>
+              )}
+            </div>
+
+            <p className={cn("mt-3 text-[10px] text-[#92938c]", atHome ? "flex flex-wrap justify-between gap-2 px-1" : "text-center")}>
+              {busy ? "You can stop or send a new direction at any time." : "Research with public sources."}
+              <span className="ml-3 hidden sm:inline text-[#8a8a84]">Enter to send · Shift + Enter for a new line</span>
+            </p>
+          </div>
+        </div>
+  );
+
   return (
     <main className="live-workspace flex h-[100dvh] overflow-hidden bg-[#fbfbf9]">
       <LiveSidebar
@@ -593,8 +750,6 @@ export function LivePage() {
         onOpenSession={(id) => void openSession(id)}
         onNewChat={newChat}
         onHome={newChat}
-        memory={memory}
-        queue={queue}
         atHome={atHome}
         busy={busy}
       />
@@ -607,7 +762,7 @@ export function LivePage() {
               alt="PAI"
               width={960}
               height={321}
-              className="h-[22px] w-auto lg:hidden"
+              className="ml-12 h-[18px] w-auto hidden sm:block lg:hidden"
               priority
             />
             {busy && <WorkingDots size={11} className="text-[#26261f] lg:hidden" />}
@@ -634,88 +789,48 @@ export function LivePage() {
           setAwayFromBottom(away);
         }} className={cn("min-h-0 flex-1 overflow-y-auto px-4 sm:px-8", atHome && "flex flex-col")}>
           {atHome ? (
-            <div className="live-welcome mx-auto my-auto w-full max-w-[720px] py-8">
+            <div className="live-welcome mx-auto my-auto w-full max-w-[840px] py-12">
               <div className="live-welcome-heading">
-                <p className="live-eyebrow"><span aria-hidden="true" /> YOUR FIELD WORKSPACE</p>
-                <h1>Good leads start<br /><span className="live-hero-mark">with a conversation.</span></h1>
-                <p className="live-welcome-description">Find your next stop. Get the context. Make the call.<br className="hidden sm:block" /> Start anywhere — you can change direction as you go.</p>
+                <div>
+                  <h1>Make your<br /><span>next move.</span></h1>
+                  <p className="live-welcome-description">Find the right business. Get the context.<br />Take it from there.</p>
+                </div>
+                <LiveHeroArt />
               </div>
+              <div className="live-home-composer">{composer}</div>
               <div className="live-starters" aria-label="Start a conversation">
                 {[
-                  { title: "Explore an area", detail: "Turn a city or ZIP into a shortlist", icon: MapPin, prefill: "Find businesses in " },
-                  { title: "Find the independents", detail: "Look for home-based businesses", icon: Home, prefill: "Find home-based businesses in " },
-                  { title: "Make a better first call", detail: "Work on an opener that sounds like you", icon: Phone, prefill: "Help me write a natural call opener for " },
+                  { title: "Explore an area", detail: "Build a local shortlist", icon: MapPin, prefill: "Find businesses in " },
+                  { title: "Look up a business", detail: "Get the context before you call", icon: Building2, prefill: "Tell me about " },
+                  { title: "Talk through an idea", detail: "Plan your next move", icon: Phone, prefill: "Help me think through " },
                 ].map((starter) => (
                   <button key={starter.title} type="button" className="live-starter" onClick={() => {
                     setDraft(starter.prefill);
                     inputRef.current?.focus();
                   }}>
-                    <span className="live-starter-top"><starter.icon size={18} strokeWidth={1.6} /><ArrowUpRight size={16} /></span>
-                    <strong>{starter.title}</strong><span>{starter.detail}</span>
+                    <span className="live-starter-icon"><starter.icon size={17} strokeWidth={1.5} /></span>
+                    <span><strong>{starter.title}</strong><small>{starter.detail}</small></span>
+                    <ArrowUpRight size={14} className="live-starter-arrow" />
                   </button>
                 ))}
               </div>
-
-              <div className="mt-8 grid gap-2.5 sm:grid-cols-2">
-                <HomeCard title="Pick up where you left off" icon={Clock3}>
-                  {recent.length ? (
-                    <ul className="-mx-1.5">
-                      {recent.map((item) => (
-                        <li key={item.id}>
-                          <button
-                            type="button"
-                            onClick={() => void openSession(item.id)}
-                            className="group flex w-full items-center gap-2.5 rounded-[9px] px-1.5 py-[7px] text-left transition hover:bg-[#f7f7f4]"
-                          >
-                            <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[7px] bg-[#f2f2ee] text-[#8a8a84]">
-                              <Sparkles size={11} />
-                            </span>
-                            <span className="min-w-0 flex-1 truncate text-[13px] text-[#26261f]">{item.title}</span>
-                            <ChevronRight size={13} className="shrink-0 text-[#cfcfc7] transition group-hover:text-[#8a8a84]" />
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="text-[13px] leading-6 text-[#a4a49c]">
-                      Nothing yet. Name an area below and Live will build your first list.
-                    </p>
-                  )}
-                </HomeCard>
-
-                <HomeCard title="What Live remembers" icon={Brain}>
-                  {queue?.locationLabel && (
-                    <div className="mb-2.5 flex items-start gap-2.5 rounded-[12px] bg-[#f7f7f4] px-2.5 py-2">
-                      <MapPin size={12} strokeWidth={1.9} className="mt-[3px] shrink-0 text-[#8a8a84]" />
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-[13px] font-semibold tracking-[-0.01em] text-[#14140f]">
-                          {queue.locationLabel}
-                        </p>
-                        <p className="text-[11.5px] leading-5 text-[#a4a49c]">
-                          {queue.total} on the list · {queue.radiusMiles} mi radius
-                        </p>
-                      </div>
-                    </div>
-                  )}
-                  {facts.length ? (
-                    <ul className="space-y-1">
-                      {facts.map((item) => (
-                        <li key={item.id} className="flex gap-2 text-[12.5px] leading-5 text-[#5f5f59]">
-                          <span className="mt-[8px] h-1 w-1 shrink-0 rounded-full bg-[#cfcfc7]" />
-                          <span className="min-w-0 flex-1">{item.text}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : queue?.locationLabel ? null : (
-                    <p className="text-[13px] leading-6 text-[#a4a49c]">
-                      Live keeps your territory, the industries you sell, and who you already called.
-                    </p>
-                  )}
-                </HomeCard>
-
-              </div>
-
-
+              {(recent.length > 0 || facts.length > 0) && <div className="live-home-context">
+                {recent.length > 0 && <section className="min-w-0">
+                  <h2>Recent conversations</h2>
+                  <div className="mt-3">
+                    {recent.slice(0, 2).map((item) => <button key={item.id} type="button" onClick={() => void openSession(item.id)} title={item.title}
+                      className="group flex h-11 w-full items-center gap-3 rounded-lg text-left transition hover:bg-[#f1f2ed]">
+                      <Clock3 size={14} strokeWidth={1.6} className="shrink-0 text-[#9a9b92]" />
+                      <span className="min-w-0 flex-1 truncate text-[12px] text-[#64675d]">{item.title}</span>
+                      <ChevronRight size={13} className="mr-2 shrink-0 text-[#a5a69d]" />
+                    </button>)}
+                  </div>
+                </section>}
+                {facts.length > 0 && <section className="min-w-0">
+                  <h2>Working context</h2>
+                  <p className="mt-5 text-[12px] leading-[1.8] text-[#797c72]">{facts[0].text}</p>
+                </section>}
+              </div>}
             </div>
           ) : (
             <div className="mx-auto w-full max-w-[720px] space-y-6 pb-8 pt-6">
@@ -764,199 +879,7 @@ export function LivePage() {
           )}
         </div>
 
-        <div className="shrink-0 px-4 pb-4 sm:px-8">
-          <div className="mx-auto w-full max-w-[720px]">
-            {awayFromBottom && !atHome && <div className="mb-3 flex justify-center">
-              <button type="button" className="live-jump" onClick={() => {
-                followAnswer.current = true;
-                setAwayFromBottom(false);
-                scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: reduceMotion ? "instant" : "smooth" });
-              }}><ArrowDown size={14} /> Latest reply</button>
-            </div>}
-            {notice && <p role="status" className="mb-2 text-center text-[12px] text-[#73736b]">{notice}</p>}
-            {(error || voiceNotice) && (
-              <p role="alert" className="mb-2 text-[12.5px] font-medium text-[#a63a31]">
-                {error || voiceNotice}
-              </p>
-            )}
-
-            {current && !atHome && queue && (
-              <section className="live-active-lead" aria-label="Current business">
-                <div className="live-queue-progress" aria-hidden="true"><span style={{ transform: `scaleX(${(queue.currentIndex + 1) / queue.total})` }} /></div>
-                <div className="live-active-lead-row">
-                  <button type="button" className="live-list-toggle" aria-expanded={listOpen} aria-controls="live-queue-list" onClick={() => setListOpen((value) => !value)}>
-                    <ListFilter size={16} /><span><strong>{current.name}</strong><small>{queue.currentIndex + 1} of {queue.total} · {queue.locationLabel}</small></span>
-                  </button>
-                  <div className="live-lead-actions">
-                    {current.phone && <a href={`tel:${current.phone}`} aria-label={`Call ${current.name}`}><Phone size={14} /><span>Call</span></a>}
-                    <button type="button" onClick={() => void send(`Brief me on ${current.name}`)} disabled={busy}>Brief</button>
-                    <button type="button" onClick={() => void send("Skip to the next one")} disabled={busy || queue.currentIndex >= queue.total - 1}>Next <ChevronRight size={14} /></button>
-                  </div>
-                </div>
-                {listOpen && <div id="live-queue-list" className="live-queue-list">
-                  <label className="live-queue-filter"><Search size={14} /><span className="sr-only">Filter your list</span><input value={listFilter} onChange={(event) => setListFilter(event.target.value)} placeholder="Find a business in this list…" /></label>
-                  {filteredCards.map((card) => <ProspectRow key={card.id} card={card} index={queue.cards.findIndex((item) => item.id === card.id)} current={card.id === current.id} onOpen={() => void send(`Tell me about ${card.name}`)} />)}
-                  {!filteredCards.length && <p className="p-3 text-[13px] text-[#73736b]">No businesses match that filter.</p>}
-                </div>}
-              </section>
-            )}
-
-            <BorderBeam
-              size="md"
-              colorVariant="sunset"
-              theme="light"
-              active={!reduceMotion && (busy || focused || Boolean(draft.trim()) || voiceOpen)}
-              duration={busy || voiceOpen ? 1.5 : 2.4}
-              brightness={busy || voice.listening ? 1.25 : 1.05}
-              saturation={1.45}
-              hueRange={18}
-              strength={busy || voiceOpen ? 1 : focused ? 0.9 : 0.7}
-              borderRadius={24}
-              className="w-full"
-            >
-              {voiceOpen ? (
-                <div className="overflow-hidden rounded-[24px] border border-[#e6e6e0] bg-white shadow-[0_2px_6px_rgba(20,20,16,0.04),0_16px_40px_rgba(20,20,16,0.06)]">
-                  <LiveVoiceEdge
-                    analyserRef={voice.analyserRef}
-                    onCancel={voice.cancel}
-                    onFinish={voice.finish}
-                    reduceMotion={reduceMotion}
-                    stage={voice.stage}
-                  />
-                </div>
-              ) : (
-              <form
-                data-pai-address-drop="live"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void send();
-                }}
-                onDragOver={(event) => {
-                  if (!acceptsAddressDrag(event) && !heldAddress()) return;
-                  event.preventDefault();
-                  event.dataTransfer.dropEffect = "copy";
-                  setComposerArmed(true);
-                }}
-                onDragLeave={(event) => {
-                  if (event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) return;
-                  setComposerArmed(false);
-                }}
-                onDrop={(event) => {
-                  if (!acceptsAddressDrag(event) && !heldAddress()) return;
-                  event.preventDefault();
-                  setComposerArmed(false);
-                  identifyDroppedAddress(addressFromDrop(event));
-                }}
-                onPointerUp={() => {
-                  if (!heldAddress() || document.body.dataset.paiAddressNative === "on") return;
-                  dropHeldAddress("live");
-                }}
-                className={cn(
-                  "rounded-[24px] border bg-white p-1.5 shadow-[0_2px_6px_rgba(20,20,16,0.04),0_16px_40px_rgba(20,20,16,0.06)] transition",
-                  composerArmed || holdingAddress ? "border-[#e0c19a] bg-[#fffaf3]" : "border-[#e6e6e0]",
-                )}
-              >
-                <div className="flex items-end gap-1.5">
-                <div ref={menuRef} className="relative mb-0.5 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => setMenuOpen((value) => !value)}
-                    aria-label="Quick actions"
-                    aria-expanded={menuOpen}
-                    className={cn(
-                      "inline-flex h-9 w-9 items-center justify-center rounded-full transition",
-                      menuOpen ? "bg-[#f2f2ee] text-[#3a3a35]" : "text-[#a4a49c] hover:bg-[#f2f2ee] hover:text-[#3a3a35]",
-                    )}
-                  >
-                    <Plus size={17} strokeWidth={1.9} className={cn("transition-transform duration-200", menuOpen && "rotate-45")} />
-                  </button>
-                  {menuOpen && (
-                    <div className="animate-enter absolute bottom-11 left-0 z-20 w-[248px] rounded-[16px] border border-[#eaeae4] bg-white p-1 shadow-[0_12px_40px_rgba(20,20,16,0.12)]">
-                      {QUICK_ACTIONS.map((action) => (
-                        <button
-                          key={action.label}
-                          type="button"
-                          onClick={() => {
-                            setMenuOpen(false);
-                            if (action.prompt) void send(action.prompt);
-                            else {
-                              setDraft(action.prefill ?? "");
-                              inputRef.current?.focus();
-                            }
-                          }}
-                          className="flex w-full items-center gap-2.5 rounded-[11px] px-2.5 py-2 text-left transition hover:bg-[#f7f7f4]"
-                        >
-                          <action.icon size={14} strokeWidth={1.8} className="shrink-0 text-[#a4a49c]" />
-                          <span className="min-w-0 flex-1 truncate text-[13px] text-[#26261f]">{action.label}</span>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                <label
-                  className="relative min-w-0 flex-1"
-                >
-                  <span className="sr-only">Message Live</span>
-                  {holdingAddress || composerArmed ? (
-                    <span className="pointer-events-none absolute inset-0 flex items-center text-[13.5px] text-[#b08958]">
-                      Drop here to identify in Live
-                    </span>
-                  ) : (
-                    <LiveTypewriter active={mounted && composerIdle} />
-                  )}
-                  <textarea
-                    ref={inputRef}
-                    value={draft}
-                    rows={1}
-                    onChange={(event) => setDraft(event.target.value)}
-                    onFocus={() => setFocused(true)}
-                    onBlur={() => setFocused(false)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Escape" && busy) stopReply();
-                      if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-                        event.preventDefault();
-                        void send();
-                      }
-                    }}
-                    maxLength={2000}
-                    placeholder={busy ? "Change direction or ask something else…" : focused ? "Ask a question or name an area…" : ""}
-                    className="max-h-[168px] min-h-[38px] w-full resize-none bg-transparent py-2 text-[14px] leading-6 text-[#1c1c19] outline-none placeholder:text-[#b0b0a8]"
-                  />
-                </label>
-                <button
-                  type="button"
-                  className="mb-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[#a4a49c] transition hover:bg-[#f2f2ee] hover:text-[#3a3a35] disabled:opacity-30"
-                  aria-label="Talk to Live"
-                  title="Talk to Live"
-                  onPointerDown={(event) => {
-                    setMenuOpen(false);
-                    voice.handlePointerDown(event);
-                  }}
-                  onClick={voice.handleClick}
-                  disabled={busy}
-                >
-                  <Mic size={16} strokeWidth={1.9} />
-                </button>
-                {busy && <button type="button" onClick={() => stopReply()} className="live-stop" aria-label="Stop response" title="Stop response (Esc)"><Square size={13} fill="currentColor" /></button>}
-                <button
-                  type="submit"
-                  disabled={!draft.trim()}
-                  aria-label={busy ? "Send new direction" : "Send"}
-                  className="mb-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#171715] text-white transition hover:bg-black disabled:bg-[#e6e6e0] disabled:text-[#b0b0a8]"
-                >
-                  <ArrowUp size={16} strokeWidth={2.2} />
-                </button>
-                </div>
-              </form>
-              )}
-            </BorderBeam>
-
-            <p className="mt-2.5 text-center text-[11px] text-[#85857d]">
-              {busy ? "You can stop or send a new direction at any time." : "Public sources. Useful context. You’re in control."}
-              <span className="ml-3 hidden sm:inline text-[#8a8a84]">Enter to send · Shift + Enter for a new line</span>
-            </p>
-          </div>
-        </div>
+        {!atHome && composer}
       </section>
     </main>
   );
