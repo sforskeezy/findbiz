@@ -452,7 +452,7 @@ test('coach controls read the live call state, not a stale render', () => {
 test('minimizing keeps listening and the next move stays announced', () => {
   const modal = readModalSource();
   assert.match(modal, /useLiveCoachMic\(\{\s*\n\s*active: true/);
-  assert.match(modal, /const listening = !muted && mic\.stage !== "paused"/);
+  assert.match(modal, /const listening = !ending && !muted && mic\.stage !== "paused" && mic\.stage !== "connecting"/);
   assert.match(modal, /live-coach-line" aria-live="assertive"/);
   const pill = modal.match(/className="live-coach-pill"[\s\S]*?<\/button>/);
   assert.ok(pill, 'the minimized pill exists');
@@ -462,7 +462,7 @@ test('minimizing keeps listening and the next move stays announced', () => {
 
 test('the status line stays honest about who is being heard', () => {
   const modal = readModalSource();
-  const block = modal.match(/const status = muted([\s\S]*?);\n/);
+  const block = modal.match(/const status = ending([\s\S]*?);\n/);
   assert.ok(block, 'the status line exists');
   const stageNames = new Set(['connecting', 'listening', 'speaking', 'transcribing', 'paused']);
   const states = [...block[1].matchAll(/"([^"]+)"/g)]
