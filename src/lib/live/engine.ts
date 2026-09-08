@@ -2101,19 +2101,6 @@ async function heuristicReply(text: string, session: LiveSession, trace: TurnTra
   return "I couldn’t reach the conversation service for that reply. Your list is still here. Please try your message again.";
 }
 
-async function appendLiveThought(trace: TurnTrace, chunk: string) {
-  const piece = chunk.replace(/\s+/g, " ");
-  if (!piece.trim()) return;
-  if (!trace.steps.length) await trackStep(trace, "Thinking");
-  const last = trace.steps[trace.steps.length - 1];
-  if (!last) return;
-  const glued = `${last.thought || ""}${last.thought && !/\s$/.test(last.thought) && !/^\s/.test(piece) ? " " : ""}${piece}`;
-  const next = glued.replace(/\s+/g, " ").trim().slice(0, 8_000);
-  if (next === last.thought) return;
-  last.thought = next;
-  await trace.emit({ type: "step", step: { ...last } });
-}
-
 async function executeLiveTurn(input: {
   sessionId?: string | null;
   message: string;
@@ -2200,6 +2187,7 @@ async function executeLiveTurn(input: {
   if (turn.search) {
     session.brief = brief;
     session.pendingLookup = null;
+    session.activeCompany = null;
   }
   session.awaitingLocation = turn.awaitingLocation;
   input.signal?.throwIfAborted();
@@ -2503,23 +2491,10 @@ async function executeLiveTurn(input: {
     if (trace.companyResearch) {
       attempted.add(`research_business:${JSON.stringify({ name: trace.companyResearch.business.name })}`);
     }
-    let thoughtBuffer = "";
-    let thoughtFlush: Promise<void> | null = null;
-    const queueThought = (chunk: string) => {
-      thoughtBuffer += chunk;
-      if (thoughtFlush) return thoughtFlush;
-      thoughtFlush = new Promise((resolve) => setTimeout(resolve, 70)).then(async () => {
-        const pending = thoughtBuffer;
-        thoughtBuffer = "";
-        thoughtFlush = null;
-        if (pending) await appendLiveThought(trace, pending);
-      });
-      return thoughtFlush;
-    };
-
     try {
       for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
         input.signal?.throwIfAborted();
+        let reasoningStarted = false;
         const reply = await groqChat(messages, {
           signal: input.signal,
           tools: round < MAX_TOOL_ROUNDS - 1,
@@ -2527,26 +2502,18 @@ async function executeLiveTurn(input: {
             streamed = true;
             await emit({ type: "delta", text: chunk });
           },
-          onReasoning: async (chunk) => {
-            void queueThought(chunk);
+          onReasoning: async () => {
+            if (reasoningStarted) return;
+            reasoningStarted = true;
+            // Show actual progress separately from the preceding tool. Raw model
+            // deliberation is neither a search result nor a user-facing status.
+            await trackStep(trace, "Preparing a reply", trace.sources.length ? "Using the sources collected for your request" : null);
           },
           onDiscard: async () => {
             streamed = false;
             await emit({ type: "delta_reset" });
           },
         });
-        if (thoughtFlush) await thoughtFlush;
-        if (thoughtBuffer) {
-          await appendLiveThought(trace, thoughtBuffer);
-          thoughtBuffer = "";
-        }
-
-        if (reply.reasoning) {
-          if (!trace.steps.length) await trackStep(trace, "Thinking");
-          const last = trace.steps[trace.steps.length - 1];
-          if (last && !last.thought) last.thought = reply.reasoning.replace(/\s+/g, " ").trim().slice(0, 8_000);
-        }
-
         if (!reply.toolCalls.length) {
           content = reply.content;
           break;

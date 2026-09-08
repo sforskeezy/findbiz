@@ -26,8 +26,8 @@ const MIME_CANDIDATES = [
   "audio/ogg;codecs=opus",
 ];
 
-const VOICE_SILENCE_HOLD_MS = 1500;
-const VOICE_SPEECH_ONSET_MS = 200;
+const VOICE_SILENCE_HOLD_MS = 850;
+const VOICE_SPEECH_ONSET_MS = 140;
 const VOICE_MIN_UTTERANCE_MS = 550;
 const VOICE_NOISE_FLOOR_CEILING = 0.05;
 const VOICE_MONITOR_INTERVAL_MS = 55;
@@ -44,7 +44,7 @@ const STAGE_SETTLE_MS = 420;
 /** Reopens allowed if the device disappears mid-call, before giving up loudly. */
 const MIC_RECOVERY_ATTEMPTS = 3;
 
-export type LiveCoachMicStage = "listening" | "speaking" | "transcribing" | "paused";
+export type LiveCoachMicStage = "connecting" | "listening" | "speaking" | "transcribing" | "paused";
 
 type Segment = {
   chunks: Blob[];
@@ -89,12 +89,14 @@ function audioBlobToDataUrl(blob: Blob) {
 export function useLiveCoachMic({
   active,
   muted,
+  resetKey = 0,
   getVocabulary,
   onUtterance,
   onError,
 }: {
   active: boolean;
   muted: boolean;
+  resetKey?: number;
   getVocabulary: () => string;
   onUtterance: (text: string) => void;
   onError: (message: string) => void;
@@ -121,11 +123,12 @@ export function useLiveCoachMic({
   const queueRef = useRef<PendingSegment[]>([]);
   const pendingRef = useRef(0);
   const drainingRef = useRef(false);
+  const drainPromiseRef = useRef<Promise<void> | null>(null);
   const inflightRef = useRef<AbortController | null>(null);
   /** One notice per rough patch. Cleared by the next answer from the endpoint. */
   const errorLatchRef = useRef(false);
 
-  const stageRef = useRef<LiveCoachMicStage>(muted ? "paused" : "listening");
+  const stageRef = useRef<LiveCoachMicStage>(muted ? "paused" : "connecting");
   const levelRef = useRef(0);
   const calmSinceRef = useRef(0);
   const listenersRef = useRef(new Set<() => void>());
@@ -224,6 +227,10 @@ export function useLiveCoachMic({
       applyStage("paused", true);
       return;
     }
+    if (!isLiveAudioStream(streamRef.current)) {
+      applyStage(errorLatchRef.current ? "paused" : "connecting", true);
+      return;
+    }
     if (speechRef.current.hasSpeech) {
       applyStage("speaking", true);
       return;
@@ -243,7 +250,7 @@ export function useLiveCoachMic({
       if (sessionId !== sessionRef.current) return;
       const response = await fetch("/api/live/transcribe", {
         method: "POST",
-        signal: controller.signal,
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(12_000)]),
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ audio, context: getVocabularyRef.current() }),
       });
@@ -283,7 +290,7 @@ export function useLiveCoachMic({
             await transcribeSegment(next.blob, next.sessionId);
           }
         } finally {
-          pendingRef.current = Math.max(0, pendingRef.current - 1);
+          if (next.sessionId === sessionRef.current) pendingRef.current = Math.max(0, pendingRef.current - 1);
           syncStage();
         }
       }
@@ -304,7 +311,7 @@ export function useLiveCoachMic({
         pendingRef.current = Math.max(0, pendingRef.current - 1);
       }
       syncStage();
-      void drainQueue();
+      if (!drainingRef.current) drainPromiseRef.current = drainQueue();
     },
     [drainQueue, syncStage],
   );
@@ -558,7 +565,9 @@ export function useLiveCoachMic({
 
     const open = async () => {
       if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+        errorLatchRef.current = true;
         onErrorRef.current("Voice input is not available in this browser.");
+        applyStage("paused", true);
         return;
       }
       try {
@@ -571,6 +580,8 @@ export function useLiveCoachMic({
           return;
         }
         streamRef.current = stream;
+        errorLatchRef.current = false;
+        onErrorRef.current("");
 
         const carried = audioContextRef.current;
         const context = carried && carried.state !== "closed" ? carried : new AudioContext();
@@ -597,7 +608,9 @@ export function useLiveCoachMic({
         startCapture();
       } catch {
         if (cancelled || sessionId !== sessionRef.current) return;
-        onErrorRef.current("Microphone access is needed to listen to you only.");
+        errorLatchRef.current = true;
+        applyStage("paused", true);
+        onErrorRef.current("Allow microphone access, then try again.");
       }
     };
 
@@ -607,7 +620,7 @@ export function useLiveCoachMic({
       teardown();
     };
     // `reopen` is the recovery trigger: bumping it reopens a dead device.
-  }, [active, applyStage, reopen, startCapture, teardown]);
+  }, [active, applyStage, reopen, resetKey, startCapture, teardown]);
 
   // Mute is applied here and only here, so open and mute can land in either order.
   useEffect(() => {
@@ -634,5 +647,19 @@ export function useLiveCoachMic({
     [teardown],
   );
 
-  return { stage, level };
+  const finish = useCallback(async () => {
+    // Freeze capture, flush the last spoken segment, then wait for ordered ASR.
+    mutedRef.current = true;
+    const recorder = recorderRef.current;
+    const stopped = recorder?.state === "recording"
+      ? new Promise<void>((resolve) => recorder.addEventListener("stop", () => resolve(), {once: true}))
+      : Promise.resolve();
+    stopCapture(true);
+    streamRef.current?.getAudioTracks().forEach((track) => { track.enabled = false; });
+    applyStage("paused", true);
+    await stopped;
+    await drainPromiseRef.current;
+  }, [applyStage, stopCapture]);
+
+  return { stage, level, finish };
 }

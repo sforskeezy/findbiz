@@ -29,6 +29,18 @@ test('missing secondary facts do not erase a sourced business answer', () => {
 });
 
 test('ordinary category discovery is not mistaken for a named company', () => {
+  const landscape = 'find me one for landscape in lugoff that ranks high';
+  assert.equal(parseLiveBrief(landscape).targetName, null);
+  assert.equal(parseLiveBrief(landscape).locationHint, 'lugoff');
+  assert.equal(parseLiveBrief(landscape).requestedCount, 1);
+  assert.deepEqual(parseLiveBrief(landscape).searchTerms, ['lawn care service', 'landscaping']);
+  assert.equal(isLiveSearchRequest(landscape), true);
+  assert.equal(planWebLookup(landscape), null);
+  for (const text of ['Find me one for plumbing in Lugoff SC', 'Find a highly rated landscape company in Lugoff SC', 'Find two lawn care businesses in Lugoff SC']) {
+    assert.equal(parseLiveBrief(text).targetName, null, text);
+    assert.equal(planWebLookup(text), null, text);
+    assert.ok(parseLiveBrief(text).searchTerms.every(term => !/one|two|rated/.test(term)));
+  }
   for (const text of ['Find plumbers in Lugoff, South Carolina', 'Find 3 home-based businesses in Charlotte, North Carolina', 'Find deck builders in Lugoff, SC']) {
     assert.equal(parseLiveBrief(text).targetName, null, text);
     assert.equal(isLiveSearchRequest(text), true, text);

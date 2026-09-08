@@ -983,6 +983,7 @@ export function LivePage() {
 
       {coachOpen && coachBusiness ? (
         <LiveCoachModal
+          key={`${coachBusiness.name}:${coachBusiness.location ?? ""}`}
           business={coachBusiness}
           minimized={coachMinimized}
           sessionId={sessionId}

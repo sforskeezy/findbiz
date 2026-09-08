@@ -95,6 +95,19 @@ test('short valid answers are not replaced with a business pitch', async () => {
   assert.equal(state.session.messages.at(-1).content, 'Yes');
 });
 
+test('thinking shows progress without placing raw model deliberation under a search step', async () => {
+  respond = () => new Response([
+    `data: ${JSON.stringify({choices:[{delta:{reasoning_content:'Internal deliberation fragment'}}]})}\n\n`,
+    `data: ${JSON.stringify({choices:[{delta:{content:'Ask one clear question and listen.'}}]})}\n\n`,
+    'data: [DONE]\n\n',
+  ].join(''), {headers:{'Content-Type':'text/event-stream'}});
+  const state = await runLiveTurn({message:'How can I make my opening question clearer?'});
+  const steps = state.session.messages.at(-1).thinking;
+  assert.ok(steps.some(step => step.label === 'Preparing a reply'));
+  assert.ok(steps.every(step => !step.thought));
+  assert.equal(state.session.messages.at(-1).content, 'Ask one clear question and listen.');
+});
+
 test('numbered advice without a queue is not treated as invented businesses', async () => {
   responseText = '1. **Listen first** — ask a question.\n2. **Keep it short** — give them room to answer.';
   const state = await runLiveTurn({ message: 'Give me two tips for talking to people.' });
@@ -563,7 +576,7 @@ test('Live Coach summary is saved to chat and not to memory', async () => {
   assert.equal(response.status, 200);
   assert.match(payload.state.session.messages.at(-1).content, /Midlands Notary/);
   assert.match(payload.state.session.messages.at(-1).content, /AT&T/);
-  assert.match(payload.state.session.messages.at(-1).content, /did not hear the customer|was not captured/i);
+  assert.doesNotMatch(payload.state.session.messages.at(-1).content, /customer audio|hear the customer|permanent memory/i);
   assert.equal((await loadMemory()).length, memoryBefore.length);
   const saved = await loadSession(session.id);
   assert.equal(saved.messages.at(-1).role, 'assistant');

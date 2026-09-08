@@ -46,6 +46,41 @@ function play(utterances, from = startCallCoach(business)) {
   return utterances.reduce((view, line) => applyRepUtterance(view.state, line), from);
 }
 
+test('empty or introductory calls do not append boilerplate to chat', () => {
+  assert.equal(formatCoachSummary(startCallCoach(business).state), '');
+  assert.equal(formatCoachSummary(play(['Hi, this is Skylar with Spectrum Business.']).state), '');
+  assert.equal(resolveCoachBusiness({activeCompany:{name:'one for landscape'}}), null);
+});
+
+test('provider recaps support ordinary phrasing and ASR variants', () => {
+  for (const text of ['Oh, you use AT&T.', 'Okay, you have AT and T.', 'So you are with AT&T.', "You're using AT&T.", 'They use AT&T.']) {
+    const view = play([text]);
+    assert.equal(view.state.facts.find(item => item.key === 'provider')?.value, 'AT&T', text);
+    assert.match(view.suggestion.line, /how have they been treating you/i, text);
+    assert.doesNotMatch(coachCopyForScan(view), /cannot hear|couldn.t hear|customer audio/i);
+  }
+  const combined = play(['Hi, this is Skylar from Spectrum. Oh, you use AT&T.']);
+  assert.equal(combined.state.facts.find(item => item.key === 'provider')?.value, 'AT&T');
+  const split = play(['Oh, you use.', 'AT and T?']);
+  assert.equal(split.state.facts.find(item => item.key === 'provider')?.value, 'AT&T');
+});
+
+test('questions and our offers are not treated as customer answers', () => {
+  for (const text of ['Do you use AT&T?', 'If you use AT&T, we can look at the options.', 'I can offer internet for about $150 a month.']) {
+    const view = play([text]);
+    assert.equal(view.state.facts.some(item => item.key === 'provider' || item.key === 'price'), false, text);
+  }
+});
+
+test('the latest recap moves the coach beyond a previous callback or provider question', () => {
+  const view = play(['Sounds like you’re busy, I can call you back.', 'Oh, you use AT&T.', 'So you are paying $150 a month for internet.']);
+  assert.match(view.suggestion.line, /if i could/i);
+  assert.doesNotMatch(view.suggestion.line, /call back|treating you/i);
+  const problem = applyRepUtterance(view.state, 'Oh, so the connection keeps dropping.');
+  assert.match(problem.suggestion.line, /what part of the work gets interrupted/i);
+  assert.doesNotMatch(problem.suggestion.line, /all-in|treating you/i);
+});
+
 test('/livemode opens using the current business', () => {
   const resolved = resolveCoachBusiness({
     activeCompany: {
@@ -214,9 +249,7 @@ test('coach summary keeps useful context and not the full transcript', () => {
   const summary = formatCoachSummary(view.state);
   assert.match(summary, /Midlands Notary/);
   assert.match(summary, /AT&T/);
-  assert.match(summary, /did not hear the customer|was not captured/i);
-  assert.match(summary, /inferred from how you responded/i);
-  assert.match(summary, /not saved as permanent memory|nothing from this call was saved as permanent memory/i);
+  assert.doesNotMatch(summary, /customer audio|hear the customer|permanent memory|Live Coach/i);
   assert.doesNotMatch(summary, /Oh, you use AT&T\?/);
   const cleared = resetCallCoach(view.state);
   assert.equal(cleared.state.facts.length, 0);
@@ -228,7 +261,7 @@ test('Live Coach capture code is rep-mic only', () => {
   assert.match(mic, /getUserMedia/);
   assert.doesNotMatch(mic, /getDisplayMedia|captureStream|system audio|tabCapture/i);
   const modal = readModalSource();
-  assert.match(modal, /Listening to you only/);
+  assert.doesNotMatch(modal, /cannot hear the customer|customer audio was not captured/i);
   assert.doesNotMatch(modal, /getDisplayMedia/);
 });
 
@@ -364,13 +397,13 @@ test('a no-speech transcription is silent and a real error does not end the sess
 test('a mic that disappears mid-call reopens before it gives up', () => {
   const mic = readMicSource();
   assert.match(mic, /MIC_RECOVERY_ATTEMPTS/);
-  const recovery = mic.match(/if \(!isLiveAudioStream\(streamRef\.current\)\) \{([\s\S]*?)\n {4}\}/);
+  const recovery = mic.slice(mic.indexOf('const tick = useCallback')).match(/if \(!isLiveAudioStream\(streamRef\.current\)\) \{([\s\S]*?)\n {4}\}/);
   assert.ok(recovery, 'a dead device is detected on the monitor tick');
   assert.match(recovery[1], /stopMonitor\(\)/);
   assert.match(recovery[1], /setReopen/);
   assert.match(recovery[1], /errorLatchRef\.current = true/);
   // The reopen is what re-runs the open effect.
-  assert.match(mic, /\}, \[active, applyStage, reopen, startCapture, teardown\]\)/);
+  assert.match(mic, /\}, \[active, applyStage, reopen, resetKey, startCapture, teardown\]\)/);
 });
 
 test('Live Coach never plays anything into the call', () => {
@@ -408,9 +441,10 @@ test('Escape minimizes the coach and never ends the call', () => {
 
 test('coach controls read the live call state, not a stale render', () => {
   const modal = readModalSource();
-  assert.match(modal, /setView\(\(current\) => resetCallCoach\(current\.state\)\)/);
+  assert.match(modal, /resetCallCoach\(viewRef\.current\.state\)/);
   assert.doesNotMatch(modal, /resetCallCoach\(view\.state\)/);
-  assert.match(modal, /setView\(\(current\) => applyRepUtterance\(current\.state, text\)\)/);
+  assert.match(modal, /applyRepUtterance\(viewRef\.current\.state, text\)/);
+  assert.match(modal, /await mic\.finish\(\)/);
   assert.match(modal, /formatCoachSummary\(viewRef\.current\.state\)/);
   assert.doesNotMatch(modal, /formatCoachSummary\(view\.state\)/);
 });
@@ -430,13 +464,13 @@ test('the status line stays honest about who is being heard', () => {
   const modal = readModalSource();
   const block = modal.match(/const status = muted([\s\S]*?);\n/);
   assert.ok(block, 'the status line exists');
-  const stageNames = new Set(['listening', 'speaking', 'transcribing', 'paused']);
+  const stageNames = new Set(['connecting', 'listening', 'speaking', 'transcribing', 'paused']);
   const states = [...block[1].matchAll(/"([^"]+)"/g)]
     .map((match) => match[1])
     .filter((value) => !stageNames.has(value));
   assert.ok(states.length >= 3);
   for (const state of states) {
     assert.doesNotMatch(state, /\b(?:customer|caller|them|their side|both)\b/i, state);
-    if (!/paused/i.test(state)) assert.match(state, /listening to you only/i, state);
+    assert.doesNotMatch(state, /couldn.t hear|was not captured/i);
   }
 });

@@ -42,7 +42,7 @@ function categoryHint(text: string) {
   if (/\b(legal|lawyer|attorney|law firm|accounting|cpa|tax)\b/.test(lowered)) return "Legal & accounting";
   if (/\b(dental|dentist|medical|clinic|doctor|vet)\b/.test(lowered)) return "Medical & dental";
   if (
-    /\b(construct|contractor|roofer|plumber|hvac|electrician|handyman|painting|painter|fencing|pressure wash|lawn\s*care|lawncare|land\s*scap|landscap)\b/.test(
+    /\b(construct(?:ion)?|contractors?|roofers?|plumbers?|hvac|electricians?|handyman|painting|painter|fencing|pressure wash|lawn\s*care|lawncare|landscap(?:e|ers?|ing)?)\b/.test(
       lowered,
     )
   ) {
@@ -239,6 +239,14 @@ const GENERIC_SEARCH_WORDS = new Set([
   "gym", "gyms", "hotel", "hotels", "laundromat", "market", "motel", "pizza", "pub", "store", "stores",
 ]);
 
+const DISCOVERY_WORDS = new Set("a an the and or for of me one two three four five six seven eight nine ten some few another good great highly rated rating ratings highest top ranks rank high near nearby local".split(" "));
+
+/** Counts, trade nouns, and ranking preferences do not identify a company. */
+export function isGenericBusinessPhrase(value: string) {
+  const words = value.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  return words.length > 0 && words.every((word) => /^\d+$/.test(word) || DISCOVERY_WORDS.has(word) || GENERIC_SEARCH_WORDS.has(word));
+}
+
 function cleanSearchPhrase(value: string) {
   return value
     // A question mark left on either edge is punctuation, not a search phrase.
@@ -285,11 +293,14 @@ function searchPhrase(text: string) {
 
 function searchTerms(text: string) {
   const phrase = searchPhrase(text);
-  const found: string[] = phrase ? [phrase] : [];
+  const found: string[] = [];
 
   for (const entry of SEARCH_TERM_PATTERNS) {
     if (entry.pattern.test(text)) found.push(...entry.terms);
   }
+
+  // A category request uses the trade itself, never "one for" or "that ranks high".
+  if (!found.length && phrase && !/^(?:that|which|with)\b/i.test(phrase)) found.push(phrase);
 
   return [...new Set(found.map((item) => item.toLowerCase()))].slice(0, 4);
 }
@@ -350,6 +361,7 @@ function targetName(text: string) {
   const asked = (candidate || searchPhrase(text)).replace(RESEARCH_QUESTION_LEAD, "");
   const phrase = trimNameEdges(nameWithoutPlace(asked, extractLiveLocation(text)));
   if (!phrase) return null;
+  if (!explicit && isGenericBusinessPhrase(phrase)) return null;
   if (phrase.split(/\s+/).length > 8 || /\b(?:mistake|answer|question|chat|conversation|above|tips|ideas|help|way|something|anything|information|info|my|your|these|them|those|this|that|best|first|next|current)\b/i.test(phrase)) return null;
   // A bare concept is not a business. Explicit naming, a place, a proper
   // company in a brief request, a trade suffix, or a short alphanumeric brand

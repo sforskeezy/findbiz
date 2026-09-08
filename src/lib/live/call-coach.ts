@@ -7,6 +7,7 @@ import {
   recommendsInPersonSelling,
   repProvidedNetworkFact,
 } from "@/lib/live/sales-coach";
+import { isGenericBusinessPhrase } from "@/lib/live/intent";
 
 export type CallStage =
   | "introduction"
@@ -174,6 +175,7 @@ function endsThought(text: string) {
 }
 
 function looksLikeFragmentOf(previous: string, next: string) {
+  if (/\b(?:you(?: guys)? use|you(?:'|’)re with|you(?:'|’)re on|you are using)[,.!?]*$/i.test(previous)) return true;
   if (endsThought(previous)) return false;
   return previous.length <= FRAGMENT_MAX_CHARS && next.length <= FRAGMENT_MAX_CHARS;
 }
@@ -193,7 +195,7 @@ export function coachNeedsBusinessMessage() {
 
 export function resolveCoachBusiness(input: CoachBusinessInput): CoachBusiness | null {
   const named = input.activeCompany?.name?.trim();
-  if (named) {
+  if (named && !isGenericBusinessPhrase(named)) {
     const findings = input.activeCompany?.findings ?? [];
     const trigger =
       input.activeCompany?.publicTrigger?.trim() ||
@@ -237,7 +239,7 @@ function upsertFact(state: CallCoachState, next: CallFact) {
 
 function displayProvider(raw: string) {
   const named = raw.replace(/\s+/g, " ").trim();
-  if (/^att$/i.test(named)) return "AT&T";
+  if (/^a\s*(?:t\s*(?:&|and)?\s*t|t&t)$/i.test(named)) return "AT&T";
   if (/^t[\s-]?mobile$/i.test(named)) return "T-Mobile";
   if (/^fios$/i.test(named)) return "FiOS";
   return named;
@@ -260,9 +262,13 @@ function echoingProvider(text: string) {
 }
 
 function extractProvider(text: string) {
-  const known = text.match(PROVIDER_PATTERN);
+  // Match the recap, not our own Spectrum introduction earlier in the segment.
+  const recaps = [...text.matchAll(/\b(?:you(?:'|’)re (?:with|on|using)|you(?: guys| all)? (?:use|have|got|are (?:with|using))|(?:they|he|she) (?:use|uses|have|has|are with))\s+([^.!?]+)/gi)];
+  const context = recaps.at(-1)?.[1] ?? text;
+  const normalized = context.replace(/\ba\s*t\s*(?:and|&)\s*t\b|\ba\s+t\s+t\b/gi, "AT&T");
+  const known = normalized.match(PROVIDER_PATTERN);
   if (known?.[1]) return displayProvider(known[1]);
-  const captured = text.match(
+  const captured = normalized.match(
     /\b(?:use|using|with)\s+([A-Z][A-Za-z0-9][A-Za-z0-9.&'+-]{0,32})\??/,
   );
   if (!captured?.[1]) return null;
@@ -300,15 +306,15 @@ function inferFromUtterance(state: CallCoachState, utterance: string) {
   const text = clean(utterance);
   const quoted = quotedCustomer(text);
 
-  if (INTRO_LINE.test(text)) state.introduced = true;
+  if (INTRO_LINE.test(text) || /\b(?:this is|my name is|i(?:'|’)m) .{1,35}(?:with|from) spectrum\b/i.test(text)) state.introduced = true;
   if (REASON_LINE.test(text) || lookingForProvider(text)) {
     state.introduced = true;
     state.askedProvider = true;
   }
-  if (SATISFACTION_ASK.test(text)) state.askedSatisfaction = true;
-  if (PRICE_ASK.test(text)) state.askedPrice = true;
+  if (SATISFACTION_ASK.test(text) || /\b(?:how(?:'s| is| has) (?:it|that|the service)|happy with|working (?:out )?for you)\b.*\?/i.test(text)) state.askedSatisfaction = true;
+  if (PRICE_ASK.test(text) || /\b(?:how much (?:do|are) you|what(?:'s| is) (?:the|your) (?:monthly )?bill)\b/i.test(text)) state.askedPrice = true;
   if (CONDITIONAL_ASK.test(text)) state.askedConditionalLook = true;
-  if (OPERATIONAL_ASK.test(text)) state.askedOperational = true;
+  if (OPERATIONAL_ASK.test(text) || /\bwhat part of the work gets interrupted\b/i.test(text)) state.askedOperational = true;
   if (repProvidedNetworkFact(text) || /\bwe(?:'|’)ve finished construction\b/i.test(text)) {
     state.networkVerified = true;
     upsertFact(state, {
@@ -331,9 +337,13 @@ function inferFromUtterance(state: CallCoachState, utterance: string) {
     return;
   }
 
-  if (echoingProvider(text)) {
+  const hypotheticalProvider = /\b(?:if|whether) you\b|\b(?:do|are) you (?:use|using|with|on)\b/i.test(text);
+  if (!hypotheticalProvider && (echoingProvider(text) || /\b(?:you(?:'|’)re (?:on|using)|you (?:have|got|are with)|(?:they|he|she) (?:use|uses|have|has|are with))\b/i.test(text))) {
     const provider = extractProvider(text);
     if (provider) {
+      state.introduced = true;
+      state.askedProvider = true;
+      state.facts = state.facts.filter((item) => item.key !== "busy");
       upsertFact(state, {
         key: "provider",
         label: "Current provider",
@@ -343,7 +353,7 @@ function inferFromUtterance(state: CallCoachState, utterance: string) {
     }
   }
 
-  if (SATISFACTION_ECHO.test(text) && !SATISFACTION_ASK.test(text)) {
+  if ((SATISFACTION_ECHO.test(text) || /\b(?:glad (?:it|that)(?:'s| is) working|so (?:it(?:'s| is) working (?:well|fine)|you(?:'re| are) happy)|good to hear.{0,30}(?:working|happy)|you haven(?:'|’)t had (?:any )?(?:issues|problems))\b/i.test(text)) && !SATISFACTION_ASK.test(text)) {
     upsertFact(state, {
       key: "satisfaction",
       label: "Satisfaction",
@@ -353,6 +363,7 @@ function inferFromUtterance(state: CallCoachState, utterance: string) {
   }
 
   if (SWITCH_ECHO.test(text)) {
+    state.facts = state.facts.filter((item) => item.key !== "buying_interest");
     upsertFact(state, {
       key: "switching_resistance",
       label: "Switching resistance",
@@ -365,7 +376,9 @@ function inferFromUtterance(state: CallCoachState, utterance: string) {
     /\$\s*\d{2,4}/.test(text) ||
     /\b(?:around|about|roughly)\s+\$?\s*\d{2,4}\b/i.test(text) ||
     /\b\d{2,4}\s+for internet\b/i.test(text);
-  if (priceLike && /\b(?:oh wow|wow|around|about|so |for internet|all-in|a month|per month)\b/i.test(text)) {
+  const repOffer = /\b(?:i can offer|we can (?:do|offer)|our (?:price|offer)|i could get you|if (?:i|we) could)\b/i.test(text);
+  if (!repOffer && priceLike && /\b(?:oh wow|wow|around|about|so |for internet|all-in|a month|per month|you(?:'re| are) paying)\b/i.test(text)) {
+    state.facts = state.facts.filter((item) => item.key !== "busy");
     const price = extractPrice(text);
     if (price) {
       upsertFact(state, {
@@ -417,6 +430,14 @@ function inferFromUtterance(state: CallCoachState, utterance: string) {
       value: "Open to looking at a comparable option",
       source: "inferred_from_rep",
     });
+  }
+  if (/\b(?:so|oh|okay|understand).{0,35}(?:keeps? (?:dropping|disconnecting)|cuts? out|connection (?:drops|is slow)|service (?:drops|goes out))\b/i.test(text)) {
+    upsertFact(state, {key: "satisfaction", label: "Service concern", value: "Connection interruptions mentioned in your recap", source: "inferred_from_rep"});
+    state.askedOperational = false;
+    state.facts = state.facts.filter((item) => item.key !== "busy");
+  }
+  if (/\b(?:great|okay|so|got it).{0,25}you (?:handle|make|are the person who (?:handles|makes))\b/i.test(text)) {
+    state.facts = state.facts.filter((item) => item.key !== "decision_maker");
   }
 }
 
@@ -520,11 +541,21 @@ function pickMove(state: CallCoachState): Omit<CallCoachSuggestion, "heardCustom
   }
 
   const provider = fact(state, "provider")?.value ?? null;
-  const satisfied = Boolean(fact(state, "satisfaction"));
+  const serviceConcern = fact(state, "satisfaction")?.label === "Service concern";
+  const satisfied = Boolean(fact(state, "satisfaction")) && !serviceConcern;
   const resisted = Boolean(fact(state, "switching_resistance"));
   const priced = Boolean(fact(state, "price"));
 
-  if (provider && !state.askedSatisfaction && !satisfied) {
+  if (serviceConcern && !state.askedOperational) {
+    return {
+      line: "When that happens, what part of the work gets interrupted?",
+      goal: "Understand the impact before suggesting a service.",
+      why: "You mentioned connection interruptions. Find out what they affect.",
+      stage: "operational",
+    };
+  }
+
+  if (provider && !state.askedSatisfaction && !satisfied && !priced && !serviceConcern) {
     return {
       line: satisfactionLine(provider),
       goal: "Learn how the provider is treating them.",
@@ -701,10 +732,8 @@ export function applyRepUtterance(state: CallCoachState, utterance: string): Cal
 export function formatCoachSummary(state: CallCoachState) {
   const name = state.business.name;
   const inferred = state.facts.filter((item) => item.source === "inferred_from_rep" || item.source === "rep_stated");
-  if (!inferred.length && !state.utterances.length) {
-    return `**Live Coach — ${name}** ended. No useful call context yet. Customer audio was not captured. Nothing from this call was saved as permanent memory.`;
-  }
-  const rows = inferred.map((item) => `- ${item.label}: ${item.value} *(inferred from how you responded, not independently verified)*`);
+  if (!inferred.length) return "";
+  const rows = inferred.map((item) => `- ${item.label}: ${item.value}`);
   if (state.hardRejected) {
     rows.push("- Outcome: hard rejection — stop calling / take them off the list");
   } else if (fact(state, "buying_interest")) {
@@ -713,7 +742,7 @@ export function formatCoachSummary(state: CallCoachState) {
     rows.push("- Outcome: left the door open");
   }
   const body = rows.length ? `\n\n${rows.join("\n")}` : "";
-  return `**Live Coach — ${name}**\n\nCustomer audio was not captured. PAI did not hear the customer. Useful context below came only from how you responded.${body}\n\nNothing from this call was saved as permanent memory.`;
+  return `**Call notes — ${name}**${body}`;
 }
 
 export function coachCopyForScan(view: CallCoachView) {

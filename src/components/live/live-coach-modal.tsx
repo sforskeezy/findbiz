@@ -59,6 +59,7 @@ export function LiveCoachModal({
   const [contextOpen, setContextOpen] = useState(false);
   const [micError, setMicError] = useState("");
   const [ending, setEnding] = useState(false);
+  const [resetKey, setResetKey] = useState(0);
 
   const panelRef = useRef<HTMLElement | null>(null);
   const pillRef = useRef<HTMLButtonElement | null>(null);
@@ -104,13 +105,15 @@ export function LiveCoachModal({
 
   const onUtterance = useCallback((text: string) => {
     setMicError("");
-    // Updater form, so a fast burst of utterances still applies in order.
-    setView((current) => applyRepUtterance(current.state, text));
+    const next = applyRepUtterance(viewRef.current.state, text);
+    viewRef.current = next;
+    setView(next);
   }, []);
 
   const mic = useLiveCoachMic({
     active: true,
     muted,
+    resetKey,
     getVocabulary: () => vocabulary,
     onUtterance,
     onError: setMicError,
@@ -118,15 +121,16 @@ export function LiveCoachModal({
 
   const speaking = mic.stage === "speaking";
   // Minimizing does not stop the call. Only mute and End do.
-  const listening = !muted && mic.stage !== "paused";
+  const listening = !ending && !muted && mic.stage !== "paused" && mic.stage !== "connecting";
 
   const endCoach = useCallback(async () => {
     if (endingRef.current) return;
     endingRef.current = true;
     setEnding(true);
+    await mic.finish();
     setMuted(true);
     const summary = formatCoachSummary(viewRef.current.state);
-    if (!sessionId) {
+    if (!sessionId || !summary) {
       onEnded();
       return;
     }
@@ -142,7 +146,7 @@ export function LiveCoachModal({
     } catch {
       onEnded();
     }
-  }, [onEnded, sessionId]);
+  }, [mic, onEnded, sessionId]);
 
   // Escape minimizes and never ends the call — ending stays an explicit click.
   useEffect(() => {
@@ -178,15 +182,19 @@ export function LiveCoachModal({
   }, [utterances, minimized]);
 
   const facts = view.state.facts;
-  const status = muted
+  const status = ending
+    ? "Finishing call notes"
+    : muted
     ? "Paused — the mic is off"
-    : mic.stage === "paused"
+    : mic.stage === "connecting"
+      ? "Connecting microphone"
+      : mic.stage === "paused"
       ? "Paused — the mic is unavailable"
       : mic.stage === "transcribing"
-        ? "Catching up — listening to you only"
+        ? "Updating your next move"
         : speaking
-          ? "Hearing you — listening to you only"
-          : "Listening to you only";
+          ? "Listening"
+          : "Ready when you speak";
 
   if (minimized) {
     return (
@@ -195,7 +203,7 @@ export function LiveCoachModal({
         type="button"
         className="live-coach-pill"
         onClick={onRestore}
-        aria-label={`Restore Live Coach for ${business.name}. Still ${listening ? "listening to you only" : "paused"}.`}
+        aria-label={`Restore Live Coach for ${business.name}. ${status}.`}
       >
         <span className={cn("live-coach-dot", listening && "is-live")} />
         <strong>{business.name}</strong>
@@ -226,11 +234,19 @@ export function LiveCoachModal({
             <p className="live-coach-status">{status}</p>
           </div>
           <div className="live-coach-controls">
-            <button type="button" onClick={() => setMuted((value) => !value)} aria-pressed={muted}>
+            <button type="button" disabled={ending} onClick={() => {
+              if (mic.stage === "paused" && !muted) setResetKey((value) => value + 1);
+              else setMuted((value) => !value);
+            }} aria-pressed={muted}>
               {muted ? <MicOff size={15} /> : <Mic size={15} />}
-              {muted ? "Unmute" : "Mute"}
+              {muted ? "Unmute" : mic.stage === "paused" ? "Retry mic" : "Mute"}
             </button>
-            <button type="button" onClick={() => setView((current) => resetCallCoach(current.state))}>
+            <button type="button" disabled={ending} onClick={() => {
+              const next = resetCallCoach(viewRef.current.state);
+              viewRef.current = next;
+              setView(next);
+              setResetKey((value) => value + 1);
+            }}>
               <RotateCcw size={15} />
               Reset
             </button>
@@ -245,7 +261,7 @@ export function LiveCoachModal({
               title="End the call and save notes"
             >
               <X size={15} />
-              End
+              {ending ? "Finishing…" : "End"}
             </button>
           </div>
         </header>
@@ -306,7 +322,7 @@ export function LiveCoachModal({
                 ))}
               </ul>
             ) : (
-              <p>Nothing inferred yet. PAI cannot hear the customer.</p>
+              <p>Details will appear as you talk.</p>
             )}
           </details>
         </div>

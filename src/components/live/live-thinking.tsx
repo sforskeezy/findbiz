@@ -23,7 +23,8 @@ function useElapsedSeconds(active: boolean) {
 }
 
 function visibleSteps(steps: LiveThinkingStep[]) {
-  return steps.filter((step) => step.label && !/^reading your message$/i.test(step.label));
+  return steps.filter((step, index) => step.label && !/^(?:reading your message|thinking)$/i.test(step.label)
+    && (index === 0 || step.label !== steps[index - 1].label || step.detail !== steps[index - 1].detail));
 }
 
 function thoughtSignature(steps: LiveThinkingStep[], status?: string) {
@@ -87,19 +88,12 @@ function ThoughtStream({
         }}
       >
         <div ref={innerRef} className="live-thought-inner">
-          {items.map((step) => {
-            const thought = step.thought?.trim();
-            const showThought = Boolean(thought && thought !== step.label);
-            const generic = /^thinking$/i.test(step.label);
-            const showLabel = !showThought || (Boolean(live) && !generic);
-            return (
+          {items.map((step) => (
               <div key={step.id} className="live-thought-item">
-                {showLabel && <p className="live-thought-label">{step.label}</p>}
+                <p className="live-thought-label">{step.label}</p>
                 {step.detail && <p className="live-thought-detail">{step.detail}</p>}
-                {showThought && <p className="live-thought-copy">{thought}</p>}
               </div>
-            );
-          })}
+          ))}
           {live && status && (!items.length || items[items.length - 1]?.label !== status) && (
             <p className="live-thought-status">{status}</p>
           )}
