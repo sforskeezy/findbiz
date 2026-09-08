@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { matchesBusinessName } from "@/lib/business-identity";
+import { foldBusinessName, matchesBusinessName } from "@/lib/business-identity";
 
 import type {
   Prospect,
@@ -37,6 +37,8 @@ type GoogleCustomSearchPayload = {
 export type GoogleResearchResult = {
   queries: string[];
   results: WebSearchResult[];
+  /** Results dropped for not matching the requested business name. Never presented as findings. */
+  nearMisses: Array<{ title: string; url: string; snippet: string }>;
   diagnostics: ResearchDiagnostics;
   retrievedAt: string;
 };
@@ -378,7 +380,7 @@ function sourceClassification(urlValue: string, officialHost: string | null) {
 
 function nameTokens(name: string) {
   const ignored = new Set(["the", "and", "company", "inc", "llc", "ltd", "corp", "corporation", "services"]);
-  return name.toLowerCase().split(/[^a-z0-9]+/).filter((value) => value.length >= 3 && !ignored.has(value));
+  return foldBusinessName(name).split(/[^a-z0-9]+/).filter((value) => value.length >= 3 && !ignored.has(value));
 }
 
 function nameOverlap(result: RawSearchResult, prospect: Prospect) {
@@ -496,11 +498,11 @@ function toWebResult(item: RawSearchResult, rank: number, authorityScore: number
   };
 }
 
-function collectPublicResults(raw: RawSearchResult[]) {
+function collectPublicResults(raw: RawSearchResult[], requireQueryRelevance = true) {
   const byUrl = new Map<string, WebSearchResult>();
   for (const item of raw) {
     const relevance = publicQueryRelevance(item);
-    if (relevance < 0.5) continue;
+    if (requireQueryRelevance && relevance < 0.5) continue;
     const requiredHost = siteConstraint(item.query);
     if (requiredHost) {
       const hostname = new URL(item.url).hostname.toLowerCase().replace(/^www\./, "");
@@ -535,21 +537,22 @@ async function searchWithProvider(provider: SearchProvider, query: string, signa
 
 /** Query relevance wins over the prominence of an unrelated publisher. */
 export function publicQueryRelevance(result: { query: string; title: string; snippet: string; url: string }) {
-  const ignored = new Set("a an the and or of for to in at near by on with from is are was were who what when where how can you me my it this that about find search google web please business businesses company companies info information south north carolina sc nc official website contact".split(" "));
-  const tokens = [...new Set(result.query.toLowerCase().replace(/site:\S+/g, "").split(/[^a-z0-9]+/).filter((word) => word.length >= 2 && !ignored.has(word)))];
+  const ignored = new Set("a an the and or of for to in at near by on with from is are was were who what when where how can you me my it this that about find search google web please business businesses company companies info information south north carolina sc nc tn al ak az ar ca co ct de fl ga hi id il ia ks ky la me md ma mi mn ms mo mt ne nv nh nj nm ny nd oh ok or pa ri sd tx ut vt va wa wv wi wy alabama alaska arizona arkansas california colorado connecticut delaware florida georgia hawaii idaho illinois indiana iowa kansas kentucky louisiana maine maryland massachusetts michigan minnesota mississippi missouri montana nebraska nevada ohio oklahoma oregon pennsylvania tennessee texas utah vermont virginia washington wisconsin wyoming official website contact".split(" "));
+  const tokens = [...new Set(foldBusinessName(result.query).replace(/site:\S+/g, "").split(/[^a-z0-9]+/).filter((word) => word.length >= 2 && !ignored.has(word)))];
   if (!tokens.length) return 1;
-  const words = new Set(`${result.title} ${result.snippet}`.toLowerCase().split(/[^a-z0-9]+/));
+  const words = new Set(foldBusinessName(`${result.title} ${result.snippet}`).split(/[^a-z0-9]+/));
   const host = new URL(result.url).hostname.toLowerCase();
   const matched = tokens.filter((token) => words.has(token) || (token.length >= 4 && (words.has(token.replace(/s$/, "")) || words.has(token + "s") || host.includes(token))));
   return matched.length / tokens.length;
 }
 
-export type WebSearchOptions = { businessName?: string | null; fresh?: boolean; signal?: AbortSignal };
+export type WebSearchOptions = { businessName?: string | null; location?: string | null; fresh?: boolean; signal?: AbortSignal };
 
 async function gatherSearchResults(queries: string[], options: WebSearchOptions = {}) {
   const failures: string[] = [];
   const providers = new Set<string>();
   const raw: RawSearchResult[] = [];
+  const missed: RawSearchResult[] = [];
   let completed = 0;
   const candidates: SearchProvider[] = [
     ...(googleCustomSearchConfigured() ? ["google_custom_search" as const] : []),
@@ -571,7 +574,14 @@ async function gatherSearchResults(queries: string[], options: WebSearchOptions 
           const results = await searchWithProvider(provider, query, options.signal);
           providers.add(providerLabel(provider));
           succeeded = true;
-          const relevant = results.filter((item) => publicQueryRelevance(item) >= 0.5 && (!options.businessName || matchesBusinessName(item, options.businessName)));
+          const keep = (item: RawSearchResult) =>
+            options.businessName
+              ? matchesBusinessName(item, options.businessName, options.location)
+              : publicQueryRelevance(item) >= 0.5;
+          const relevant = results.filter(keep);
+          // A near miss is often the same business spelled correctly. It stays
+          // out of the findings and is only used to offer a name back.
+          if (options.businessName) missed.push(...results.filter((item) => !keep(item)));
           raw.push(...relevant);
           if (relevant.length) break;
           failures.push(`${providerLabel(provider)}: no results matched the terms in "${query}".`);
@@ -587,7 +597,7 @@ async function gatherSearchResults(queries: string[], options: WebSearchOptions 
   }
   // Share provider availability across queries and avoid concurrent public requests.
   await worker();
-  return { raw, providers: [...providers], failures, completed };
+  return { raw, missed, providers: [...providers], failures, completed };
 }
 
 function asResearchResult(
@@ -598,6 +608,10 @@ function asResearchResult(
   return {
     queries,
     results,
+    nearMisses: gathered.missed
+      .filter((item, index, all) => all.findIndex((candidate) => candidate.url === item.url) === index)
+      .slice(0, 12)
+      .map((item) => ({ title: item.title, url: item.url, snippet: item.snippet })),
     diagnostics: {
       engine: "first_party_google_research",
       providers: gathered.providers,
@@ -661,7 +675,7 @@ export async function searchPublicWeb(requestedQueries: string[], options: WebSe
   if (!queries.length) throw new Error("Give Google something to search.");
   const build = async () => {
     const gathered = await gatherSearchResults(queries, options);
-    return asResearchResult(queries, gathered, collectPublicResults(gathered.raw));
+    return asResearchResult(queries, gathered, collectPublicResults(gathered.raw, !options.businessName));
   };
   // A live retry must run a new search. Cancellable requests must not share work.
   if (options.fresh || options.signal) return build();

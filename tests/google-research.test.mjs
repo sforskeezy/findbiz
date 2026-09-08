@@ -82,3 +82,13 @@ test('relevance rewards query evidence rather than unrelated publisher authority
   assert.ok(publicQueryRelevance(local) > publicQueryRelevance(unrelated));
   assert.equal(publicQueryRelevance({...local, query:'site:example.com L3 Installer'}), 1);
 });
+
+test('apostrophes in a query still match apostrophe-free titles', () => {
+  const result = {
+    query: "Anna\u2019s Bakery Greenville, SC",
+    title: 'Annas Bakery - Greenville, SC',
+    snippet: 'Bakery in Greenville',
+    url: 'https://annasbakery.example',
+  };
+  assert.ok(publicQueryRelevance(result) >= 0.5);
+});

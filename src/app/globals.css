@@ -251,6 +251,39 @@ body[data-pai-address-drag="on"] .mode-drop-target {
   will-change: opacity, filter, transform;
 }
 
+/* Live answers: ChatGPT-plain markdown on the page, not cards or panels. */
+.live-markdown {
+  font-size: 15px;
+  line-height: 1.75;
+  letter-spacing: -0.011em;
+  color: #1c1c19;
+}
+
+.live-md-kicker {
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.45;
+  letter-spacing: -0.018em;
+  color: #14140f;
+}
+
+.live-md-p {
+  line-height: 1.75;
+}
+
+.live-md-quote {
+  border-left: 3px solid #d6d6ce;
+  padding: 2px 0 2px 14px;
+  color: #3f3f3a;
+  font-style: normal;
+}
+
+.live-md-quote p,
+.live-md-quote .live-md-p {
+  font-style: normal;
+  line-height: 1.7;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .live-word {
     animation: none;
@@ -885,12 +918,73 @@ label:focus-within .live-typewriter {
 .live-welcome-heading {
   text-align: center;
 }
-.live-welcome-heading h1 {
+.live-welcome-title {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
   color: #292927;
   font-size: clamp(28px, 3vw, 36px);
   line-height: 1.2;
   font-weight: 450;
-  letter-spacing: -.035em;
+  letter-spacing: -0.035em;
+}
+.live-welcome-words {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.28em;
+}
+.live-welcome-word {
+  display: inline-block;
+  animation: live-welcome-word 720ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation-delay: calc(var(--i) * 72ms);
+}
+.live-welcome-word.is-static {
+  animation: none;
+}
+@keyframes live-welcome-word {
+  from {
+    opacity: 0;
+    transform: translateY(0.42em);
+    filter: blur(5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+.live-welcome-cycle {
+  display: block;
+  height: 1.35em;
+  overflow: hidden;
+  color: #8b8b84;
+  font-size: 15px;
+  font-weight: 450;
+  letter-spacing: -0.02em;
+  line-height: 1.35;
+  mask-image: linear-gradient(to bottom, transparent, #000 18%, #000 82%, transparent);
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 18%, #000 82%, transparent);
+  animation: live-arrive 560ms cubic-bezier(0.2, 0.75, 0.25, 1) 420ms both;
+}
+.live-welcome-cycle.is-static {
+  animation: none;
+}
+.live-welcome-cycle-track {
+  display: flex;
+  flex-direction: column;
+  transition: transform 560ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.live-welcome-cycle-track.is-instant {
+  transition: none;
+}
+.live-welcome-cycle-track > span {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 1.35em;
+  white-space: nowrap;
 }
 .live-home-composer { margin-top: 28px; }
 .live-home-composer > div > div { max-width: none; }
@@ -935,11 +1029,11 @@ label:focus-within .live-typewriter {
   color: #292927;
 }
 .live-starter > svg { flex-shrink: 0; }
-.live-welcome-heading, .live-home-composer, .live-starters {
+.live-home-composer, .live-starters {
   animation: live-arrive 350ms cubic-bezier(.2,.75,.25,1) both;
 }
-.live-home-composer { animation-delay: 35ms; }
-.live-starters { animation-delay: 70ms; }
+.live-home-composer { animation-delay: 220ms; }
+.live-starters { animation-delay: 320ms; }
 
 .live-message-in {
   animation: live-arrive 280ms cubic-bezier(.2,.75,.25,1) both;
@@ -1286,5 +1380,328 @@ label:focus-within .live-typewriter {
   }
   .live-starter:hover {
     transform: none;
+  }
+}
+
+/* Live Coach: glanceable phone copilot. White page, black type, red live. */
+.live-coach-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  padding: 0;
+}
+
+.live-coach-backdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  background: rgb(23 23 21 / 0.28);
+}
+
+.live-coach-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: min(760px, 100%);
+  height: 100%;
+  padding: 28px 28px 32px;
+  background: #fff;
+  color: #171715;
+  overflow: auto;
+}
+
+/* Focused on open so the keyboard has a home. It is not a control, so no ring. */
+.live-coach-panel:focus {
+  outline: none;
+}
+
+.live-coach-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.live-coach-title-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.live-coach-title-row h2 {
+  min-width: 0;
+  margin: 0;
+  font-size: 22px;
+  font-weight: 550;
+  letter-spacing: -0.03em;
+  line-height: 1.2;
+}
+
+.live-coach-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  color: #d21f1f;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.12em;
+}
+
+.live-coach-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #d21f1f;
+}
+
+.live-coach-dot.is-live {
+  animation: live-coach-pulse 1.6s ease-out infinite;
+}
+
+.live-coach-status {
+  margin: 6px 0 0;
+  color: #73736b;
+  font-size: 13px;
+}
+
+.live-coach-controls {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.live-coach-controls button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: #3f3f3a;
+  font-size: 12px;
+  font-weight: 550;
+}
+
+.live-coach-controls button:hover {
+  background: #f4f4f0;
+}
+
+.live-coach-controls button:disabled {
+  opacity: 0.4;
+}
+
+.live-coach-wave {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  height: 28px;
+  margin: 18px 0 8px;
+}
+
+.live-coach-wave span {
+  width: 2px;
+  height: 22px;
+  border-radius: 99px;
+  background: #171715;
+  transform-origin: center;
+  transition: transform 80ms linear;
+}
+
+.live-coach-error {
+  margin: 8px 0 0;
+  color: #a63a31;
+  font-size: 13px;
+  font-weight: 550;
+}
+
+.live-coach-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  margin-top: 20px;
+}
+
+.live-coach-kicker {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #8a8a84;
+}
+
+.live-coach-next-label {
+  margin-top: 28px;
+  color: #171715;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+}
+
+/* Rolling record of what the rep said. Newest at the bottom, older lines recede. */
+.live-coach-feed {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  max-height: min(30vh, 216px);
+  margin: 10px 0 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+
+.live-coach-feed::-webkit-scrollbar {
+  display: none;
+}
+
+.live-coach-said {
+  margin: 0;
+  color: #b6b6b0;
+  font-size: 13.5px;
+  line-height: 1.45;
+  letter-spacing: -0.01em;
+}
+
+.live-coach-said.is-recent {
+  color: #8a8a84;
+  font-size: 15px;
+}
+
+.live-coach-said.is-latest {
+  color: #26261f;
+  font-size: 17px;
+  line-height: 1.55;
+  letter-spacing: -0.02em;
+}
+
+.live-coach-said.is-waiting {
+  color: #8a8a84;
+  font-size: 15px;
+}
+
+.live-coach-said.is-interim {
+  color: #b6b6b0;
+  letter-spacing: 0.22em;
+}
+
+.live-coach-line {
+  margin: 10px 0 0;
+  padding: 2px 0 2px 14px;
+  border-left: 3px solid #171715;
+  color: #14140f;
+  font-size: 20px;
+  font-weight: 550;
+  line-height: 1.4;
+  letter-spacing: -0.03em;
+}
+
+.live-coach-goal {
+  margin: 14px 0 0;
+  color: #5f5f59;
+  font-size: 13px;
+}
+
+.live-coach-why {
+  margin: 4px 0 0;
+  color: #8a8a84;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.live-coach-context {
+  margin-top: 28px;
+  color: #5f5f59;
+  font-size: 13px;
+}
+
+.live-coach-context summary {
+  cursor: pointer;
+  font-weight: 550;
+  color: #3f3f3a;
+  list-style: none;
+}
+
+.live-coach-context summary::-webkit-details-marker {
+  display: none;
+}
+
+.live-coach-context ul {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.live-coach-context li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 0;
+  border-top: 1px solid #f0f0ea;
+}
+
+.live-coach-context li span {
+  color: #8a8a84;
+  font-size: 11px;
+}
+
+.live-coach-pill {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(520px, calc(100vw - 36px));
+  min-height: 44px;
+  padding: 10px 14px;
+  border: 1px solid #ecece6;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 10px 30px rgb(23 23 21 / 0.08);
+  color: #171715;
+  text-align: left;
+}
+
+.live-coach-pill strong {
+  flex-shrink: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.live-coach-pill span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  color: #5f5f59;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@keyframes live-coach-pulse {
+  0% { box-shadow: 0 0 0 0 rgb(210 31 31 / 0.45); }
+  70% { box-shadow: 0 0 0 8px rgb(210 31 31 / 0); }
+  100% { box-shadow: 0 0 0 0 rgb(210 31 31 / 0); }
+}
+
+@media (min-width: 640px) {
+  .live-coach-overlay {
+    align-items: center;
+    padding: 24px;
+  }
+
+  .live-coach-panel {
+    height: min(90dvh, 820px);
+    border-radius: 18px;
+    padding: 32px 36px 36px;
+    box-shadow: 0 24px 80px rgb(23 23 21 / 0.18);
   }
 }

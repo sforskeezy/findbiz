@@ -17,7 +17,8 @@ test('full state names and short brands keep their separate identities', () => {
   const plan = planWebLookup('Find me L3 Services or whatever. They do decks in Lugoff, South Carolina.');
   assert.equal(plan.name, 'L3 Services');
   assert.ok(plan.variants.some(query => query.includes('decks')));
-  assert.ok(plan.variants.every(query => query.includes('Lugoff, SC')));
+  assert.ok(plan.variants.every(query => query.includes('Lugoff')));
+  assert.ok(plan.variants.some(query => query.includes('Lugoff, SC')));
   assert.equal(parseLiveBrief('Find Georgia Pacific in Atlanta, Georgia').targetName, 'Georgia Pacific');
 });
 
@@ -40,4 +41,40 @@ test('distinctive whole words reject an unrelated large company', () => {
   assert.equal(matchesLookupName({title:'L3Harris Technologies',snippet:'Lugoff installer services'}, 'L3 Installer'), false);
   assert.equal(matchesLookupName({title:'L3 Installer Services, LLC',snippet:'Decks in Lugoff SC'}, 'L3 Services'), true);
   assert.equal(matchesLookupName({title:"Macon’s Lawn and Landscape",snippet:''}, 'macons lawn and lanscape company'), true);
+});
+
+test('possessive and punctuation variants still identify the same shop', () => {
+  const listing = {title: "Annas Bakery - Greenville, SC", snippet: 'Annas Bakery bakes bread in Greenville.', url: 'https://annasbakery.example/about'};
+  for (const name of ["Anna’s Bakery", "Anna's Bakery", "Annas Bakery"]) {
+    assert.equal(matchesLookupName(listing, name, 'Greenville, SC'), true, name);
+  }
+  assert.equal(matchesLookupName({title:'Home', snippet:'Welcome', url:'https://www.annasbakery.com/'}, "Anna's Bakery", 'Greenville, SC'), true);
+  assert.equal(matchesLookupName({title:'Bobs Bakery - Greenville, SC', snippet:'Another bakery', url:'https://bobsbakery.example'}, "Anna's Bakery", 'Greenville, SC'), false);
+  assert.equal(matchesLookupName({title:'Annas Bakery - Charlotte, NC', snippet:'Charlotte bakery', url:'https://annasbakery.example/charlotte'}, "Anna's Bakery", 'Greenville, SC'), false);
+  assert.equal(matchesLookupName({title:'Annas Bakery - Columbia, SC', snippet:'Columbia bakery', url:'https://annasbakery.example/columbia'}, "Anna's Bakery", 'Greenville, SC'), false);
+});
+
+test('named lookup queries retry apostrophe-free and expanded-state forms', () => {
+  const plan = planWebLookup("Brief me on Anna’s Bakery in Greenville, South Carolina.");
+  assert.equal(plan.name, "Anna’s Bakery");
+  assert.equal(plan.location, 'Greenville, SC');
+  assert.match(plan.query, /Annas Bakery Greenville, SC/);
+  assert.ok(plan.variants.some((query) => query.includes("Anna's Bakery") || query.includes('Annas Bakery')));
+  assert.ok(plan.variants.some((query) => /Greenville, South Carolina/.test(query)));
+});
+
+test('city-prefixed shop names still match a brand homepage that omits the trade word', () => {
+  const homepage = {title: 'Home | Mercantile', snippet: 'Welcome.', url: 'https://www.rivertownmercantile.com/'};
+  assert.equal(matchesLookupName(homepage, 'Rivertown Mercantile Deli', 'Rivertown, SC'), true);
+  assert.equal(matchesLookupName(homepage, 'Rivertown Bagel Deli', 'Rivertown, SC'), false);
+  assert.equal(matchesLookupName({title: 'Home | Deli', snippet: 'A deli in Rivertown, SC', url: 'https://www.anotherrivertowndeli.com/'}, 'Rivertown Deli', 'Rivertown, SC'), true);
+  assert.equal(matchesLookupName({title: 'Home | Grill', snippet: 'Welcome.', url: 'https://www.towncentergrill.com/'}, 'Rivertown Deli', 'Rivertown, SC'), false);
+  assert.equal(matchesLookupName({title: 'Home | Deli', snippet: 'Welcome.', url: 'https://www.rivertowndeli.com/'}, 'Rivertown Mercantile Deli', 'Rivertown, SC'), false);
+  assert.equal(matchesLookupName({title: 'L3Harris Technologies', snippet: 'Lugoff installer services'}, 'L3 Installer'), false);
+  const plan = planWebLookup('Brief me on Rivertown Mercantile Deli in Rivertown, South Carolina.');
+  assert.equal(plan.name, 'Rivertown Mercantile Deli');
+  assert.ok(
+    plan.query === 'Mercantile Deli Rivertown, SC' || plan.variants.includes('Mercantile Deli Rivertown, SC'),
+    `Expected a city-deduped query, got ${plan.query} / ${JSON.stringify(plan.variants)}`,
+  );
 });

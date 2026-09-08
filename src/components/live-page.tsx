@@ -44,15 +44,27 @@ import { LiveSources } from "@/components/live/live-sources";
 import { LiveThoughtTrace } from "@/components/live/live-thinking";
 import { LiveTypewriter } from "@/components/live/live-typewriter";
 import { LiveVoiceEdge } from "@/components/live/live-voice";
+import { LiveWelcomeTitle } from "@/components/live/live-welcome-title";
+import { LiveCoachModal } from "@/components/live/live-coach-modal";
 import { useLiveVoice } from "@/components/live/use-live-voice";
 import { WorkingDots } from "@/components/live/working-dots";
 import { cn } from "@/components/ui";
 import { readEventStream } from "@/lib/live/stream";
+import {
+  formatLiveBugLog,
+  hasBugLogContent,
+  liveBugFilename,
+  snapshotFromPublicState,
+  type LiveBugSnapshot,
+} from "@/lib/live/chat-output";
+import { isLiveCoachCommand, isLiveOutputCommand } from "@/lib/live/intent";
+import { coachNeedsBusinessMessage, resolveCoachBusiness, type CoachBusiness } from "@/lib/live/call-coach";
 import type {
   LiveChatEvent,
   LiveChatMessage,
   LiveMemoryFact,
   LiveProspectCard,
+  LivePublicCompany,
   LivePublicState,
   LiveSessionSummary,
   LiveThinkingStep,
@@ -71,6 +83,18 @@ const QUICK_ACTIONS: Array<{ label: string; icon: typeof MapPin; prompt?: string
   { label: "What do you remember?", icon: Brain, prompt: "What do you remember about my territory?" },
 ];
 
+
+function downloadTextFile(filename: string, contents: string) {
+  const url = URL.createObjectURL(new Blob([contents], { type: "text/markdown;charset=utf-8" }));
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.rel = "noopener";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
 
 function groupSessions(sessions: LiveSessionSummary[]): SessionGroup[] {
   const now = Date.now();
@@ -181,6 +205,10 @@ export function LivePage() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<LiveChatMessage[]>([]);
   const [queue, setQueue] = useState<LivePublicState["queue"]>(null);
+  const [activeCompany, setActiveCompany] = useState<LivePublicCompany | null>(null);
+  const [coachOpen, setCoachOpen] = useState(false);
+  const [coachMinimized, setCoachMinimized] = useState(false);
+  const [coachBusiness, setCoachBusiness] = useState<CoachBusiness | null>(null);
   const [draft, setDraft] = useState("");
   const [status, setStatus] = useState("");
   const [steps, setSteps] = useState<LiveThinkingStep[]>([]);
@@ -314,6 +342,7 @@ export function LivePage() {
     setSessionId(state.session.id);
     setMessages(state.session.messages);
     setQueue(state.queue);
+    setActiveCompany(state.activeCompany ?? null);
     setMemory(state.memory);
     setSessions((current) => {
       const summary = {
@@ -337,9 +366,16 @@ export function LivePage() {
     if (showNotice) setNotice("Stopped. Send a new direction whenever you’re ready.");
   }
 
+  function closeCoach() {
+    setCoachOpen(false);
+    setCoachMinimized(false);
+    setCoachBusiness(null);
+  }
+
   async function openSession(id: string) {
     stopReply(false);
     cancelVoiceRef.current();
+    closeCoach();
     setError("");
     setNotice("");
     const version = requestVersion.current;
@@ -364,6 +400,8 @@ export function LivePage() {
     setSessionId(null);
     setMessages([]);
     setQueue(null);
+    setActiveCompany(null);
+    closeCoach();
     setDraft("");
     setError("");
     setNotice("");
@@ -386,9 +424,108 @@ export function LivePage() {
     }
   }
 
+  async function exportChatLog() {
+    const summary = sessions.find((item) => item.id === sessionId);
+    const inProgress =
+      busy || answer || steps.length || error
+        ? {
+            status: status || undefined,
+            answer: answer || undefined,
+            steps: steps.length ? steps : undefined,
+            error: error || undefined,
+            notice: notice || undefined,
+          }
+        : null;
+    let snapshot: LiveBugSnapshot | null = null;
+    if (sessionId) {
+      try {
+        const response = await fetch(`/api/live/output?sessionId=${encodeURIComponent(sessionId)}`);
+        const payload = (await response.json()) as { snapshot?: LiveBugSnapshot; error?: string };
+        if (!response.ok || !payload.snapshot) throw new Error(payload.error || "Couldn’t load that chat.");
+        snapshot = payload.snapshot;
+      } catch {
+        snapshot = null;
+      }
+    }
+    snapshot ??= snapshotFromPublicState({
+      sessionId,
+      title: summary?.title,
+      updatedAt: summary?.updatedAt,
+      messages,
+      queue,
+      memory,
+    });
+    snapshot.inProgress = inProgress;
+    snapshot.app = {
+      url: window.location.href,
+      userAgent: navigator.userAgent,
+    };
+    snapshot.exportedAt = new Date().toISOString();
+    if (!hasBugLogContent(snapshot)) {
+      setNotice("Nothing to export yet. Chat first, then type /output.");
+      return;
+    }
+    const markdown = formatLiveBugLog(snapshot);
+    try {
+      downloadTextFile(liveBugFilename(snapshot), markdown);
+      setNotice("Downloaded the chat log for bug testing.");
+    } catch {
+      try {
+        await navigator.clipboard.writeText(markdown);
+        setNotice("Copied the bug log. The file download was blocked.");
+      } catch {
+        setError("Couldn’t download or copy the chat log.");
+      }
+    }
+  }
+
+  async function openLiveCoach() {
+    let company = resolveCoachBusiness({
+      activeCompany,
+      queueCurrent: queue?.current,
+    });
+    if (!company && sessionId) {
+      try {
+        const response = await fetch(`/api/live/sessions?sessionId=${encodeURIComponent(sessionId)}`);
+        const payload = (await response.json()) as { state?: LivePublicState; error?: string };
+        if (response.ok && payload.state) {
+          applyState(payload.state);
+          company = resolveCoachBusiness({
+            activeCompany: payload.state.activeCompany,
+            queueCurrent: payload.state.queue?.current,
+          });
+        }
+      } catch {
+        /* Keep the local company if the session reload fails. */
+      }
+    }
+    if (!company) {
+      setNotice(coachNeedsBusinessMessage());
+      return;
+    }
+    cancelVoiceRef.current();
+    setCoachBusiness(company);
+    setCoachMinimized(false);
+    setCoachOpen(true);
+    setNotice("");
+    setError("");
+  }
+
   async function send(text = draft) {
     const message = text.trim();
     if (!message) return;
+    if (isLiveOutputCommand(message)) {
+      setDraft("");
+      setError("");
+      await exportChatLog();
+      return;
+    }
+    if (isLiveCoachCommand(message)) {
+      setDraft("");
+      setError("");
+      await openLiveCoach();
+      return;
+    }
     if (message.length > 2000) {
       setError("Keep your message under 2,000 characters.");
       return;
@@ -513,7 +650,7 @@ export function LivePage() {
   }, [current, memory, queue]);
 
   const voice = useLiveVoice({
-    disabled: busy,
+    disabled: busy || coachOpen,
     getDraft: () => draftRef.current,
     getVocabulary: () => voiceVocabulary,
     onNotice: (notice) => {
@@ -724,7 +861,7 @@ export function LivePage() {
 
             <p className={cn("mt-3 text-[10px] text-[#92938c]", atHome ? "flex flex-wrap justify-between gap-2 px-1" : "text-center")}>
               {busy ? "You can stop or send a new direction at any time." : "Research with public sources."}
-              <span className="ml-3 hidden sm:inline text-[#8a8a84]">Hold Control to talk · Enter to send · Shift + Enter for a new line</span>
+              <span className="ml-3 hidden sm:inline text-[#8a8a84]">Hold Control to talk · Enter to send · /livemode · /output</span>
             </p>
           </div>
         </div>
@@ -781,7 +918,7 @@ export function LivePage() {
           {atHome ? (
             <div className="live-welcome mx-auto my-auto w-full max-w-[720px] py-12">
               <div className="live-welcome-heading">
-                <h1>What are you looking for?</h1>
+                <LiveWelcomeTitle reduceMotion={reduceMotion} />
               </div>
               <div className="live-home-composer">{composer}</div>
               <div className="live-starters" aria-label="Start a conversation">
@@ -843,6 +980,20 @@ export function LivePage() {
 
         {!atHome && composer}
       </section>
+
+      {coachOpen && coachBusiness ? (
+        <LiveCoachModal
+          business={coachBusiness}
+          minimized={coachMinimized}
+          sessionId={sessionId}
+          onMinimize={() => setCoachMinimized(true)}
+          onRestore={() => setCoachMinimized(false)}
+          onEnded={(state) => {
+            closeCoach();
+            if (state) applyState(state);
+          }}
+        />
+      ) : null}
     </main>
   );
 }

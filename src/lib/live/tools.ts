@@ -20,6 +20,7 @@ import type { LiveProfile } from "@/lib/live/intent";
 import { LIVE_RADII } from "@/lib/live/types";
 import type { LiveProspectCard, LiveQueue, LiveSource } from "@/lib/live/types";
 import type { CompanyIntelligence, LiveLeadSignal, Prospect } from "@/lib/types";
+import { collectSalesEvidence, listingWhy, type CompanyResearchView } from "@/lib/live/sales-coach";
 
 function sourceDomain(url: string) {
   try {
@@ -53,7 +54,7 @@ export function dedupeSources(sources: Array<LiveSource | null>) {
 }
 
 export function compactProspect(prospect: Prospect): LiveProspectCard {
-  const why = [prospect.topOpportunity, prospect.summary].find((item) => item && !/\bhiring\b/i.test(item)) || prospect.category;
+  const why = listingWhy(prospect);
   return {
     id: prospect.id,
     name: prospect.name,
@@ -276,14 +277,27 @@ function factValue(intelligence: CompanyIntelligence, kind: string) {
 
 export async function researchProspect(prospect: Prospect) {
   const intelligence = await researchCompany(prospect);
-  const outreach = prepareOutreach(prospect);
+  const findings = intelligence.searchResults.slice(0, 6).map((item) => ({
+    title: item.title,
+    snippet: item.snippet,
+    url: item.url,
+  }));
+  const researchView: CompanyResearchView = {
+    facts: intelligence.facts.slice(0, 8).map((item) => ({ label: item.label, value: item.value.slice(0, 180) })),
+    findings,
+    warnings: intelligence.warnings,
+    summary: intelligence.summary,
+  };
+  const evidence = collectSalesEvidence(prospect, researchView);
+  const outreach = prepareOutreach(prospect, evidence);
   const sources = dedupeSources([
     toSource({ title: `${prospect.name} — official site`, url: prospect.website, snippet: prospect.publicNotes }),
     toSource({ title: `${prospect.name} — public listing`, url: prospect.directoryUrl, snippet: prospect.address }),
-    ...intelligence.searchResults.slice(0, 6).map((item) => toSource({ title: item.title, url: item.url, snippet: item.snippet })),
+    ...findings.map((item) => toSource({ title: item.title, url: item.url, snippet: item.snippet })),
   ]);
   return {
     sources,
+    evidence,
     business: {
       id: prospect.id,
       name: prospect.name,
@@ -296,13 +310,20 @@ export async function researchProspect(prospect: Prospect) {
       rating: factValue(intelligence, "rating"),
       summary: intelligence.summary || prospect.summary,
       publicNotes: prospect.publicNotes,
-      topOpportunity: prospect.topOpportunity,
+      verifiedFacts: evidence.verified,
+      hypotheses: evidence.hypotheses,
+      unknowns: evidence.unknowns,
+      companySpecificTrigger: evidence.trigger,
+      noStrongTrigger: !evidence.trigger,
       callOpener: outreach.callOpener,
-      hypothesizedNeeds: prospect.hypothesizedNeeds.filter((item) => !/\bhiring\b/i.test(item)).slice(0, 3),
-      facts: intelligence.facts.slice(0, 6).map((item) => ({ label: item.label, value: item.value.slice(0, 140) })),
+      facts: researchView.facts,
+      findings,
       warnings: intelligence.warnings.slice(0, 2),
       email: outreach.followUpEmail,
       qualification: outreach.qualification,
+      note: evidence.trigger
+        ? "Use verifiedFacts and companySpecificTrigger only. Hypotheses are questions to ask, not facts about this company."
+        : "No company-specific trigger was verified. Do not invent a sales angle or treat category norms as this company's problems.",
     },
   };
 }
@@ -427,14 +448,20 @@ function cityContext(address: string) {
 }
 
 function spellingVariants(query: string) {
-  const next = query
+  const variants: string[] = [];
+  const landscaped = query
     .replace(/\blanscape\b/gi, "landscape")
     .replace(/\blanscaping\b/gi, "landscaping");
-  return next !== query ? [next] : [];
+  if (landscaped !== query) variants.push(landscaped);
+  const straight = query.replace(/['\u2018\u2019\u201A\u201B\u2032\u02BC\u0060\u00B4]/g, "'");
+  const stripped = query.replace(/['\u2018\u2019\u201A\u201B\u2032\u02BC\u0060\u00B4]/g, "");
+  if (straight !== query) variants.push(straight);
+  if (stripped !== query && stripped !== straight) variants.push(stripped);
+  return variants;
 }
 
 export async function googleSearch(query: string, extraQueries: string[] = [], options: WebSearchOptions = {}) {
-  const queries = [query, ...extraQueries, ...spellingVariants(query)]
+  const queries = [query, ...spellingVariants(query), ...extraQueries]
     .map((item) => item.replace(/\s+/g, " ").trim())
     .filter((item) => item.length >= 2)
     .slice(0, 4);
@@ -447,6 +474,12 @@ export async function googleSearch(query: string, extraQueries: string[] = [], o
       title: item.title.slice(0, 140),
       url: item.url,
       snippet: (item.snippet || "").slice(0, 600),
+    })),
+    // Kept separate from findings: only used to offer a corrected spelling back.
+    nearMisses: research.nearMisses.map((item) => ({
+      title: item.title.slice(0, 140),
+      url: item.url,
+      snippet: (item.snippet || "").slice(0, 300),
     })),
     engine: research.diagnostics.providers.join(", ") || research.diagnostics.engine,
     queries: research.queries,

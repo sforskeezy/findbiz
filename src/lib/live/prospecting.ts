@@ -1,27 +1,26 @@
 import type { Prospect } from "@/lib/types";
 import { homeBasedVerdict } from "@/lib/live/filters";
+import { collectSalesEvidence, groundedCallOpener, type SalesEvidence } from "@/lib/live/sales-coach";
 
 /** A discovery conversation, with qualification kept separate from sales claims. */
-export function prepareOutreach(prospect: Prospect) {
+export function prepareOutreach(prospect: Prospect, evidence: SalesEvidence = collectSalesEvidence(prospect)) {
   const home = homeBasedVerdict(prospect);
-  const businessType = `${prospect.category} ${prospect.name} ${prospect.publicNotes || ""}`;
-  const useQuestion = /contract|construction|deck|landscap|plumb|roof|handyman/i.test(businessType)
-    ? "How do you handle customer calls, quotes, and scheduling when you’re out on a job?"
-    : /retail|food|restaurant|salon/i.test(businessType)
-      ? "What happens to payments and bookings if your connection drops?"
-      : "Which parts of the work depend on your internet or business phone?";
   const questions = [
     "Do you handle the internet and phone decisions for the business?",
     home.homeBased ? "Do you run the office from home, a separate location, or mostly on the road?" : "Where do you handle the office side of the business?",
-    useQuestion,
-    "Is anything about reliability, coverage, or the monthly bill getting in the way?",
+    ...evidence.discoveryQuestions.slice(1, 2),
+    "Is anything about reliability, coverage, or the monthly bill getting in the way — or is it working well enough?",
     "Are you considering a change, and is there a contract or renewal date to work around?",
   ];
+  const opener = groundedCallOpener(prospect, evidence);
+  const triggerLine = evidence.trigger
+    ? `I noticed ${evidence.trigger.replace(/\.$/, "")}. If that is changing how you run the shop, I can check options for the address — only if useful.`
+    : evidence.discoveryQuestions[1];
   return {
-    callOpener: `Hi, this is [your name] with Spectrum Business. Am I speaking with whoever handles internet and phone for ${prospect.name}? I’m reaching out to see whether there’s anything you’d want working better. ${useQuestion}`,
+    callOpener: opener,
     followUpEmail: {
       subject: `Internet and phone for ${prospect.name}`,
-      body: `Hi,\n\nI’m [your name] with Spectrum Business. ${useQuestion}\n\nIf reliability, coverage, or cost is something you’d like to improve, I can check the options for your business address and see whether there’s a useful fit.\n\nWould a brief conversation make sense?\n\n[your name]\n[your contact information]`,
+      body: `Hi,\n\nI’m [your name] with Spectrum Business. ${triggerLine}\n\nI do not want to assume a problem on your side. If reliability, coverage, or cost is something you’d like to improve, I can check the options for your business address.\n\nWould a brief conversation make sense?\n\n[your name]\n[your contact information]`,
     },
     qualification: {
       homeBased: home.homeBased ? "Possible home-based lead; confirm operating location" : "Home-based operation not established",

@@ -68,6 +68,7 @@ export function emptySession(id = liveId("live")): LiveSession {
     updatedAt: now,
     messages: [],
     queue: null,
+    activeCompany: null,
   };
 }
 

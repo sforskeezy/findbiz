@@ -1,6 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {prepareOutreach} from '../src/lib/live/prospecting.ts';
+import {collectSalesEvidence} from '../src/lib/live/sales-coach.ts';
 import {filterProspectsForBrief} from '../src/lib/live/filters.ts';
 import {generateDemoResearch} from '../src/lib/demo-data.ts';
 
@@ -16,9 +17,23 @@ test('a home-based shortlist stays short instead of adding weaker independents',
 
 test('outreach qualifies the operating location and needs without inventing an offer', () => {
   const result = prepareOutreach({...prospect, callOpener:'You qualify for a guaranteed discount!', followUpEmail:{subject:'Guaranteed savings',body:'We already serve your home.'}});
-  assert.match(result.callOpener, /customer calls, quotes, and scheduling/);
+  assert.match(result.callOpener, /currently using|recorded line/i);
   assert.doesNotMatch(result.callOpener + result.followUpEmail.body, /guaranteed|qualify|already serve|work from home/i);
   assert.match(result.qualification.homeBased, /Possible/);
   assert.ok(result.qualification.questions.some(question => question.includes('from home')));
   assert.ok(result.qualification.beforeQuoting.some(item => item.includes('new-customer eligibility')));
+});
+
+test('company-specific coverage takes priority over category questions in outreach', () => {
+  const evidence = collectSalesEvidence(prospect, {
+    findings: [{
+      title: 'Example Deck Services opens a second location',
+      snippet: 'The company opened a second location this spring.',
+      url: 'https://example.com/deck-expansion',
+    }],
+  });
+  const result = prepareOutreach(prospect, evidence);
+  assert.match(result.callOpener, /second location/i);
+  assert.doesNotMatch(result.callOpener, /connectivity pain|guaranteed/i);
+  assert.ok(result.qualification.questions.some((question) => /customer calls, quotes, and scheduling/.test(question)));
 });

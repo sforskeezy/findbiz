@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseLiveBrief, resolveLiveTurn, isLiveNext, extractLiveLocation } from '../src/lib/live/intent.ts';
+import { parseLiveBrief, resolveLiveTurn, isLiveNext, isLiveOutputCommand, isLiveCoachCommand, extractLiveLocation } from '../src/lib/live/intent.ts';
 
 const previous = parseLiveBrief('Find 3 home-based businesses in Lugoff, SC and research them and check what is new');
 const context = { locationLabel: 'Lugoff, SC' };
@@ -79,6 +79,36 @@ test('next question does not advance the queue', () => {
   assert.equal(isLiveNext('Next question: help me with an opener'), false);
   assert.equal(isLiveNext('Next one'), true);
   assert.equal(isLiveNext('Skip to the next one'), true);
+});
+
+test('/output is a command, not a search', () => {
+  const turn = resolveLiveTurn('/output', previous, context);
+  assert.equal(turn.search, false);
+  assert.equal(turn.reset, false);
+  assert.equal(isLiveOutputCommand('/output'), true);
+  assert.equal(isLiveOutputCommand(' /OUTPUT. '), true);
+  assert.equal(isLiveOutputCommand('please /output'), false);
+  assert.equal(isLiveOutputCommand('/output this'), false);
+});
+
+test('/livemode is a command, not a search', () => {
+  for (const command of ['/livemode', '/live mode', '/live-mode', ' /LIVE MODE. ']) {
+    const turn = resolveLiveTurn(command, previous, context);
+    assert.equal(turn.search, false);
+    assert.equal(turn.reset, false);
+    assert.equal(isLiveCoachCommand(command), true, command);
+  }
+  assert.equal(isLiveCoachCommand('please /livemode'), false);
+  assert.equal(isLiveCoachCommand('/livemode now'), false);
+  assert.equal(isLiveCoachCommand('/live'), false);
+});
+
+test('briefing a listed company is research, not a new search', () => {
+  const turn = resolveLiveTurn('Brief me on this company', previous, context);
+  assert.equal(turn.search, false);
+  assert.equal(turn.brief.wantsResearch, true);
+  assert.equal(parseLiveBrief('Tell me about this one').wantsResearch, true);
+  assert.equal(parseLiveBrief('How do I sound more natural on calls?').wantsResearch, false);
 });
 
 test('google this is a web lookup, not a new business search', () => {

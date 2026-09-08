@@ -1,3 +1,5 @@
+import { looksLikeCompanyBrief } from "@/lib/live/sales-coach";
+
 export type LiveProfile = "home_based" | "independent" | "any";
 
 export type LiveBrief = {
@@ -113,9 +115,13 @@ function locationMatch(raw: string): LocationMatch | null {
     text,
   );
   if (commaPlace?.index != null) {
+    // "the Seven Bree and Travelers Rest, SC" is a business plus a city, not a
+    // four-word city. A conjunction ends the name and starts the place.
+    const place = commaPlace[1].split(/\s+(?:and|or|&)\s+/i).pop()!.trim();
+    const offset = commaPlace[0].indexOf(place);
     return {
-      value: `${commaPlace[1].trim()}, ${commaPlace[2].toUpperCase()}`,
-      start: commaPlace.index,
+      value: `${place}, ${commaPlace[2].toUpperCase()}`,
+      start: commaPlace.index + Math.max(0, offset),
       end: commaPlace.index + commaPlace[0].length,
     };
   }
@@ -149,6 +155,56 @@ export function extractLiveLocation(text: string) {
   return value;
 }
 
+/** Spoken mid-sentence corrections. Dictation keeps both halves: "…2960 — oh wait no, 29615". */
+const SELF_CORRECTION =
+  /\s*[,;—–-]*\s*\b(?:oh\s+wait|wait\s*,?\s*no|no\s+wait|actually\s+no|scratch\s+that|nix\s+that|never\s*mind|nevermind|i\s+mean(?:t)?|make\s+that|correction)\b[\s,.:;—–-]*(?:no[\s,]+)?(?:actually[\s,]+)?(?:i\s+mean(?:t)?[\s,]+)?(?:let'?s\s+)?(?:it'?s\s+)?/gi;
+
+function looksLikeBarePlace(value: string) {
+  return /^[A-Z][A-Za-z.'-]*(?:\s+[A-Z][A-Za-z.'-]*){0,2}$/.test(value.trim());
+}
+
+/**
+ * Keep only the half of an utterance the rep landed on. Dictation transcribes the
+ * abandoned fragment too, and a half-spoken ZIP will otherwise geocode somewhere
+ * they never asked for. Corrections only count mid-sentence, so a turn that opens
+ * with "actually …" still reads as a normal follow-up.
+ */
+export function repairSelfCorrection(raw: string) {
+  const text = raw.replace(/\s+/g, " ").trim();
+  if (!text) return raw;
+  let head = "";
+  let tail = "";
+  for (const match of text.matchAll(SELF_CORRECTION)) {
+    if (match.index == null) continue;
+    const before = text.slice(0, match.index);
+    if (before.trim().split(/\s+/).filter(Boolean).length < 2) continue;
+    const after = text.slice(match.index + match[0].length).trim();
+    if (after.length < 2) continue;
+    head = before;
+    tail = after;
+  }
+  if (!tail) return text;
+
+  const trimmedHead = head.replace(/[\s,;:.—–-]+$/g, "");
+  const restated = /\b(?:search|find|look|show|pull|get|give|google|research|brief|check|try|use|do|make\s+(?:it|that))\b/i.test(tail);
+  if (restated && tail.split(/\s+/).filter(Boolean).length >= 2) return tail;
+
+  // A corrected number replaces the fragment the rep abandoned mid-word.
+  if (/^\d{2,5}\b/.test(tail)) {
+    const withoutFragment = trimmedHead.replace(/\s*\b\d{1,5}\b$/, "").replace(/[\s,;:.—–-]+$/g, "");
+    return `${withoutFragment} ${tail}`.replace(/\s+/g, " ").trim();
+  }
+
+  // Indices from locationMatch line up with the state-normalized form.
+  const normalizedHead = normalizeStates(trimmedHead).replace(/\s+/g, " ").trim();
+  const headPlace = locationMatch(normalizedHead);
+  if (headPlace && (locationMatch(tail) || looksLikeBarePlace(tail))) {
+    return `${normalizedHead.slice(0, headPlace.start)}${tail}${normalizedHead.slice(headPlace.end)}`.replace(/\s+/g, " ").trim();
+  }
+
+  return `${trimmedHead} ${tail}`.replace(/\s+/g, " ").trim();
+}
+
 const SEARCH_TERM_PATTERNS: Array<{ pattern: RegExp; terms: string[] }> = [
   { pattern: /\b(lawn\s*care|yard\s*(?:care|service)|landscap(?:e|er|ers|ing)?)\b/i, terms: ["lawn care service", "landscaping"] },
   { pattern: /\broof(?:ers?|ing)?\b/i, terms: ["roofing contractor"] },
@@ -178,11 +234,15 @@ const GENERIC_SEARCH_WORDS = new Set([
   "office", "painting", "plumber", "plumbers", "plumbing", "prospect", "prospects", "restaurant", "restaurants",
   "roof", "roofer", "roofers", "roofing", "salon", "service", "services", "shop", "shops", "spa", "tax", "yard",
   "based", "independent", "owner", "run", "nearby", "only", "some", "deck", "decks", "builder", "builders",
+  // Trade nouns a rep uses to describe a kind of place, not to name one.
+  "bakery", "bakeries", "bar", "bars", "boutique", "cafe", "coffee", "deli", "diner", "grill", "grocery",
+  "gym", "gyms", "hotel", "hotels", "laundromat", "market", "motel", "pizza", "pub", "store", "stores",
 ]);
 
 function cleanSearchPhrase(value: string) {
   return value
-    .replace(/^[\s,;:.-]+|[\s,;:.-]+$/g, "")
+    // A question mark left on either edge is punctuation, not a search phrase.
+    .replace(/^[\s,;:.!?-]+|[\s,;:.!?-]+$/g, "")
     .replace(/^(?:is|that(?:'s| is))\s+(?:the\s+)?(?:zip|zip code|postal code)\b.*$/i, "")
     .replace(/^(?:named|called)\s+/i, "")
     .replace(
@@ -234,18 +294,69 @@ function searchTerms(text: string) {
   return [...new Set(found.map((item) => item.toLowerCase()))].slice(0, 4);
 }
 
+/**
+ * "who owns the Seven Bree" asks a question about a business; only "Seven Bree"
+ * is the business. The question itself is carried separately by the brief.
+ */
+const RESEARCH_QUESTION_LEAD =
+  /^(?:(?:the|a|an)\s+)?(?:who(?:'s|s| is| are)?\s+(?:the\s+)?(?:own(?:s|er|ers|ership)|run(?:s)?|operat(?:es|or)|manag(?:es|er)|behind)(?:\s+of)?|who\s+own(?:s)?|own(?:er|ership)\s+of|what\s+company\s+own(?:s)?|which\s+company\s+own(?:s)?)\b[\s:,-]*(?:the\s+|a\s+|an\s+)?/i;
+
+const OWNERSHIP_QUESTION =
+  /\bwho\s+(?:owns|own|runs|run|operates|manages|is\s+(?:the\s+)?owner)\b|\bwho(?:'s|s|\s+is)\s+(?:the\s+owner|behind)\b|\bownership\b|\bowner\s+of\b/i;
+
+const CONTACT_QUESTION = /\bwho\s+(?:do|should)\s+i\s+(?:talk|speak|ask)\b|\bdecision\s*maker\b|\bwho\s+runs\s+the\s+(?:front|counter)\b/i;
+
+/** A question about a specific business that survives a name correction. */
+export function isResearchQuestion(text: string) {
+  return OWNERSHIP_QUESTION.test(text) || CONTACT_QUESTION.test(text);
+}
+
+/** Short label for the question still on the table, so it can be restated later. */
+export function researchQuestionLabel(text: string) {
+  if (OWNERSHIP_QUESTION.test(text)) return "who owns this specific location";
+  if (CONTACT_QUESTION.test(text)) return "who to contact there";
+  return null;
+}
+
+/** Trailing scraps left after a place is lifted out of a name. */
+function trimNameEdges(value: string) {
+  return value
+    .replace(/^[\s,;:.&-]+|[\s,;:.&-]+$/g, "")
+    .replace(/\s+(?:and|or|&|in|near|at|on|of|the)$/i, "")
+    .replace(/^(?:and|or|&|the)\s+/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** A name must not swallow the city the rep named alongside it. */
+function nameWithoutPlace(phrase: string, location: string | null) {
+  if (!location) return phrase;
+  const city = location.split(",")[0].trim();
+  if (city.length < 3 || /^\d/.test(city)) return phrase;
+  const index = phrase.toLowerCase().indexOf(city.toLowerCase());
+  // A name that starts with the city keeps it: "Rivertown Mercantile Deli".
+  if (index <= 0) return phrase;
+  const head = trimNameEdges(phrase.slice(0, index));
+  return head.length >= 2 ? head : phrase;
+}
+
 function targetName(text: string) {
   const normalized = text;
   const explicit = normalized.match(/\b(?:named|called)\s+(.+)/i)?.[1];
-  const direct = normalized.match(/\b(?:info(?:rmation)? (?:about|on)|tell me about|look up|research|find(?:\s+me)?|google(?:\s+for)?)\s+(.+)/i)?.[1]?.replace(/^(?:info(?:rmation)? (?:about|on))\s+/i, "");
+  const direct = normalized.match(/\b(?:info(?:rmation)? (?:about|on)|tell me about|brief me on|prep(?:are)? me for|look up|research|find(?:\s+me)?|google(?:\s+for)?)\s+(.+)/i)?.[1]?.replace(/^(?:info(?:rmation)? (?:about|on))\s+/i, "");
   const requested = explicit || direct;
   const candidate = requested?.split(/\s+(?:in|near|around|or whatever|or something|they|that (?:does|do|builds)|and (?:find|research|tell|give))\b|[,!?;]|\.(?:\s|$)/i)[0]?.replace(/^(?:a|an|the)\s+(?:business|company)\s+(?:named|called)\s+/i, "").trim();
-  const phrase = candidate || searchPhrase(text);
+  // "Who owns Bright Dental" names one business and asks one question about it.
+  const asked = (candidate || searchPhrase(text)).replace(RESEARCH_QUESTION_LEAD, "");
+  const phrase = trimNameEdges(nameWithoutPlace(asked, extractLiveLocation(text)));
   if (!phrase) return null;
-  if (phrase.split(/\s+/).length > 8 || /\b(?:mistake|answer|question|chat|conversation|above|tips|ideas|help|way|something|anything|information|info|my|your|these|them|those|best|first|next|current)\b/i.test(phrase)) return null;
-  // A bare concept is not a business. Explicit naming, a place, a trade suffix,
-  // or a short alphanumeric brand provides a concrete lookup cue.
-  if (!explicit && !extractLiveLocation(text) && !/\b(?:[a-z]+\d[a-z0-9]*|llc|inc|services|installers?|lawn|landscap\w*)\b/i.test(phrase)) return null;
+  if (phrase.split(/\s+/).length > 8 || /\b(?:mistake|answer|question|chat|conversation|above|tips|ideas|help|way|something|anything|information|info|my|your|these|them|those|this|that|best|first|next|current)\b/i.test(phrase)) return null;
+  // A bare concept is not a business. Explicit naming, a place, a proper
+  // company in a brief request, a trade suffix, or a short alphanumeric brand
+  // provides a concrete lookup cue.
+  const properMatch = normalized.match(/(?:brief me on|tell me about|prep(?:are)? me for)\s+(?:the\s+)?([A-Za-z0-9])/i);
+  const properCompany = Boolean(properMatch && /[A-Z0-9]/.test(properMatch[1]));
+  if (!explicit && !extractLiveLocation(text) && !properCompany && !/\b(?:[a-z]+\d[a-z0-9]*|llc|inc|services|installers?|lawn|landscap\w*)\b/i.test(phrase)) return null;
   const distinctive = phrase
     .toLowerCase()
     .replace(/lawncare/g, "lawn care")
@@ -292,7 +403,8 @@ export function hasCompoundAsk(text: string) {
   return /\b(?:and then|and also|then also|as well as|, then)\b/i.test(text) || /[.!?]\s+(?:also|then|and|plus)\b/i.test(text);
 }
 
-export function parseLiveBrief(text: string): LiveBrief {
+export function parseLiveBrief(input: string): LiveBrief {
+  const text = repairSelfCorrection(input);
   const lowered = text.toLowerCase();
   const homeBased = /\b(home[- ]?based|at[- ]home|in[- ]home|from home|work(?:ing)? from home|home business(?:es)?|cottage business|owner[- ]run)\b/.test(
     lowered,
@@ -315,8 +427,11 @@ export function parseLiveBrief(text: string): LiveBrief {
     excludeNational: !askedForChains,
     askedForChains,
     wantsResearch:
+      looksLikeCompanyBrief(text) ||
       /\b(research|look (?:them|it|these) up|dig in|public details|check (?:them|it) out)\b/i.test(text) ||
-      /\bbrief (?:me|them|these|the)\b/i.test(text),
+      /\bbrief (?:me|them|these|the)\b/i.test(text) ||
+      isResearchQuestion(text) ||
+      Boolean(name && /\binfo(?:rmation)?\s+(?:about|on)\b/i.test(text)),
     wantsNews:
       /\b(what'?s new|what is new|whats new|news scan|local news|expansion|new location|grand opening|what'?s going on with|check what'?s new|check what is new|new with (?:them|these|it))\b/i.test(
         text,
@@ -402,10 +517,30 @@ export function isLiveNext(text: string) {
   return /^(?:(?:please|okay|ok)\s+)*(?:skip(?: this(?: one)?)?|next(?: one| business)?|another(?: one)?|skip to (?:the )?next(?: one)?)[.!?\s]*$/i.test(text);
 }
 
-export function resolveLiveTurn(text: string, previous: LiveBrief | null, context: {
+/** Composer command that downloads a bug log. It is not a search or a model turn. */
+export function isLiveOutputCommand(text: string) {
+  return /^\/output[.!?]?\s*$/i.test(text.trim());
+}
+
+/** Composer command that opens the phone-sales copilot. It is not a search or a model turn. */
+export function isLiveCoachCommand(text: string) {
+  return /^\/live[\s-]?mode[.!?]?\s*$/i.test(text.trim());
+}
+
+export function resolveLiveTurn(input: string, previous: LiveBrief | null, context: {
   awaitingLocation?: boolean;
   locationLabel?: string | null;
 }) {
+  if (isLiveOutputCommand(input) || isLiveCoachCommand(input)) {
+    return {
+      search: false,
+      retry: false,
+      reset: false,
+      brief: parseLiveBrief(input),
+      awaitingLocation: false,
+    };
+  }
+  const text = repairSelfCorrection(input);
   const parsed = parseLiveBrief(text);
   const reset = /\b(?:start (?:over|fresh)|new search|clear (?:the |my )?list|forget (?:the |that |my )?(?:list|search)|reset (?:the )?search)\b/i.test(text);
   const retry = !reset && isLiveRetry(text);
@@ -444,7 +579,11 @@ export function describeBrief(brief: LiveBrief) {
     brief.requestedCount ? `exactly ${brief.requestedCount} ${brief.requestedCount === 1 ? "business" : "businesses"}` : null,
     brief.categoryHint ? `industry: ${brief.categoryHint}` : null,
     brief.searchTerms?.length ? `search focus: ${brief.searchTerms.join(", ")}` : null,
-    brief.wantsResearch ? "research the ones you find" : null,
+    brief.wantsResearch
+      ? looksLikeCompanyBrief(brief.raw)
+        ? "research this company, then brief from verified public facts only"
+        : "research the ones you find"
+      : null,
     brief.wantsNews ? "scan local news / what's new" : null,
     brief.wantsGenuineCheck ? "genuine-check each listing" : null,
     brief.wantsCompetitors ? "flag rivals sitting next to each other" : null,

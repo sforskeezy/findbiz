@@ -434,11 +434,16 @@ function CodeBlock({ language, text }: { language: string | null; text: string }
 }
 
 const HEADING_CLASS: Record<1 | 2 | 3 | 4, string> = {
-  1: "text-[19px] font-semibold leading-[1.3] tracking-[-0.024em] text-[#14140f]",
-  2: "text-[16px] font-semibold leading-[1.35] tracking-[-0.02em] text-[#14140f]",
-  3: "text-[14.5px] font-semibold leading-[1.4] tracking-[-0.015em] text-[#14140f]",
-  4: "text-[12px] font-semibold uppercase tracking-[0.06em] text-[#8a8a84]",
+  1: "text-[16.5px] font-semibold leading-[1.35] tracking-[-0.02em] text-[#14140f]",
+  2: "text-[15.5px] font-semibold leading-[1.4] tracking-[-0.018em] text-[#14140f]",
+  3: "text-[15px] font-semibold leading-[1.45] tracking-[-0.014em] text-[#14140f]",
+  4: "text-[15px] font-semibold leading-[1.45] tracking-[-0.014em] text-[#14140f]",
 };
+
+/** A paragraph that is only `**Title**` is a body-sized section title, not a giant heading. */
+function isSectionHeading(text: string) {
+  return /^\*\*[^*\n]{1,80}\*\*$/.test(text.trim());
+}
 
 function Blocks({ blocks, keyPrefix, dense }: { blocks: Block[]; keyPrefix: string; dense?: boolean }) {
   return (
@@ -446,31 +451,30 @@ function Blocks({ blocks, keyPrefix, dense }: { blocks: Block[]; keyPrefix: stri
       {blocks.map((block, blockIndex) => {
         const key = `${keyPrefix}-b${blockIndex}`;
         const first = blockIndex === 0;
-        const spacing = dense ? "mt-1.5" : "mt-3.5";
+        const prev = blocks[blockIndex - 1];
+        const afterHeading = prev?.kind === "h" || (prev?.kind === "p" && isSectionHeading(prev.text));
+        const spacing = dense ? "mt-1.5" : afterHeading ? "mt-2" : "mt-3.5";
 
         if (block.kind === "h") {
           // Answers live inside a page that already owns its h1, so shift a
           // markdown level down one to keep the document outline honest.
           const Tag = (["h2", "h3", "h4", "h5"] as const)[block.level - 1];
           return (
-            <Tag key={key} className={cn(HEADING_CLASS[block.level], !first && (dense ? "mt-2" : "mt-5"))}>
+            <Tag key={key} className={cn(HEADING_CLASS[block.level], !first && (dense ? "mt-3" : "mt-6"))}>
               {inline(block.text, key)}
             </Tag>
           );
         }
 
         if (block.kind === "hr") {
-          return <hr key={key} className={cn("border-0 border-t border-[#ecece6]", !first && "mt-4")} />;
+          return <hr key={key} className={cn("border-0 border-t border-[#ecece6]", !first && "mt-5")} />;
         }
 
         if (block.kind === "quote") {
           return (
             <blockquote
               key={key}
-              className={cn(
-                "border-l-2 border-[#dcdcd4] pl-3.5 text-[#4a4a44] italic",
-                !first && spacing,
-              )}
+              className={cn("live-md-quote", !first && (dense ? "mt-2.5" : "mt-4"))}
             >
               <Blocks blocks={block.blocks} keyPrefix={key} dense />
             </blockquote>
@@ -486,16 +490,24 @@ function Blocks({ blocks, keyPrefix, dense }: { blocks: Block[]; keyPrefix: stri
         }
 
         if (block.kind === "p") {
+          const heading = isSectionHeading(block.text);
+          const title = heading ? block.text.trim().replace(/^\*\*|\*\*$/g, "") : block.text;
           return (
-            <p key={key} className={cn(!first && spacing)}>
-              <Paragraph text={block.text} keyPrefix={key} />
+            <p
+              key={key}
+              className={cn(
+                heading ? "live-md-kicker" : "live-md-p",
+                !first && (dense ? "mt-1.5" : heading ? "mt-6" : afterHeading ? "mt-2" : "mt-[0.95em]"),
+              )}
+            >
+              <Paragraph text={title} keyPrefix={key} />
             </p>
           );
         }
 
         if (block.kind === "table") {
           return (
-            <ol key={key} className={cn("space-y-1.5", !first && spacing)}>
+            <ol key={key} className={cn("space-y-1", !first && spacing)}>
               {block.rows.map((row, rowIndex) => (
                 <li key={`${key}-r${rowIndex}`} className="flex gap-2.5">
                   <span className="w-[18px] shrink-0 text-right text-[13px] font-medium tabular-nums text-[#a4a49c]">
@@ -530,7 +542,7 @@ function Blocks({ blocks, keyPrefix, dense }: { blocks: Block[]; keyPrefix: stri
           <ListTag
             key={key}
             {...(block.ordered && block.start !== 1 ? { start: block.start } : {})}
-            className={cn("space-y-1.5", !first && (dense ? "mt-1.5" : "mt-3"))}
+            className={cn("space-y-1", !first && (dense ? "mt-1" : afterHeading ? "mt-2" : "mt-3.5"))}
           >
             {block.items.map((item, itemIndex) => (
               <li key={`${key}-i${itemIndex}`} className="flex gap-2.5">
@@ -538,7 +550,7 @@ function Blocks({ blocks, keyPrefix, dense }: { blocks: Block[]; keyPrefix: stri
                   <span
                     aria-hidden="true"
                     className={cn(
-                      "mt-[5px] inline-flex h-[13px] w-[13px] shrink-0 items-center justify-center rounded-[4px] border",
+                      "mt-[6px] inline-flex h-[13px] w-[13px] shrink-0 items-center justify-center rounded-[4px] border",
                       item.checked ? "border-[#171715] bg-[#171715] text-white" : "border-[#cfcfc7] bg-white",
                     )}
                   >
@@ -550,7 +562,7 @@ function Blocks({ blocks, keyPrefix, dense }: { blocks: Block[]; keyPrefix: stri
                     className={
                       block.ordered
                         ? "w-[18px] shrink-0 text-right text-[13px] font-medium tabular-nums text-[#a4a49c]"
-                        : "mt-[10px] h-[5px] w-[5px] shrink-0 rounded-full bg-[#cfcfc7]"
+                        : "mt-[11px] h-[5px] w-[5px] shrink-0 rounded-full bg-[#b4b4ac]"
                     }
                   >
                     {block.ordered ? `${block.start + itemIndex}.` : null}
@@ -573,7 +585,7 @@ export function LiveMarkdown({ content, streaming = false }: { content: string; 
 
   return (
     <StreamingContext.Provider value={streaming}>
-      <div className="text-[15px] leading-[1.68] tracking-[-0.008em] text-[#1c1c19] [&_a]:break-words">
+      <div className="live-markdown text-[15px] leading-[1.75] tracking-[-0.011em] text-[#1c1c19] [&_a]:break-words">
         <Blocks blocks={blocks} keyPrefix="md" />
         {streaming && (
           <WorkingDots size={12} className="ml-1.5 inline-block align-middle text-[#3a3a35]" />

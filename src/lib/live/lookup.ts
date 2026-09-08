@@ -1,6 +1,11 @@
 import { parseLiveBrief } from "@/lib/live/intent";
 import type { LiveChatMessage } from "@/lib/live/types";
-import { matchesBusinessName } from "@/lib/business-identity";
+import {
+  locationQueryVariants,
+  matchesBusinessName,
+  nameVariants,
+  nameWithoutRepeatedCity,
+} from "@/lib/business-identity";
 export { matchesBusinessName as matchesLookupName } from "@/lib/business-identity";
 
 export type WebLookupPlan = {
@@ -9,6 +14,39 @@ export type WebLookupPlan = {
   location: string | null;
   variants: string[];
 };
+
+function compact(value: string) {
+  return value.replace(/\s+/g, " ").trim().slice(0, 240);
+}
+
+function namedLookupQueries(name: string, location: string | null) {
+  const names = nameVariants(name);
+  const places = locationQueryVariants(location);
+  const primaryName = names.find((item) => !/['\u2018\u2019]/.test(item)) || names[0];
+  const shortened = nameWithoutRepeatedCity(primaryName, location);
+  const primaryPlace = places[0] || "";
+  const queries = [
+    compact([primaryName, primaryPlace].filter(Boolean).join(" ")),
+    shortened ? compact([shortened, primaryPlace].filter(Boolean).join(" ")) : "",
+    ...names.map((item) => compact([item, primaryPlace].filter(Boolean).join(" "))),
+    ...places.slice(1).map((place) => compact([primaryName, place].join(" "))),
+    compact([`"${primaryName.replace(/"/g, "")}"`, primaryPlace].filter(Boolean).join(" ")),
+  ];
+  return [...new Set(queries.filter(Boolean))];
+}
+
+/**
+ * Queries for one known business. Used for a fresh named ask and for a name the
+ * rep just corrected, so both take the same spelling and place retries.
+ */
+export function planNamedLookup(name: string, location: string | null, extraTerms: string[] = []): WebLookupPlan {
+  const queries = namedLookupQueries(name, location);
+  for (const term of extraTerms) {
+    const combined = compact([queries[0], term].filter(Boolean).join(" "));
+    if (combined && !queries.includes(combined)) queries.push(combined);
+  }
+  return { query: queries[0], name, location, variants: queries.slice(1) };
+}
 
 /** Resolve "just Google it" from the rep's words, never an assistant's wrong guess. */
 export function planWebLookup(text: string, history: Pick<LiveChatMessage, "role" | "content">[] = []): WebLookupPlan | null {
@@ -29,14 +67,13 @@ export function planWebLookup(text: string, history: Pick<LiveChatMessage, "role
   if (retry && !target.targetName && !target.wantsWeb) return null;
   const name = target.targetName;
   const location = target.locationHint;
-  const clean = (value: string) => value.replace(/\s+/g, " ").trim().slice(0, 240);
-  const query = clean(name ? [name, location].filter(Boolean).join(" ") : brief.webQueries[0] || subject);
   const trade = subject.match(/\b(decks?|screen enclosures?|patios?|roofing|plumbing|landscaping|lawn care)\b/i)?.[0];
-  const variants = name ? [
-    clean([`"${name.replace(/"/g, "")}"`, location, trade].filter(Boolean).join(" ")),
-    clean([name, location, trade, "business contact"].filter(Boolean).join(" ")),
-  ] : brief.webQueries.slice(1);
-  return { query, name, location, variants: [...new Set(variants)].filter((value) => value !== query) };
+  if (name) {
+    const wantsTrade = trade && !name.toLowerCase().includes(trade.toLowerCase());
+    return planNamedLookup(name, location, wantsTrade ? [trade] : []);
+  }
+  const query = compact(brief.webQueries[0] || subject);
+  return { query, name, location, variants: brief.webQueries.slice(1).filter((item) => item !== query) };
 }
 
 export function lookupReplyNeedsEvidence(content: string, name: string) {
@@ -49,7 +86,31 @@ export function lookupReplyNeedsEvidence(content: string, name: string) {
     || /^(?:(?:the|this|that|a|any|local|matching)\s+)*(?:business|company|listing)\b/i.test(miss);
 }
 
-export function lookupEvidenceReply(query: string, findings: Array<{title: string; url: string; snippet: string}>, unavailable = false) {
+/**
+ * Ask for the name again without dropping the question. The rep only has to fix
+ * the spelling; the place and the ask are already held for them.
+ */
+export function unresolvedNameReply(input: {
+  name: string;
+  location: string | null;
+  suggestion: string | null;
+  question: string | null;
+  unavailable: boolean;
+}) {
+  const place = input.location ? ` in ${input.location}` : "";
+  const holding = input.question
+    ? `I’m still holding the original ask — ${input.question}${place}.`
+    : `I’m still holding the original ask${place}.`;
+  if (input.unavailable) {
+    return `The search providers could not complete the lookup for **${input.name}**${place}. ${holding} Say the name once more and I’ll run it again.`;
+  }
+  if (input.suggestion) {
+    return `I couldn’t verify **${input.name}**${place}. The closest public match I found is **${input.suggestion}**. ${holding} Confirm that name, or spell the one you meant, and I’ll keep going.`;
+  }
+  return `I couldn’t confidently resolve **${input.name}**${place}, and I haven’t substituted another business. ${holding} Spell the name, or give me its website, and I’ll continue.`;
+}
+
+export function lookupEvidenceReply(query: string, findings: Array<{ title: string; url: string; snippet: string }>, unavailable = false) {
   if (!findings.length) return unavailable
     ? `The search providers could not complete the lookup for **${query}**. That does not mean the business does not exist. Try again shortly, or share its website or a screenshot of the listing.`
     : `I couldn’t verify a matching result for **${query}** from the searches I ran. I haven’t substituted another business. A website, phone number, or another part of the name would help narrow it down.`;

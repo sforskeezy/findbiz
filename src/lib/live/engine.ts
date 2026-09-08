@@ -36,12 +36,40 @@ import {
   extractLiveLocation,
   hasCompoundAsk,
   isLiveNext,
+  isLiveCoachCommand,
+  isLiveOutputCommand,
   isLiveSearchRequest,
   resolveLiveTurn,
   parseLiveBrief,
   type LiveBrief,
 } from "@/lib/live/intent";
+import {
+  answerLeaksUnverifiedPain,
+  collectLookupEvidence,
+  collectSalesEvidence,
+  customerSpeechFromRep,
+  formatCompanyBrief,
+  formatNamedLookupBrief,
+  formatNeutralCallAdvice,
+  inventsUnverifiedNetwork,
+  looksLikeCompanyBrief,
+  nextSalesMove,
+  promisesUnverifiedPriceWin,
+  refersToCurrentCompany,
+  recommendsInPersonSelling,
+  repProvidedNetworkFact,
+  salesCoachNotes,
+  surrendersAfterSoftObjection,
+  type SalesEvidence,
+} from "@/lib/live/sales-coach";
+import {
+  activeCompanyFromLookup,
+  activeCompanyFromProspect,
+  formatActiveCompanyBlock,
+  namesMatch,
+} from "@/lib/live/focus";
 import type {
+  LiveActiveCompany,
   LiveChatEvent,
   LiveChatMessage,
   LiveMemoryFact,
@@ -52,7 +80,8 @@ import type {
   LiveSource,
   LiveThinkingStep,
 } from "@/lib/live/types";
-import { planWebLookup, matchesLookupName, lookupEvidenceReply, lookupReplyNeedsEvidence, type WebLookupPlan } from "@/lib/live/lookup";
+import { planNamedLookup, planWebLookup, matchesLookupName, lookupEvidenceReply, lookupReplyNeedsEvidence, unresolvedNameReply, type WebLookupPlan } from "@/lib/live/lookup";
+import { pendingFromLookup, resolveLookupClarification, suggestNameCorrection, type ClarifiedLookup } from "@/lib/live/clarify";
 
 /** Collects the narration and citations for one turn so the UI can replay them. */
 type TurnTrace = {
@@ -64,6 +93,8 @@ type TurnTrace = {
   /** Prospect ids already scanned this turn, so a second ask is not a repeat. */
   scannedNews: Set<string>;
   checkedListings: boolean;
+  companyResearch?: Awaited<ReturnType<typeof researchProspect>>;
+  companyEvidence?: SalesEvidence;
   brief: LiveBrief;
   signal?: AbortSignal;
   emit: (event: LiveChatEvent) => Promise<void>;
@@ -298,7 +329,8 @@ const TOOLS = [
     type: "function",
     function: {
       name: "research_business",
-      description: "Look up public information for one business already in the current list, or by name.",
+      description:
+        "Look up public information for the active company, or one already in the current list. Returns verifiedFacts, hypotheses, and unknowns separately. Do not treat hypotheses or listing fit as this company's problems. Works after a named-company lookup even when there is no nearby-business list.",
       parameters: {
         type: "object",
         properties: {
@@ -569,6 +601,7 @@ function titleFromMessage(text: string) {
 
 export function publicState(session: LiveSession, memory: LiveMemoryFact[]): LivePublicState {
   const cards = session.queue?.prospects.map(compactProspect) ?? [];
+  const active = session.activeCompany;
   return {
     session: {
       ...sessionSummary(session),
@@ -586,10 +619,24 @@ export function publicState(session: LiveSession, memory: LiveMemoryFact[]): Liv
         }
       : null,
     memory,
+    activeCompany: active
+      ? {
+          name: active.name,
+          location: active.location ?? null,
+          website: active.website ?? null,
+          publicTrigger: collectLookupEvidence(active.name, active.location ?? null, active.findings ?? []).trigger,
+        }
+      : null,
   };
 }
 
-function systemPrompt(memory: LiveMemoryFact[], queue: LiveQueue | null, brief: LiveBrief | null) {
+function systemPrompt(
+  memory: LiveMemoryFact[],
+  queue: LiveQueue | null,
+  brief: LiveBrief | null,
+  activeCompany?: LiveActiveCompany | null,
+  clarified?: ClarifiedLookup | null,
+) {
   const recalled = usefulMemory(memory);
   const memoryBlock = recalled.length
     ? recalled.map((item) => `- (${item.kind}) ${item.text}`).join("\n")
@@ -599,10 +646,10 @@ function systemPrompt(memory: LiveMemoryFact[], queue: LiveQueue | null, brief: 
         .map((item, index) => {
           const mark = index === queue.currentIndex ? " ← current" : "";
           const flags = item.signals?.map((signal) => signal.label).join(", ");
-          return `${index + 1}. ${item.name} · ${item.category} · ${item.address} · ${item.distanceMiles.toFixed(1)} mi · fit ${item.score} · ${item.phone || "no phone"} · ${item.topOpportunity || item.summary || item.category}${flags ? ` · ${flags}` : ""}${mark}`;
+          return `${index + 1}. ${item.name} · ${item.category} · ${item.address} · ${item.distanceMiles.toFixed(1)} mi · ${item.phone || "no phone"}${flags ? ` · ${flags}` : ""}${mark}`;
         })
         .join("\n")
-    : "No current list.";
+    : "No nearby-business list. That does not mean there is no active company.";
   const today = new Date().toLocaleDateString("en-US", {
     weekday: "long",
     month: "long",
@@ -613,14 +660,25 @@ function systemPrompt(memory: LiveMemoryFact[], queue: LiveQueue | null, brief: 
     ? `Latest request: "${brief.raw}"
 Only actions requested for THIS turn: ${describeBrief(brief)}.`
     : "Answer the latest message. No search or research is pending.";
+  const clarifyBlock = clarified
+    ? `
+Name correction in progress — this outranks anything else in this prompt:
+- The rep just corrected the business name to "${clarified.name}"${clarified.location ? ` in ${clarified.location}` : ""}. Their short message is a spelling fix, not a new request.
+- The request still open is: "${clarified.request}"${clarified.question ? ` The question to answer is ${clarified.question}.` : ""}
+- Answer that question about that business, from the web evidence in this turn. Keep the place they already gave.
+- Do NOT call find_businesses, do not list nearby businesses, do not switch to another city, and do not ask them to start a search. If the evidence does not name an owner, say so plainly and name what would settle it.
+`
+    : "";
 
   return `You are Live, PAI's full-time sales prospecting assistant. Today is ${today}.
 
 You help a field rep find nearby businesses worth contacting, brief them in chat, draft openers, and keep moving. Talk like a sharp colleague, not a chatbot.
 
+${salesCoachNotes()}
+
 Grounding, in order of importance:
 - Never invent businesses, phone numbers, websites, addresses, hours, owners, or events. A number you did not read in a tool result does not exist.
-- Ground claims about specific businesses in tool results and the current list. General explanations, writing help, brainstorming, and casual conversation can use your general knowledge. Distinguish suggestions from verified facts.
+- Ground claims about specific businesses in tool results, the active company, and the current list. General explanations, writing help, brainstorming, and casual conversation can use your general knowledge. Distinguish suggestions from verified facts.
 - Never present invented businesses as discovered prospects. Ask for a location only when a requested search needs one; ordinary conversation needs no list.
 - If the rep points at the chat ("look in the chat", "the one above"), read the conversation and the list. Do not treat their words as a place to search.
 - Attribute anything soft: "the listing says", "FCC reports", "public web". Never upgrade reported to confirmed.
@@ -632,6 +690,7 @@ Listening:
 - If they change the trade ("actually dentists instead"), replace the old trade and profile; reuse the area unless changed. If they say "same search in another ZIP", keep its filters.
 - Corrections override remembered preferences. A one-time home-based search is not a permanent preference. Only save preferences when explicitly asked to remember or described as an ongoing working preference.
 - Resolve short follow-ups from the conversation: "make it shorter" edits your last answer, "why?" explains it, and "the second one" refers to the displayed list. Ask one focused question only when the intended reference is actually ambiguous.
+- "This company", "this business", "them", "brief me again", and "what should I ask them?" refer to the active company. A successful named-company lookup is enough. Do not say there is no company or ask them to search an area first.
 - Do every part of what they asked, in the order they asked it. A request with "and then", "also", or a second sentence is not finished until the last clause is done. Call every tool you still need before you write the answer.
 - If they asked to find AND research AND check what's new AND google something, run find_businesses, then research_business or check_listing, then scan_local_news, then google_search. Do not stop after the list.
 - google_search when they say google, search the web, look this up online, or you need a public fact that is not already in the list or a tool result. Do not refuse because the topic is not a listed business. One call per distinct question.
@@ -653,7 +712,7 @@ Picking the right tool:
 - identify_address when they ask what is at an address, what is this address, or who is at a street. Answer with the business at that pin. Do not run find_businesses and dump nearby shops.
 - Already have a list and they ask who to call? Rank from the current list. Do not search again.
 - refine_list when they want fewer: one industry, a tighter radius, only ones with a phone, closest first.
-- research_business when you need public facts about one company on the list that you do not already have.
+- research_business when they ask to brief, prep, tell you about, or research the active company or a company on the list. Do not skip it. Do not treat listing fit scores or category blurbs as this company's problems.
 - scan_local_news when they ask what's new, for a local news scan, or expansions. It defaults to the business currently on screen, which is the one they mean after they press Next. Pass scope "list" only when they clearly asked about the whole list. Quote only what the snippet actually says.
 - check_listing when they ask if a shop is real, independent, or worth calling.
 - google_search for anything they asked you to google or look up on the web, including companies that are not on the list, news, owners, hours, products, and general facts. Use it even when there is no current list.
@@ -671,19 +730,23 @@ Reading broadband results: providerCount and providers cover every provider at t
 
 How to write:
 - Answer in the first sentence. Do not narrate a plan, list capabilities, or stall before a tool.
-- When a turn had several asks, answer each one. A short heading per clause is fine. Do not drop the last request.
+- When a turn had several asks, answer each one. A short **bold** section title per clause is fine. Do not drop the last request.
 - Search a named place only when the latest message requests discovery or address identification. A place mentioned in an explanation is not a search request.
 - After a search, name the strongest fits with why, distance, and phone. If a listing has a news flag (Just opened, Recent expansion, Just moved, New ownership, In the news), put it next to the phone and open with it instead of the internet pitch. Do not recite every row — the full list is on screen.
 - When a news scan finds nothing, say that in one line and move on. "Nothing public on them" is a real answer.
+- Keep answers short. Most sales-coaching replies are 2–4 short sections, 3–5 bullets at most, one short explanation, one recommended line, and one next action. Do not pad with unused templates like "What we know now", "The Reality Check", "Your Single Best Move", "Why this works", or "Strategy for the future". Only include sections that help this turn.
 - Match the message: a greeting gets a greeting, a direct question gets a direct answer, and research gets enough detail to be useful. Usually keep it under 120 words, but honor requests for depth or a specific format. Avoid repetitive menus, capability lists, and ending every reply with another task.
-- Markdown: **bold** names, numbered lists when ranking, a short ## heading only when splitting a brief from a draft. No tables, no boxed grids, no backtick-wrapping ordinary words, no emoji, no horizontal rules.
-- One idea per bullet. Do not pad with a summary of what you just said.
+- Markdown, ChatGPT-plain: write on the normal page — no cards, colored panels, dashboards, grids, or in-reply sidebars. **Bold** section titles at body size. Normal bullets; bold useful **Label:** values. Short paragraphs. Space between sections, tight lists. Put the line the rep should actually say in a markdown blockquote (>). No tables, no giant headings, no italic walls of text, no emoji, no decorative icons, no horizontal rules, no backtick-wrapping ordinary words.
+- Summarize verified facts into clean bullets. Never dump raw search rows as "Public coverage" or "Public source" — Sources already attributes. One idea per bullet. Do not pad with a summary of what you just said.
 - A thank-you gets a brief acknowledgment, without an offer, follow-up question, or another menu of things you can do.
 
 ${briefBlock}
-
+${clarifyBlock}
 Remembered facts:
 ${memoryBlock}
+
+Active company:
+${formatActiveCompanyBlock(activeCompany)}
 
 Current list:
 ${queueBlock}`;
@@ -706,6 +769,58 @@ function findInQueue(queue: LiveQueue | null, prospectId?: string, name?: string
   if (exact) return exact;
   const matches = queue.prospects.filter((item) => item.name.toLowerCase().includes(needle));
   return matches.length === 1 ? matches[0] : null;
+}
+
+function rememberActiveProspect(session: LiveSession, prospect: NonNullable<ReturnType<typeof currentProspect>>, findings: LiveActiveCompany["findings"] = []) {
+  session.activeCompany = activeCompanyFromProspect(prospect, session.queue?.locationLabel, findings);
+}
+
+function resolveCompanyFocus(text: string, session: LiveSession, brief: LiveBrief) {
+  if (brief.targetName) {
+    return { prospect: findInQueue(session.queue, undefined, brief.targetName), named: null as LiveActiveCompany | null };
+  }
+  const named = text.match(/\b(?:brief me on|tell me about|prep(?:are)? me for)\s+(.+)/i)?.[1];
+  const focus = named
+    ?.split(/\s+(?:and also|and then|and then also|, then)\b/i)[0]
+    ?.replace(/[.!?].*$/, "")
+    .replace(/[,.!?]+$/, "")
+    .trim();
+  if (focus && !/^(?:this|that|them|the (?:current |first )?(?:one|company|business|prospect))\b/i.test(focus)) {
+    return { prospect: findInQueue(session.queue, undefined, focus), named: null as LiveActiveCompany | null };
+  }
+  if (!looksLikeCompanyBrief(text) && !refersToCurrentCompany(text)) {
+    return { prospect: null, named: null as LiveActiveCompany | null };
+  }
+  const active = session.activeCompany;
+  if (active?.prospectId) {
+    const listed = findInQueue(session.queue, active.prospectId) ?? currentProspect(session.queue);
+    if (listed) return { prospect: listed, named: null };
+  }
+  if (active) return { prospect: null, named: active };
+  return { prospect: currentProspect(session.queue), named: null };
+}
+
+function evidenceFromActive(company: LiveActiveCompany): SalesEvidence {
+  return collectLookupEvidence(company.name, company.location, company.findings);
+}
+
+async function researchCompanyBrief(
+  target: NonNullable<ReturnType<typeof currentProspect>>,
+  session: LiveSession,
+  trace: TurnTrace,
+) {
+  if (trace.companyResearch?.business.id === target.id && trace.companyEvidence) return trace.companyResearch;
+  await trackStep(trace, `Reading public sources on ${target.name}`, target.address);
+  if (session.queue) {
+    const index = session.queue.prospects.findIndex((item) => item.id === target.id);
+    if (index >= 0) session.queue = { ...session.queue, currentIndex: index };
+  }
+  const researched = await abortable(trace.signal, () => researchProspect(target));
+  trace.companyResearch = researched;
+  trace.companyEvidence = researched.evidence;
+  rememberActiveProspect(session, target, researched.business.findings);
+  await trackSources(trace, researched.sources);
+  return researched;
 }
 
 /** Tools that only read state, so several of them can be answered at once. */
@@ -775,6 +890,8 @@ async function runTool(
     session.queue = found.queue;
     session.brief = { ...trace.brief, locationHint: found.queue.locationLabel, profile, requestedCount: limit };
     session.awaitingLocation = false;
+    const listed = currentProspect(found.queue);
+    if (listed) rememberActiveProspect(session, listed);
     trace.searched = true;
     await trackSources(trace, found.sources);
     await trackStep(
@@ -832,6 +949,7 @@ async function runTool(
           currentIndex: 0,
           prospects: identified.prospects,
         };
+        rememberActiveProspect(session, identified.prospects[0]);
       }
       await trackSources(trace, identified.sources);
       return {
@@ -859,19 +977,52 @@ async function runTool(
   }
 
   if (name === "research_business") {
-    const prospect = findInQueue(
+    const askedName = typeof args.name === "string" ? args.name.trim() : "";
+    let prospect = findInQueue(
       session.queue,
       typeof args.prospectId === "string" ? args.prospectId : undefined,
-      typeof args.name === "string" ? args.name : undefined,
+      askedName || undefined,
     );
-    if (!prospect) return { ok: false, error: "That business is not in the current list. Find businesses in an area first." };
-    await trackStep(trace, `Reading public sources on ${prospect.name}`, prospect.address);
-    session.queue = session.queue
-      ? { ...session.queue, currentIndex: session.queue.prospects.findIndex((item) => item.id === prospect.id) }
-      : session.queue;
-    const researched = await abortable(trace.signal, () => researchProspect(prospect));
-    await trackSources(trace, researched.sources);
-    return { ok: true, business: researched.business };
+    if (!prospect && session.activeCompany?.prospectId) {
+      prospect = findInQueue(session.queue, session.activeCompany.prospectId);
+    }
+    if (prospect) {
+      const listed = prospect;
+      await trackStep(trace, `Reading public sources on ${listed.name}`, listed.address);
+      session.queue = session.queue
+        ? { ...session.queue, currentIndex: session.queue.prospects.findIndex((item) => item.id === listed.id) }
+        : session.queue;
+      const researched = await abortable(trace.signal, () => researchProspect(listed));
+      await trackSources(trace, researched.sources);
+      trace.companyResearch = researched;
+      trace.companyEvidence = researched.evidence;
+      rememberActiveProspect(session, listed, researched.business.findings);
+      return { ok: true, business: researched.business };
+    }
+    const focus = session.activeCompany;
+    if (focus && (!askedName || namesMatch(askedName, focus.name))) {
+      const evidence = evidenceFromActive(focus);
+      trace.companyEvidence = evidence;
+      await trackStep(trace, `Using public sources already pulled on ${focus.name}`, focus.location);
+      return {
+        ok: true,
+        business: {
+          name: focus.name,
+          address: focus.location,
+          website: focus.website,
+          verifiedFacts: evidence.verified,
+          hypotheses: evidence.hypotheses,
+          unknowns: evidence.unknowns,
+          companySpecificTrigger: evidence.trigger,
+          noStrongTrigger: !evidence.trigger,
+          findings: focus.findings,
+          note: evidence.trigger
+            ? "Use verifiedFacts and companySpecificTrigger only. Hypotheses are questions to ask, not facts about this company."
+            : "No company-specific trigger was verified. Do not invent a sales angle or treat category norms as this company's problems.",
+        },
+      };
+    }
+    return { ok: false, error: "That business is not in the current list. Find businesses in an area first, or brief a named company." };
   }
 
   if (name === "check_broadband") {
@@ -931,6 +1082,7 @@ async function runTool(
     };
     const prospect = currentProspect(session.queue);
     if (!prospect) return { ok: false, error: "The list is empty." };
+    rememberActiveProspect(session, prospect);
     await trackStep(trace, `Moving to ${prospect.name}`, `${session.queue.currentIndex + 1} of ${session.queue.prospects.length}`);
     await trackSources(trace, dedupeSources([toSource({ title: prospect.name, url: prospect.website || prospect.directoryUrl, snippet: prospect.address })]));
     return {
@@ -954,7 +1106,11 @@ async function runTool(
       ? { ...session.queue, currentIndex: session.queue.prospects.findIndex((item) => item.id === prospect.id) }
       : session.queue;
     await trackStep(trace, kind === "call" ? `Drafting a call opener for ${prospect.name}` : `Drafting an email for ${prospect.name}`, prospect.address);
-    const outreach = prepareOutreach(prospect);
+    const evidence =
+      trace.companyEvidence && trace.companyResearch?.business.id === prospect.id
+        ? trace.companyEvidence
+        : collectSalesEvidence(prospect);
+    const outreach = prepareOutreach(prospect, evidence);
     return {
       ok: true,
       kind,
@@ -962,8 +1118,13 @@ async function runTool(
       callOpener: outreach.callOpener,
       email: outreach.followUpEmail,
       qualification: outreach.qualification,
-      needs: prospect.hypothesizedNeeds.filter((item) => !/\bhiring\b/i.test(item)).slice(0, 3),
-      note: "These drafts are grounded in the public listing. Keep the Spectrum Business voice. Do not invent facts.",
+      verifiedFacts: evidence.verified,
+      hypotheses: evidence.hypotheses,
+      unknowns: evidence.unknowns,
+      companySpecificTrigger: evidence.trigger,
+      note: evidence.trigger
+        ? "Use verifiedFacts and companySpecificTrigger. Hypotheses are questions, not this company's problems."
+        : "No company-specific trigger was verified. Category questions are discovery, not proof of a problem. Do not invent a sales angle.",
     };
   }
 
@@ -1118,9 +1279,9 @@ async function runTool(
     if (query.length < 2) return { ok: false, error: "Say what to Google." };
     await trackStep(trace, "Searching Google", query.slice(0, 90));
     try {
-      const looked = await abortable(trace.signal, () => googleSearch(query, trace.webPlan?.name ? [] : extra, {businessName: trace.webPlan?.name, fresh: true, signal: trace.signal}));
+      const looked = await abortable(trace.signal, () => googleSearch(query, trace.webPlan?.name ? [] : extra, {businessName: trace.webPlan?.name, location: trace.webPlan?.location, fresh: true, signal: trace.signal}));
       if (trace.webPlan?.name) {
-        looked.findings = looked.findings.filter((item) => matchesLookupName(item, trace.webPlan!.name!));
+        looked.findings = looked.findings.filter((item) => matchesLookupName(item, trace.webPlan!.name!, trace.webPlan?.location));
         looked.sources = looked.sources.filter((item) => looked.findings.some((finding) => finding.url === item.url));
       }
       await trackSources(trace, looked.sources);
@@ -1848,6 +2009,7 @@ async function heuristicReply(text: string, session: LiveSession, trace: TurnTra
     };
     const prospect = currentProspect(session.queue);
     if (!prospect) return "The list is empty.";
+    rememberActiveProspect(session, prospect);
     return formatSkipReply(compactProspect(prospect), session.queue.currentIndex + 1, session.queue.prospects.length);
   }
   if (looksLikePrioritize(text) && session.queue) {
@@ -1858,7 +2020,10 @@ async function heuristicReply(text: string, session: LiveSession, trace: TurnTra
     if (!currentForDraft) return "Find businesses in an area first, then I can draft an opener or email.";
     const kind = /\b(call|opener|script)\b/i.test(text) && !/\bemail\b/i.test(text) ? "call" : "email";
     await trackStep(trace, kind === "call" ? `Drafting a call opener for ${currentForDraft.name}` : `Drafting an email for ${currentForDraft.name}`);
-    return formatOutreachReply({name: currentForDraft.name, ...prepareOutreach(currentForDraft)}, kind);
+    return formatOutreachReply({
+      name: currentForDraft.name,
+      ...prepareOutreach(currentForDraft, trace.companyEvidence ?? collectSalesEvidence(currentForDraft)),
+    }, kind);
   }
   if (trace.searched && session.queue) {
     return formatListReply(session.queue.prospects.map(compactProspect), session.queue.locationLabel, session.brief ?? null);
@@ -1876,6 +2041,8 @@ async function heuristicReply(text: string, session: LiveSession, trace: TurnTra
     }));
     session.queue = found.queue;
     trace.searched = true;
+    const listed = currentProspect(found.queue);
+    if (listed) rememberActiveProspect(session, listed);
     await trackSources(trace, found.sources);
     await trackStep(
       trace,
@@ -1906,9 +2073,29 @@ async function heuristicReply(text: string, session: LiveSession, trace: TurnTra
       return formatBroadbandReply(checked.availability);
     }
   }
-  if (current && /\b(?:current business|this business|that business|brief|tell me about)\b/i.test(text)) {
+  if (current && looksLikeCompanyBrief(text)) {
+    if (!trace.companyEvidence) {
+      await trackStep(trace, `Reading public sources on ${current.name}`, current.address);
+      const researched = await abortable(trace.signal, () => researchProspect(current));
+      trace.companyResearch = researched;
+      trace.companyEvidence = researched.evidence;
+      await trackSources(trace, researched.sources);
+      rememberActiveProspect(session, current, researched.business.findings);
+    }
+    return formatCompanyBrief(current, trace.companyEvidence ?? collectSalesEvidence(current));
+  }
+  if (session.activeCompany && looksLikeCompanyBrief(text)) {
+    const evidence = trace.companyEvidence ?? evidenceFromActive(session.activeCompany);
+    return formatCompanyBrief({ name: session.activeCompany.name }, evidence);
+  }
+  if (current && /\b(?:current business|this business|that business)\b/i.test(text)) {
     const card = compactProspect(current);
-    return `We are on **${card.name}** at ${card.address}. ${card.why} ${card.phone ? `Phone ${card.phone}.` : ""} Ask me to research it, check FCC broadband availability, draft an opener, or skip to the next one.`;
+    return `We are on **${card.name}** at ${card.address}. ${card.why} ${card.phone ? `Phone ${card.phone}.` : ""} Ask me to brief it, check FCC broadband, draft an opener, or skip to the next one.`;
+  }
+  if (session.activeCompany && /\b(?:current business|this business|that business|this company|that company)\b/i.test(text)) {
+    const active = session.activeCompany;
+    const place = active.location ? ` in ${active.location}` : "";
+    return `We are on **${active.name}**${place}. Ask me to brief it, draft an opener, or look up another public fact.`;
   }
   if (looksLikeFind(text)) return "Tell me a city, ZIP, or address and I will find businesses there.";
   return "I couldn’t reach the conversation service for that reply. Your list is still here. Please try your message again.";
@@ -1955,6 +2142,13 @@ async function executeLiveTurn(input: {
 
   const session = input.sessionId ? await loadSession(input.sessionId) : null;
   if (!session) throw new Error("This chat is no longer available. Start a new chat.");
+  if (isLiveOutputCommand(text) || isLiveCoachCommand(text)) {
+    const memory = await loadMemory();
+    const state = publicState(session, memory);
+    await emit({ type: "session", state });
+    await emit({ type: "complete", state });
+    return state;
+  }
   if (session.title === "New chat") session.title = titleFromMessage(text);
 
   const userMessage: LiveChatMessage = {
@@ -1965,7 +2159,12 @@ async function executeLiveTurn(input: {
   };
   session.messages = [...session.messages, userMessage].slice(-40);
   let memory = await loadMemory();
-  const webPlan = planWebLookup(text, session.messages.slice(0, -1)) ?? undefined;
+  // A one-word answer to "which business did you mean?" corrects the name. It is
+  // not a new request, so the original question and place stay attached to it.
+  const clarified = resolveLookupClarification(text, session.pendingLookup ?? null);
+  const webPlan = clarified
+    ? planNamedLookup(clarified.name, clarified.location, clarified.descriptor ? [clarified.descriptor] : [])
+    : planWebLookup(text, session.messages.slice(0, -1)) ?? undefined;
   const turn = resolveLiveTurn(text, session.brief ?? null, {
     awaitingLocation: session.awaitingLocation,
     locationLabel: session.queue?.locationLabel ?? rememberedTerritory(memory),
@@ -1975,14 +2174,33 @@ async function executeLiveTurn(input: {
     turn.awaitingLocation = false;
     turn.brief = parseLiveBrief(text);
   }
+  if (clarified) {
+    turn.search = false;
+    turn.awaitingLocation = false;
+    turn.brief = {
+      ...parseLiveBrief(clarified.request),
+      raw: clarified.request,
+      targetName: clarified.name,
+      locationHint: clarified.location,
+      searchTerms: [clarified.name],
+      wantsResearch: true,
+      wantsWeb: true,
+    };
+  }
   if (turn.reset) {
     session.queue = null;
     session.brief = null;
+    session.activeCompany = null;
+    session.pendingLookup = null;
   }
   const brief = turn.brief;
   trace.brief = brief;
   trace.webPlan = webPlan;
-  if (turn.search) session.brief = brief;
+  // Asking for an area search means the rep moved on from the unresolved name.
+  if (turn.search) {
+    session.brief = brief;
+    session.pendingLookup = null;
+  }
   session.awaitingLocation = turn.awaitingLocation;
   input.signal?.throwIfAborted();
   // Save the accepted user message before doing work so Stop and reconnects
@@ -2031,6 +2249,7 @@ async function executeLiveTurn(input: {
           currentIndex: 0,
           prospects: identified.prospects,
         };
+        rememberActiveProspect(session, identified.prospects[0]);
       }
       await trackSources(trace, identified.sources);
       await publish(formatIdentifyReply(identified));
@@ -2054,6 +2273,10 @@ async function executeLiveTurn(input: {
       session.queue = found.queue;
       session.brief = { ...brief, locationHint: found.queue.locationLabel };
       session.awaitingLocation = false;
+      // A real discovery run replaces the unresolved named lookup.
+      session.pendingLookup = null;
+      const listed = currentProspect(found.queue);
+      if (listed) rememberActiveProspect(session, listed);
       trace.searched = true;
       await trackSources(trace, found.sources);
       await trackStep(
@@ -2117,6 +2340,7 @@ async function executeLiveTurn(input: {
       };
       const moved = currentProspect(session.queue);
       if (moved) {
+        rememberActiveProspect(session, moved);
         await trackStep(
           trace,
           `Moving to ${moved.name}`,
@@ -2131,14 +2355,35 @@ async function executeLiveTurn(input: {
     }
   }
 
+  if (trace.webPlan?.name && findInQueue(session.queue, undefined, trace.webPlan.name)) {
+    trace.webPlan = undefined;
+  }
+
+  const focus = resolveCompanyFocus(text, session, brief);
+  const briefTarget = focus.prospect;
+  if (!content && looksLikeCompanyBrief(text) && briefTarget) {
+    await researchCompanyBrief(briefTarget, session, trace);
+    const moreWork = looksLikeOutreach(text) || looksLikeBroadband(text) || looksLikePrioritize(text) || hasCompoundAsk(text) || brief.wantsNews || brief.wantsWeb;
+    if (!moreWork && trace.companyEvidence) {
+      await publish(formatCompanyBrief(briefTarget, trace.companyEvidence));
+    }
+  } else if (!content && looksLikeCompanyBrief(text) && focus.named) {
+    const evidence = evidenceFromActive(focus.named);
+    trace.companyEvidence = evidence;
+    const moreWork = looksLikeOutreach(text) || looksLikeBroadband(text) || looksLikePrioritize(text) || hasCompoundAsk(text) || brief.wantsNews || brief.wantsWeb;
+    if (!moreWork) {
+      await publish(formatNamedLookupBrief(focus.named.name, focus.named.location, focus.named.findings));
+    }
+  }
+
   if (!content && trace.webPlan && !turn.search) {
     const plan = trace.webPlan;
     await trackStep(trace, "Searching the web", plan.query);
-    let looked = await abortable(trace.signal, () => googleSearch(plan.query, [], {businessName: plan.name, fresh: true, signal: trace.signal}));
-    const match = (item: {title: string; snippet: string; url: string}) => !plan.name || matchesLookupName(item, plan.name);
+    let looked = await abortable(trace.signal, () => googleSearch(plan.query, [], {businessName: plan.name, location: plan.location, fresh: true, signal: trace.signal}));
+    const match = (item: {title: string; snippet: string; url: string}) => !plan.name || matchesLookupName(item, plan.name, plan.location);
     if (!looked.findings.some(match) && plan.variants.length) {
       await trackStep(trace, "Checking another query", plan.variants.join(" · "));
-      const retry = await abortable(trace.signal, () => googleSearch(plan.variants[0], plan.variants.slice(1), {businessName: plan.name, fresh: true, signal: trace.signal}));
+      const retry = await abortable(trace.signal, () => googleSearch(plan.variants[0], plan.variants.slice(1), {businessName: plan.name, location: plan.location, fresh: true, signal: trace.signal}));
       looked = {
         ...retry,
         engine: [...new Set([looked.engine, retry.engine])].join(", "),
@@ -2154,14 +2399,91 @@ async function executeLiveTurn(input: {
     await trackSources(trace, looked.sources);
     collectGroundedPhones(JSON.stringify(looked.findings), groundedPhones);
     await trackStep(trace, "Reviewing search evidence", `${looked.findings.length} matching sources · ${looked.engine}`);
-    if (!looked.findings.length && !hasCompoundAsk(text)) await publish(lookupEvidenceReply(plan.query, [], looked.diagnostics.queriesCompleted === 0));
+    if (plan.name && looked.findings.length) {
+      session.activeCompany = activeCompanyFromLookup(plan.name, plan.location, looked.findings);
+      session.pendingLookup = null;
+    }
+    if (plan.name && looked.findings.length && (looksLikeCompanyBrief(text) || clarified)) {
+      trace.companyEvidence = collectLookupEvidence(plan.name, plan.location, looked.findings);
+      // A clarified name still owes an answer to the original question, so the
+      // evidence goes to the model instead of a standing company brief.
+      if (!clarified) await publish(formatNamedLookupBrief(plan.name, plan.location, looked.findings));
+    } else if (!looked.findings.length && plan.name) {
+      // Remember the unresolved name so a one-word correction resumes this ask.
+      const suggestion = suggestNameCorrection(plan.name, looked.nearMisses, plan.location);
+      session.pendingLookup = pendingFromLookup({
+        name: plan.name,
+        location: plan.location,
+        request: clarified?.request ?? brief.raw,
+        suggestion,
+      });
+      if (!hasCompoundAsk(text)) {
+        await publish(unresolvedNameReply({
+          name: plan.name,
+          location: plan.location,
+          suggestion,
+          question: session.pendingLookup.question,
+          unavailable: looked.diagnostics.queriesCompleted === 0,
+        }));
+      }
+    } else if (!looked.findings.length && !hasCompoundAsk(text)) {
+      await publish(lookupEvidenceReply(plan.query, [], looked.diagnostics.queriesCompleted === 0));
+    }
+  }
+
+  if (!trace.companyEvidence && session.activeCompany && (refersToCurrentCompany(text) || looksLikeCompanyBrief(text) || /\b(?:the call|opening move|opener)\b/i.test(text))) {
+    trace.companyEvidence = evidenceFromActive(session.activeCompany);
   }
 
   if (!content && liveConfigured()) {
     const messages: ChatMessage[] = [
-      { role: "system", content: systemPrompt(memory, session.queue, brief) },
+      { role: "system", content: systemPrompt(memory, session.queue, brief, session.activeCompany, clarified) },
       ...historyMessages(session.messages),
     ];
+    if (trace.companyResearch) {
+      messages.push({
+        role: "assistant",
+        content: null,
+        tool_calls: [{
+          id: "required_company_research",
+          type: "function",
+          function: { name: "research_business", arguments: JSON.stringify({ name: trace.companyResearch.business.name }) },
+        }],
+      }, {
+        role: "tool",
+        tool_call_id: "required_company_research",
+        content: JSON.stringify({
+          ok: true,
+          business: trace.companyResearch.business,
+          evidence: trace.companyEvidence,
+          instruction: trace.companyResearch.business.note,
+        }),
+      });
+    } else if (trace.companyEvidence && session.activeCompany && (clarified || refersToCurrentCompany(text) || /\b(?:the call|opening move|opener)\b/i.test(text))) {
+      messages.push({
+        role: "assistant",
+        content: null,
+        tool_calls: [{
+          id: "active_company_research",
+          type: "function",
+          function: { name: "research_business", arguments: JSON.stringify({ name: session.activeCompany.name }) },
+        }],
+      }, {
+        role: "tool",
+        tool_call_id: "active_company_research",
+        content: JSON.stringify({
+          ok: true,
+          business: {
+            name: session.activeCompany.name,
+            address: session.activeCompany.location,
+            website: session.activeCompany.website,
+            findings: session.activeCompany.findings,
+          },
+          evidence: trace.companyEvidence,
+          instruction: "This is the active company from the named lookup. “This company” and “them” refer to it. Do not ask the rep to search an area first.",
+        }),
+      });
+    }
     if (trace.webResult && trace.webPlan) {
       messages.push({
         role: "assistant", content: null,
@@ -2178,6 +2500,9 @@ async function executeLiveTurn(input: {
       });
     }
     const attempted = new Set<string>();
+    if (trace.companyResearch) {
+      attempted.add(`research_business:${JSON.stringify({ name: trace.companyResearch.business.name })}`);
+    }
     let thoughtBuffer = "";
     let thoughtFlush: Promise<void> | null = null;
     const queueThought = (chunk: string) => {
@@ -2291,6 +2616,34 @@ async function executeLiveTurn(input: {
 
   if (trace.webPlan?.name && trace.webResult?.findings.length && lookupReplyNeedsEvidence(content, trace.webPlan.name)) {
     await publish(lookupEvidenceReply(trace.webPlan.query, trace.webResult.findings));
+  }
+
+  if (
+    looksLikeCompanyBrief(text) &&
+    trace.companyEvidence &&
+    answerLeaksUnverifiedPain(content, trace.companyEvidence)
+  ) {
+    const named = briefTarget ?? (session.activeCompany ? { name: session.activeCompany.name } : null);
+    if (named) await publish(formatCompanyBrief(named, trace.companyEvidence));
+  } else if (
+    trace.companyEvidence &&
+    !trace.companyEvidence.trigger &&
+    answerLeaksUnverifiedPain(content, trace.companyEvidence) &&
+    (refersToCurrentCompany(text) || /\b(?:the call|opening move|opener|ask them)\b/i.test(text))
+  ) {
+    const name = session.activeCompany?.name ?? briefTarget?.name;
+    if (name) await publish(formatNeutralCallAdvice(name, trace.companyEvidence));
+  }
+
+  if (
+    recommendsInPersonSelling(content) ||
+    surrendersAfterSoftObjection(content, customerSpeechFromRep(text)) ||
+    promisesUnverifiedPriceWin(content) ||
+    (inventsUnverifiedNetwork(content) && !repProvidedNetworkFact(text))
+  ) {
+    const evidence = trace.companyEvidence
+      ?? (session.activeCompany ? evidenceFromActive(session.activeCompany) : undefined);
+    await publish(nextSalesMove(evidence, customerSpeechFromRep(text)));
   }
 
   // A sourced Google writeup is not an invented prospect list. Only blank a
