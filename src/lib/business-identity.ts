@@ -7,6 +7,8 @@ const WEAK_NAME_WORDS = new Set([
   "deli", "bakery", "cafe", "grill", "bar", "pub", "inn", "shop", "store", "market",
   "restaurant", "kitchen", "bistro", "tavern", "diner", "pizza", "coffee", "salon",
   "spa", "clinic", "co", "corp", "group", "place", "house",
+  // Locative leftovers from "the X location in City" must not become required name tokens.
+  "location", "locations", "storefront", "branch",
 ]);
 
 const STATE_NAME_TO_CODE: Record<string, string> = {
@@ -150,10 +152,38 @@ export function locationQueryVariants(location: string | null | undefined) {
 function hostKey(url?: string) {
   if (!url) return "";
   try {
-    return new URL(url).hostname.replace(/^www\./i, "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    const parsed = new URL(url);
+    return `${parsed.hostname.replace(/^www\./i, "")}${parsed.pathname}`.toLowerCase().replace(/[^a-z0-9]/g, "");
   } catch {
     return "";
   }
+}
+
+function citySlug(city: string) {
+  return foldBusinessName(city).replace(/[^a-z0-9]+/g, "");
+}
+
+/** A first-party location page often puts the city in the path, not the snippet. */
+export function urlMentionsPlace(url: string | undefined, location: string) {
+  if (!url) return false;
+  const city = requestedPlace(location).city;
+  const slug = citySlug(city);
+  if (slug.length < 4) return false;
+  return hostKey(url).includes(slug);
+}
+
+/**
+ * Short tokens like "7" or "l3" only count on a host when glued to another
+ * distinctive name token, so 7brew.com matches 7 Brew and l3harris.com does
+ * not match L3 Installer.
+ */
+function hostHasNameToken(host: string, alias: string, core: string[]) {
+  if (!host) return false;
+  if (alias.length >= 3 && host.includes(alias)) return true;
+  return core.some((word) => {
+    if (word === alias || word.length < 3) return false;
+    return numberAliases(word).some((sib) => sib.length >= 3 && (host.includes(alias + sib) || host.includes(sib + alias)));
+  });
 }
 
 function requestedPlace(location: string) {
@@ -190,16 +220,38 @@ function mentionedCitiesForState(text: string, state: string) {
   return [...folded.matchAll(new RegExp(`\\b([a-z][a-z]+(?:\\s+[a-z]+){0,2}),\\s*${state}\\b`, "g"))].map((item) => item[1]);
 }
 
+function isLocatorPage(result: { title: string; snippet: string; url?: string }) {
+  const hay = `${result.title} ${result.url || ""}`.toLowerCase();
+  return /\/(locations?|stores?|find(?:-a-store)?|directory|places)\b/.test(hay) || /\blocations?\b/.test(result.title);
+}
+
+/** Title is a different single store: "Annas Bakery - Columbia, SC". */
+function titleNamesOtherCity(title: string, requestedCity: string) {
+  const match = title.match(/[-|–—:]\s*([A-Za-z][A-Za-z .'-]{2,40}?),\s*([A-Z]{2}|[A-Za-z][A-Za-z .'-]+)\s*$/);
+  if (!match) return false;
+  const city = foldBusinessName(match[1]);
+  if (city.length < 4 || /^(location|menu|home|about|hours|contact|order|welcome)/.test(city)) return false;
+  if (city.includes(requestedCity) || requestedCity.includes(city)) return false;
+  return true;
+}
+
 function locationConflicts(result: { title: string; snippet: string; url?: string }, location: string) {
   const requested = requestedPlace(location);
   if (!requested.state && !requested.city) return false;
   const hay = `${result.title} ${result.snippet} ${result.url || ""}`;
   const folded = foldBusinessName(hay);
-  const cityHit = requested.city.length >= 4 && folded.includes(requested.city);
+  const cityHit =
+    requested.city.length >= 4 &&
+    (folded.includes(requested.city) || urlMentionsPlace(result.url, location));
   const states = mentionedStates(hay);
+  if (requested.city.length >= 4 && titleNamesOtherCity(result.title, requested.city) && !cityHit) {
+    return true;
+  }
   if (requested.state && requested.city.length >= 4) {
     const cities = mentionedCitiesForState(hay, requested.state);
-    if (cities.length && !cities.some((city) => city.includes(requested.city) || requested.city.includes(city))) {
+    if (cities.length && !cities.some((city) => city.includes(requested.city) || requested.city.includes(city)) && !cityHit) {
+      // A brand locator listing sibling cities is not a different store.
+      if (isLocatorPage(result) && (states.has(requested.state) || !states.size)) return false;
       return true;
     }
   }
@@ -219,15 +271,27 @@ export function matchesBusinessName(
   if (!wanted.length) return false;
   const found = new Set(splitNumberSeams(businessNameWords(`${result.title} ${result.snippet}`)));
   const host = hostKey(result.url);
-  const has = (word: string) =>
-    numberAliases(word).some((alias) => found.has(alias) || (alias.length >= 3 && host.includes(alias)));
   const city = location ? requestedPlace(location).city : "";
   // City words and trade labels like deli/bakery are supporting. A distinctive
   // remainder still has to hit, so a "Home | Mercantile" page can match a
   // "[City] Mercantile Deli" lookup without matching a different shop.
   const required = wanted.filter((word) => word !== city && !WEAK_NAME_WORDS.has(word));
   const core = required.length ? required : wanted;
+  const has = (word: string) =>
+    numberAliases(word).some((alias) => found.has(alias) || hostHasNameToken(host, alias, core));
   if (!core.every(has)) return false;
   if (location && locationConflicts(result, location)) return false;
   return true;
+}
+
+/** The requested city is named in the title, snippet, or URL. */
+export function mentionsRequestedPlace(
+  result: { title: string; snippet: string; url?: string },
+  location: string | null | undefined,
+) {
+  if (!location) return false;
+  const city = requestedPlace(location).city;
+  if (city.length < 4) return false;
+  if (urlMentionsPlace(result.url, location)) return true;
+  return foldBusinessName(`${result.title} ${result.snippet}`).includes(city);
 }

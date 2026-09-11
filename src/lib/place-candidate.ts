@@ -87,8 +87,8 @@ export function normalizeCategory(value: string | null | undefined): string {
   if (/(logistic|warehouse|freight|truck|moving|storage)/.test(wanted)) return "Logistics & warehouse";
   if (/(realty|real estate|property|apartment)/.test(wanted)) return "Property management";
   if (/(bank|insur|financ|credit union)/.test(wanted)) return "Financial services";
-  if (/(school|daycare|childcare|preschool|college|academy)/.test(wanted)) return "Education & childcare";
-  if (/(auto|car|tire|tyre|mechanic|collision|customs|truck accessor)/.test(wanted)) return "Automotive";
+  if (/(school|day\s?care|child\s?care|preschool|college|academy)/.test(wanted)) return "Education & childcare";
+  if (/(automotive|\bauto\b|\bcars?\b|\btires?\b|\btyres?\b|mechanic|collision|customs|truck accessor)/.test(wanted)) return "Automotive";
   if (/(restaurant|cafe|coffee|bar|grill|hotel|motel|food|brew)/.test(wanted)) return "Hospitality & food";
   if (/(shop|store|retail|boutique|market)/.test(wanted)) return "Retail";
   if (/(construct|contract|builder|roof|plumb|electric|hvac|homes|landscap|land scape|lawn ?care|yard service|handyman|pressure wash)/.test(wanted)) {

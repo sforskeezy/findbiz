@@ -74,8 +74,7 @@ export function clampRadius(value: unknown, fallback = 2) {
   if (value == null || value === "") return fallback;
   const number = Number(value);
   if (!Number.isFinite(number)) return fallback;
-  const closest = LIVE_RADII.reduce((best, item) => (Math.abs(item - number) < Math.abs(best - number) ? item : best), LIVE_RADII[0]);
-  return closest;
+  return Math.min(LIVE_RADII[LIVE_RADII.length - 1], Math.max(0.1, number));
 }
 
 function matchCategory(value: string | null | undefined) {
@@ -175,6 +174,15 @@ export async function identifyAddress(address: string) {
   };
 }
 
+type BusinessIdentity = Pick<Prospect, "id" | "name" | "address" | "phone">;
+export function sameLiveBusiness(a: BusinessIdentity, b: BusinessIdentity) {
+  const norm = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (a.id === b.id) return true;
+  const sameName = norm(a.name) === norm(b.name);
+  const samePhone = Boolean(a.phone && b.phone && a.phone.replace(/\D/g, "").slice(-10) === b.phone.replace(/\D/g, "").slice(-10));
+  return sameName && (norm(a.address) === norm(b.address) || samePhone);
+}
+
 export async function findBusinesses(input: {
   location: string;
   radiusMiles?: number | null;
@@ -183,6 +191,7 @@ export async function findBusinesses(input: {
   limit?: number | null;
   profile?: LiveProfile | null;
   excludeNational?: boolean;
+  exclude?: Array<Pick<Prospect, "id" | "name" | "address" | "phone">>;
 }): Promise<{
   queue: LiveQueue;
   cards: LiveProspectCard[];
@@ -205,17 +214,39 @@ export async function findBusinesses(input: {
   const queries = searchTerms.length
     ? searchTerms
     : baseQueries;
-  const research = googleMapsScraperEnabled()
+  const mapsEnabled = googleMapsScraperEnabled();
+  const initial = mapsEnabled
     ? await researchWithGoogleMapsScraper(location, radiusMiles, queries)
-        .then((result) => (result.prospects.length ? result : researchAcrossSources(location, radiusMiles)))
         .catch(() => researchAcrossSources(location, radiusMiles))
     : await researchAcrossSources(location, radiusMiles);
-  const filtered = filterProspectsForBrief(research.prospects, {
-    profile: input.profile ?? "any",
-    excludeNational: input.excludeNational !== false,
-    category,
-    searchTerms,
-  });
+  const research = { ...initial, prospects: [...initial.prospects], warnings: [...initial.warnings] };
+  const eligible = (prospects: Prospect[]) => filterProspectsForBrief(
+    prospects.filter(item => Number.isFinite(item.distanceMiles) && item.distanceMiles <= radiusMiles
+      && !(input.exclude ?? []).some(previous => sameLiveBusiness(item, previous))), {
+      profile: input.profile ?? "any", excludeNational: input.excludeNational !== false, category, searchTerms,
+    });
+  let filtered = eligible(research.prospects);
+  // A source returning one listing is not success when the rep needs five.
+  // Try independent providers and fresh trade queries before reporting a gap.
+  if (mapsEnabled && filtered.kept.length < Math.min(cap, 10)) {
+    const expanded = searchTerms.length
+      ? searchTerms.flatMap(term => [`local ${term}`, `independent ${term} service`])
+      : input.profile === "home_based"
+        ? ["pressure washing", "house painter", "handyman", "seamstress", "small engine repair", "cleaning service", "pet grooming", "fence contractor"]
+        : ["local businesses", "accountant", "plumber", "electrician", "pet services", "repair shop", "bakery", "fitness studio"];
+    const attempts = await Promise.allSettled([
+      researchAcrossSources(location, radiusMiles),
+      researchWithGoogleMapsScraper(location, radiusMiles, expanded),
+    ]);
+    for (const attempt of attempts) {
+      if (attempt.status === "rejected") { research.warnings.push("An additional discovery source was unavailable."); continue; }
+      for (const prospect of attempt.value.prospects) {
+        if (!research.prospects.some(existing => sameLiveBusiness(existing, prospect))) research.prospects.push(prospect);
+      }
+      research.warnings.push(...attempt.value.warnings);
+    }
+    filtered = eligible(research.prospects);
+  }
   const dropped = Math.max(0, research.prospects.length - filtered.kept.length);
   const relevance = (prospect: Prospect) => searchRelevance(prospect, searchTerms);
   const candidates = filtered.kept;
@@ -466,25 +497,60 @@ export async function googleSearch(query: string, extraQueries: string[] = [], o
     .filter((item) => item.length >= 2)
     .slice(0, 4);
   if (!queries.length) throw new Error("Give Google something to search.");
-  const research = await searchPublicWeb(queries, options);
-  const results = research.results.slice(0, 8);
-  return {
-    sources: dedupeSources(results.map((item) => toSource({ title: item.title, url: item.url, snippet: item.snippet }))),
-    findings: results.map((item) => ({
+  return googleSearchMany(queries, options);
+}
+
+/** Run more than four queries without dropping the rest of a research plan. */
+export async function googleSearchMany(queries: string[], options: WebSearchOptions = {}) {
+  const unique = [...new Set(queries.map((item) => item.replace(/\s+/g, " ").trim()).filter((item) => item.length >= 2 && item.length <= 240))];
+  if (!unique.length) throw new Error("Give Google something to search.");
+  const merged = {
+    sources: [] as LiveSource[],
+    findings: [] as Array<{ title: string; url: string; snippet: string }>,
+    nearMisses: [] as Array<{ title: string; url: string; snippet: string }>,
+    engine: "",
+    queries: [] as string[],
+    diagnostics: {
+      engine: "",
+      providers: [] as string[],
+      queriesPlanned: unique.length,
+      queriesCompleted: 0,
+      rawResults: 0,
+      uniqueResults: 0,
+      pagesSelected: 0,
+      pagesRead: 0,
+      failures: [] as string[],
+      cacheHit: false,
+    },
+  };
+  // searchPublicWeb caps a call at four queries. Batch so follow-up rounds still run.
+  for (let index = 0; index < unique.length; index += 4) {
+    const research = await searchPublicWeb(unique.slice(index, index + 4), options);
+    const results = research.results.slice(0, 8);
+    merged.findings.push(...results.map((item) => ({
       title: item.title.slice(0, 140),
       url: item.url,
       snippet: (item.snippet || "").slice(0, 600),
-    })),
-    // Kept separate from findings: only used to offer a corrected spelling back.
-    nearMisses: research.nearMisses.map((item) => ({
+    })));
+    merged.nearMisses.push(...research.nearMisses.map((item) => ({
       title: item.title.slice(0, 140),
       url: item.url,
       snippet: (item.snippet || "").slice(0, 300),
-    })),
-    engine: research.diagnostics.providers.join(", ") || research.diagnostics.engine,
-    queries: research.queries,
-    diagnostics: research.diagnostics,
-  };
+    })));
+    merged.queries.push(...research.queries);
+    merged.diagnostics.providers.push(...research.diagnostics.providers);
+    merged.diagnostics.queriesCompleted += research.diagnostics.queriesCompleted;
+    merged.diagnostics.rawResults += research.diagnostics.rawResults;
+    merged.diagnostics.failures.push(...research.diagnostics.failures);
+    merged.diagnostics.engine = research.diagnostics.engine;
+  }
+  merged.findings = merged.findings.filter((item, index, all) => all.findIndex((candidate) => candidate.url === item.url) === index);
+  merged.nearMisses = merged.nearMisses.filter((item, index, all) => all.findIndex((candidate) => candidate.url === item.url) === index);
+  merged.sources = dedupeSources(merged.findings.map((item) => toSource({ title: item.title, url: item.url, snippet: item.snippet })));
+  merged.engine = [...new Set(merged.diagnostics.providers)].join(", ") || merged.diagnostics.engine;
+  merged.diagnostics.providers = [...new Set(merged.diagnostics.providers)];
+  merged.diagnostics.uniqueResults = merged.findings.length;
+  return merged;
 }
 
 /**

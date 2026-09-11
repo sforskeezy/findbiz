@@ -6,11 +6,15 @@ import { useSearchParams } from "next/navigation";
 import { ArrowRight, Check, Copy, ExternalLink, MapPin } from "lucide-react";
 import { ThinkingOrb } from "thinking-orbs";
 
+import { CopyContact } from "@/components/copy-contact";
+import { AddressChip, AddressText } from "@/components/live/address-chip";
+import { AskLiveButton } from "@/components/ask-live-button";
+
 import { EvidencePanel } from "@/components/evidence-panel";
 import { ProspectHeader } from "@/components/prospect-header";
 import { cn, scoreTone } from "@/components/ui";
 import { buildFallbackBrief } from "@/lib/brief-fallback";
-import { displayPhone, telHref } from "@/lib/phone";
+import { displayPhone, phoneCopyValue, normalizePhonesForCopy } from "@/lib/phone";
 import { classifyServiceability, displayServiceability, isCharterSpectrumProvider } from "@/lib/serviceability";
 import type {
   AiBriefResult,
@@ -48,7 +52,7 @@ function CopyValueButton({
       onClick={async (event) => {
         event.preventDefault();
         event.stopPropagation();
-        await navigator.clipboard.writeText(value);
+        await navigator.clipboard.writeText(normalizePhonesForCopy(value));
         setCopied(true);
         onCopied(label);
         window.setTimeout(() => setCopied(false), 1600);
@@ -86,7 +90,7 @@ function verdictDetail(score: number) {
 function highlightSummary(summary: string, prospect: Prospect, used: Set<string>) {
   const needles = [prospect.name, prospect.category].filter(Boolean);
   const unique = [...new Set(needles.map((item) => item.trim()).filter((item) => item.length > 2))];
-  if (!unique.length) return summary;
+  if (!unique.length) return <AddressText text={summary} />;
   unique.sort((a, b) => b.length - a.length);
 
   const pattern = new RegExp(`(${unique.map((item) => item.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`, "gi");
@@ -95,7 +99,7 @@ function highlightSummary(summary: string, prospect: Prospect, used: Set<string>
   return parts.map((part, index) => {
     const term = part.toLowerCase();
     const matched = unique.some((needle) => needle.toLowerCase() === term) && !used.has(term);
-    if (!matched) return <span key={`${part}-${index}`}>{part}</span>;
+    if (!matched) return <span key={`${part}-${index}`}><AddressText text={part} /></span>;
     used.add(term);
     return (
       <mark key={`${part}-${index}`} className="assessment-highlight">
@@ -408,14 +412,13 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
   }, [signal]);
 
   const phoneLabel = displayPhone(prospect?.phone);
-  const phoneTel = telHref(prospect?.phone);
 
   const providerChart = useMemo(() => {
     return [...broadband].sort((a, b) => (b.downloadMbps ?? 0) - (a.downloadMbps ?? 0));
   }, [broadband]);
 
   async function copy(value: string, label: string) {
-    await navigator.clipboard.writeText(value);
+    await navigator.clipboard.writeText(normalizePhonesForCopy(value));
     setToast(`${label} copied.`);
   }
 
@@ -463,7 +466,7 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                   <div className="mt-3.5 flex max-w-[52rem] flex-wrap items-center gap-x-1.5 gap-y-1.5 text-[14px] leading-6 text-[#70706a]">
                     {prospect.address && !MISSING_ADDRESS.has(prospect.address) && (
                       <span className="inline-flex min-w-0 items-center gap-1">
-                        <span className="min-w-0 text-pretty">{prospect.address}</span>
+                        <AddressChip value={prospect.address} />
                         <CopyValueButton
                           value={prospect.address}
                           label="Address"
@@ -479,11 +482,9 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                           </span>
                         )}
                         <span className="inline-flex items-center gap-1 tabular-nums">
-                          <a href={phoneTel ?? undefined} className="transition hover:text-[#2a2a26]">
-                            {phoneLabel}
-                          </a>
+                          <CopyContact value={prospect.phone || phoneLabel} phone>{phoneLabel}</CopyContact>
                           <CopyValueButton
-                            value={phoneLabel}
+                            value={phoneCopyValue(prospect.phone || phoneLabel)}
                             label="Phone"
                             onCopied={(label) => setToast(`${label} copied.`)}
                           />
@@ -491,6 +492,7 @@ export function BusinessResearchPage({ prospectId }: { prospectId: string }) {
                       </>
                     )}
                   </div>
+                  {step === "complete" && brief && <AskLiveButton prospect={prospect} brief={brief} intelligence={intelligence} broadband={broadband} fcc={fcc} serviceability={signal} />}
                   {(prospect.website || prospect.directoryUrl) && (
                     <div className="mt-5 flex flex-wrap gap-2">
                       {prospect.website && (

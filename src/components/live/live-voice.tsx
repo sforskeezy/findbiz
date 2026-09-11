@@ -1,4 +1,5 @@
 "use client";
+import { useVoiceKey } from "@/components/settings-button";
 
 import { useEffect, useRef } from "react";
 import { Check, X } from "lucide-react";
@@ -138,11 +139,11 @@ const STAGE_COPY: Record<LiveVoiceStage, { label: string; hint: string }> = {
   sending: { label: "Sending", hint: "Turning your words into a message…" },
 };
 
-function stageCopy(stage: LiveVoiceStage, pushToTalk: boolean) {
+function stageCopy(stage: LiveVoiceStage, pushToTalk: boolean, voiceKey: string) {
   if (pushToTalk && stage !== "sending") {
     return {
       label: STAGE_COPY[stage].label,
-      hint: "Release Control to send.",
+      hint: `Release ${voiceKey} to send.`,
     };
   }
   return STAGE_COPY[stage];
@@ -156,7 +157,8 @@ export function LiveVoiceEdge({ analyserRef, onCancel, onFinish, pushToTalk = fa
   reduceMotion: boolean;
   stage: LiveVoiceStage;
 }) {
-  const copy = stageCopy(stage, pushToTalk);
+  const voiceKey = useVoiceKey();
+  const copy = stageCopy(stage, pushToTalk, voiceKey);
   return (
     <div className="live-voice-edge" data-stage={stage} data-hold={pushToTalk || undefined} aria-label="Live voice mode">
       <LiveLiquidVoiceCanvas analyserRef={analyserRef} reduceMotion={reduceMotion} stage={stage} />
@@ -167,7 +169,7 @@ export function LiveVoiceEdge({ analyserRef, onCancel, onFinish, pushToTalk = fa
         </span>
         <small className="live-voice-hint">{copy.hint}</small>
         {pushToTalk && stage !== "sending" && (
-          <kbd className="live-voice-key">Control</kbd>
+          <kbd className="live-voice-key">{voiceKey}</kbd>
         )}
       </div>
       <div className="live-voice-controls">

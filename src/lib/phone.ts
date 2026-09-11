@@ -21,3 +21,12 @@ export function telHref(value: string | null | undefined): string | null {
   const digits = shown.replace(/\D/g, "");
   return digits ? `tel:${digits}` : `tel:${shown}`;
 }
+
+/** Clipboard numbers contain digits only; keep display formatting independent. */
+export function phoneCopyValue(value: string): string {
+  return value.replace(/\D/g, "");
+}
+
+export function normalizePhonesForCopy(text: string): string {
+  return text.replace(/(?<![\w])(?:\+?1[ .-]*)?\(?\d{3}\)?[ .-]*\d{3}[ .-]+\d{4}(?:\s*(?:ext\.?|x)\s*\d+)?(?!\d)/gi, phoneCopyValue);
+}

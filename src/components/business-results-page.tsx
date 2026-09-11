@@ -9,6 +9,7 @@ import { Check, ChevronDown, ChevronRight, Download, MapPin, Search } from "luci
 import { ProspectHeader } from "@/components/prospect-header";
 import { SearchProgress } from "@/components/search-progress";
 import { cn, scoreTone } from "@/components/ui";
+import { CopyContact } from "@/components/copy-contact";
 import { displayPhone } from "@/lib/phone";
 import type { Prospect, ResearchResponse } from "@/lib/types";
 
@@ -377,29 +378,13 @@ export function BusinessResultsPage() {
                         className="animate-enter border-t border-[#e5e5e0] first:border-t-0"
                         style={{ animationDelay: delay }}
                       >
-                        <Link
-                          href={businessHref(prospect)}
-                          title="Ctrl-click to mark as looked at"
-                          aria-label={
-                            seen
-                              ? `${prospect.name}, looked at. Control-click to clear.`
-                              : `${prospect.name}. Control-click to mark as looked at.`
-                          }
-                          onClick={(event) => onBusinessClick(event, prospect)}
-                          onContextMenu={(event) => {
-                            if (event.ctrlKey) {
-                              event.preventDefault();
-                              toggleLookedAt(prospect.id);
-                            }
-                          }}
-                          className="group relative block w-full py-4 text-left sm:py-[18px]"
-                        >
+                        <div className="group relative block w-full py-4 text-left sm:py-[18px]">
                           <span className="pointer-events-none absolute -inset-x-3 -inset-y-px rounded-[16px] border border-[#e6e6e0] bg-white/90 opacity-0 shadow-[0_14px_36px_rgba(20,20,16,0.07)] backdrop-blur-sm transition-opacity duration-200 group-hover:opacity-100 group-focus-visible:opacity-100 sm:-inset-x-5" />
 
                           <span className="relative flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-6">
                             <span className="min-w-0 flex-1 transition-transform duration-200 group-hover:translate-x-[3px]">
                               <span className="flex items-baseline gap-2.5">
-                                <span
+                                <Link href={businessHref(prospect)} onClick={(event) => onBusinessClick(event, prospect)} title="Ctrl-click to mark as looked at"
                                   className={cn(
                                     "truncate text-[16px] font-semibold tracking-[-0.02em] sm:text-[17px]",
                                     seen
@@ -408,7 +393,7 @@ export function BusinessResultsPage() {
                                   )}
                                 >
                                   {prospect.name}
-                                </span>
+                                </Link>
                                 {seen && (
                                   <span className="hidden shrink-0 text-[9px] font-bold uppercase tracking-[0.14em] text-[#7a9a86] sm:inline">
                                     Looked at
@@ -429,13 +414,13 @@ export function BusinessResultsPage() {
                                 {place && (
                                   <>
                                     <MetaDot />
-                                    <span className="min-w-0 max-w-full truncate">{place}</span>
+                                    <CopyContact value={place} className="min-w-0 max-w-full truncate" />
                                   </>
                                 )}
                                 {contact && (
                                   <>
                                     <MetaDot />
-                                    <span className="truncate tabular-nums">{contact}</span>
+                                    {prospect.phone ? <CopyContact value={prospect.phone} phone className="truncate tabular-nums">{contact}</CopyContact> : <span className="truncate">{contact}</span>}
                                   </>
                                 )}
                               </span>
@@ -471,7 +456,7 @@ export function BusinessResultsPage() {
                               )}
                             </span>
                           </span>
-                        </Link>
+                        </div>
                       </li>
                     );
                   })}

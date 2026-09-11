@@ -1,4 +1,4 @@
-import { foldBusinessName } from "@/lib/business-identity";
+import { foldBusinessName, mentionsRequestedPlace } from "@/lib/business-identity";
 import type { LiveActiveCompany } from "@/lib/live/types";
 import type { Prospect } from "@/lib/types";
 
@@ -22,7 +22,10 @@ export function activeCompanyFromLookup(
   location: string | null,
   findings: Array<{ title: string; url: string; snippet: string }>,
 ): LiveActiveCompany {
-  const website = findings.find((item) => /^https?:\/\//i.test(item.url))?.url ?? null;
+  const website =
+    findings.find((item) => /^https?:\/\//i.test(item.url) && mentionsRequestedPlace(item, location))?.url
+    ?? findings.find((item) => /^https?:\/\//i.test(item.url))?.url
+    ?? null;
   return {
     name,
     location,

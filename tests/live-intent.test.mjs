@@ -141,3 +141,30 @@ test('counts and shorthand work for specific trades', () => {
   assert.equal(parseLiveBrief('Find a plumber near Lugoff SC').requestedCount, 1);
   assert.equal(resolveLiveTurn('Lugoff SC lawn care', null, {}).search, true);
 });
+
+for (const message of [
+  'find me a businsess in the area of Lugoff SC with a 5 mile radius',
+  'find me a business in the area of Lugoff, SC with a 5-mile radius',
+  'find businesses within a 5 mile radius of Lugoff SC',
+  'find a business near Lugoff South Carolina within five miles',
+]) {
+  test(`natural discovery keeps the place and radius separate: ${message}`, () => {
+    const turn = resolveLiveTurn(message, null, {});
+    assert.equal(turn.search, true);
+    assert.equal(turn.brief.targetName, null);
+    assert.equal(turn.brief.locationHint, 'Lugoff, SC');
+    assert.equal(turn.brief.radiusMiles, 5);
+    assert.deepEqual(turn.brief.searchTerms, []);
+  });
+}
+for (const message of ['find 5 more', 'show me five more', 'five more', '5 more']) {
+  test(`additional results retain the search brief: ${message}`, () => {
+    const previous = parseLiveBrief('Find home-based businesses near Lugoff SC within 5 miles');
+    const turn = resolveLiveTurn(message, previous, { locationLabel: 'Lugoff, SC' });
+    assert.equal(turn.search, true);
+    assert.equal(turn.brief.profile, 'home_based');
+    assert.equal(turn.brief.requestedCount, 5);
+    assert.equal(turn.brief.radiusMiles, 5);
+    assert.deepEqual(turn.brief.searchTerms, []);
+  });
+}

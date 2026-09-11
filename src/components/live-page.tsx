@@ -27,17 +27,12 @@ import {
   SquarePen,
 } from "lucide-react";
 
+import { CopyContact } from "@/components/copy-contact";
+import { normalizePhonesForCopy } from "@/lib/phone";
+import { useVoiceKey } from "@/components/settings-button";
+
 import { ModeSwitch } from "@/components/prospect-header";
-import {
-  ADDRESS_DROP_EVENT,
-  AddressText,
-  acceptsAddressDrag,
-  addressFromDrop,
-  dropHeldAddress,
-  endAddressDrag,
-  heldAddress,
-  type AddressDropTarget,
-} from "@/components/live/address-chip";
+import { AddressText } from "@/components/live/address-chip";
 import { LiveMarkdown } from "@/components/live/live-markdown";
 import { LiveSidebar, type SessionGroup } from "@/components/live/live-sidebar";
 import { LiveSources } from "@/components/live/live-sources";
@@ -202,6 +197,7 @@ function ProspectRow({
 export function LivePage() {
   const [sessions, setSessions] = useState<LiveSessionSummary[]>([]);
   const [memory, setMemory] = useState<LiveMemoryFact[]>([]);
+  const voiceKey = useVoiceKey();
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<LiveChatMessage[]>([]);
   const [queue, setQueue] = useState<LivePublicState["queue"]>(null);
@@ -226,8 +222,6 @@ export function LivePage() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [focused, setFocused] = useState(false);
   const [voiceNotice, setVoiceNotice] = useState("");
-  const [composerArmed, setComposerArmed] = useState(false);
-  const [holdingAddress, setHoldingAddress] = useState(false);
   const [listOpen, setListOpen] = useState(false);
   const [awayFromBottom, setAwayFromBottom] = useState(false);
   const [notice, setNotice] = useState("");
@@ -266,25 +260,23 @@ export function LivePage() {
         if (cancelled) return;
         setSessions(payload.sessions ?? []);
         setMemory(payload.memory ?? []);
-      } catch {
-        // First visit has no Live history.
+        const handoffId = new URLSearchParams(window.location.search).get("session");
+        if (handoffId) {
+          const opened = await fetch(`/api/live/sessions?sessionId=${encodeURIComponent(handoffId)}`);
+          const data = await opened.json() as { state?: LivePublicState; error?: string };
+          if (cancelled) return;
+          if (!opened.ok || !data.state) throw new Error(data.error || "Could not open the business profile.");
+          applyState(data.state);
+          inputRef.current?.focus();
+        }
+      } catch (error) {
+        if (!cancelled) setError(error instanceof Error ? error.message : "Could not load LIVE.");
       }
     }
     void load();
     return () => {
       cancelled = true;
     };
-  }, []);
-
-  useEffect(() => {
-    function onAddressDrop(event: Event) {
-      const detail = (event as CustomEvent<{ target: AddressDropTarget; address: string }>).detail;
-      if (detail.target !== "live" || !detail.address.trim()) return;
-      endAddressDrag();
-      void sendRef.current(`What is at ${detail.address.trim()}?`);
-    }
-    window.addEventListener(ADDRESS_DROP_EVENT, onAddressDrop);
-    return () => window.removeEventListener(ADDRESS_DROP_EVENT, onAddressDrop);
   }, []);
 
   useEffect(() => {
@@ -320,24 +312,8 @@ export function LivePage() {
     };
   }, [menuOpen]);
 
-  useEffect(() => {
-    function onDrag(event: Event) {
-      const phase = (event as CustomEvent<{ phase: string }>).detail.phase;
-      setHoldingAddress(phase === "start");
-      if (phase === "end") setComposerArmed(false);
-    }
-    window.addEventListener("pai-address-drag", onDrag);
-    return () => window.removeEventListener("pai-address-drag", onDrag);
-  }, []);
-
-  function identifyDroppedAddress(address: string) {
-    const place = address.trim();
-    if (!place) return;
-    endAddressDrag();
-    void send(`What is at ${place}?`);
-  }
-
   function applyState(state: LivePublicState) {
+    window.history.replaceState(null, "", `/live?session=${encodeURIComponent(state.session.id)}`);
     activeSession.current = state.session.id;
     setSessionId(state.session.id);
     setMessages(state.session.messages);
@@ -394,6 +370,7 @@ export function LivePage() {
   }
 
   function newChat() {
+    window.history.replaceState(null, "", "/live");
     stopReply(false);
     cancelVoiceRef.current();
     activeSession.current = null;
@@ -415,7 +392,7 @@ export function LivePage() {
 
   async function copyReply(message: LiveChatMessage) {
     try {
-      await navigator.clipboard.writeText(message.content);
+      await navigator.clipboard.writeText(normalizePhonesForCopy(message.content));
       setCopiedId(message.id);
       if (copyTimer.current) clearTimeout(copyTimer.current);
       copyTimer.current = setTimeout(() => setCopiedId(null), 1800);
@@ -471,7 +448,7 @@ export function LivePage() {
       setNotice("Downloaded the chat log for bug testing.");
     } catch {
       try {
-        await navigator.clipboard.writeText(markdown);
+        await navigator.clipboard.writeText(normalizePhonesForCopy(markdown));
         setNotice("Copied the bug log. The file download was blocked.");
       } catch {
         setError("Couldn’t download or copy the chat log.");
@@ -700,7 +677,7 @@ export function LivePage() {
                     <ListFilter size={16} /><span><strong>{current.name}</strong><small>{queue.currentIndex + 1} of {queue.total} · {queue.locationLabel}</small></span>
                   </button>
                   <div className="live-lead-actions">
-                    {current.phone && <a href={`tel:${current.phone}`} aria-label={`Call ${current.name}`}><Phone size={14} /><span>Call</span></a>}
+                    {current.phone && <CopyContact value={current.phone} phone><Phone size={14} /><span>Copy phone</span></CopyContact>}
                     <button type="button" onClick={() => void send(`Brief me on ${current.name}`)} disabled={busy}>Brief</button>
                     <button type="button" onClick={() => void send("Skip to the next one")} disabled={busy || queue.currentIndex >= queue.total - 1}>Next <ChevronRight size={14} /></button>
                   </div>
@@ -727,34 +704,12 @@ export function LivePage() {
                 </div>
               ) : (
               <form
-                data-pai-address-drop="live"
                 onSubmit={(event) => {
                   event.preventDefault();
                   void send();
                 }}
-                onDragOver={(event) => {
-                  if (!acceptsAddressDrag(event) && !heldAddress()) return;
-                  event.preventDefault();
-                  event.dataTransfer.dropEffect = "copy";
-                  setComposerArmed(true);
-                }}
-                onDragLeave={(event) => {
-                  if (event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) return;
-                  setComposerArmed(false);
-                }}
-                onDrop={(event) => {
-                  if (!acceptsAddressDrag(event) && !heldAddress()) return;
-                  event.preventDefault();
-                  setComposerArmed(false);
-                  identifyDroppedAddress(addressFromDrop(event));
-                }}
-                onPointerUp={() => {
-                  if (!heldAddress() || document.body.dataset.paiAddressNative === "on") return;
-                  dropHeldAddress("live");
-                }}
                 className={cn(
                   "live-composer rounded-[22px] bg-white p-2.5 transition",
-                  composerArmed || holdingAddress ? "bg-[#fffaf3]" : "",
                 )}
               >
                 <div className="flex flex-wrap items-end gap-1.5">
@@ -798,14 +753,9 @@ export function LivePage() {
                   className="relative order-first w-full min-w-0 basis-full px-2"
                 >
                   <span className="sr-only">Message Live</span>
-                  {holdingAddress || composerArmed ? (
-                    <span className="pointer-events-none absolute inset-0 flex items-center text-[13.5px] text-[#b08958]">
-                      Drop here to identify in Live
-                    </span>
-                  ) : (
-                    !atHome && <LiveTypewriter active={mounted && composerIdle} />
-                  )}
+                  {!atHome && <LiveTypewriter active={mounted && composerIdle} />}
                   <textarea
+                    aria-label="Message Live"
                     ref={inputRef}
                     value={draft}
                     rows={atHome ? 2 : 1}
@@ -820,7 +770,7 @@ export function LivePage() {
                       }
                     }}
                     maxLength={2000}
-                    placeholder={busy ? "Change direction or ask something else…" : atHome ? "Ask anything, or drop in an address…" : focused ? "Ask a question or name an area…" : ""}
+                    placeholder={busy ? "Change direction or ask something else…" : atHome ? "Ask anything, or enter an address…" : focused ? "Ask a question or name an area…" : ""}
                     className="max-h-[168px] min-h-[38px] w-full resize-none bg-transparent py-2 text-[14px] leading-6 text-[#1c1c19] outline-none placeholder:text-[#b0b0a8]"
                   />
                 </label>
@@ -833,9 +783,9 @@ export function LivePage() {
                       : "text-[#66685e] hover:bg-[#f2f2ee] hover:text-[#3a3a35]",
                   )}
                   aria-label="Talk to Live"
-                  aria-keyshortcuts="Control"
+                  aria-keyshortcuts={voiceKey === "None" ? undefined : voiceKey}
                   aria-pressed={voice.holding || voiceOpen}
-                  title="Talk to Live · hold Control"
+                  title={voiceKey === "None" ? "Talk to Live" : `Talk to Live · hold ${voiceKey}`}
                   onPointerDown={(event) => {
                     setMenuOpen(false);
                     voice.handlePointerDown(event);
@@ -861,7 +811,7 @@ export function LivePage() {
 
             <p className={cn("mt-3 text-[10px] text-[#92938c]", atHome ? "flex flex-wrap justify-between gap-2 px-1" : "text-center")}>
               {busy ? "You can stop or send a new direction at any time." : "Research with public sources."}
-              <span className="ml-3 hidden sm:inline text-[#8a8a84]">Hold Control to talk · Enter to send · /livemode · /output</span>
+              <span className="ml-3 hidden sm:inline text-[#8a8a84]">{voiceKey === "None" ? "Click the mic to talk" : `Hold ${voiceKey} to talk`} · Enter to send · /livemode · /output</span>
             </p>
           </div>
         </div>

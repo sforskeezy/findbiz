@@ -1,4 +1,5 @@
 "use client";
+import { phoneCopyValue } from "@/lib/phone";
 
 import { useState } from "react";
 import { ChevronDown, Copy, ExternalLink, Phone } from "lucide-react";
@@ -58,7 +59,7 @@ export function RadarSignalCard({
 
   async function copyPhone() {
     if (!signal.observation.phone) return;
-    await navigator.clipboard.writeText(signal.observation.phone);
+    await navigator.clipboard.writeText(phoneCopyValue(signal.observation.phone));
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1400);
   }
@@ -121,8 +122,8 @@ export function RadarSignalCard({
           </ActionButton>
         )}
         {signal.observation.phone && (
-          <ActionButton href={`tel:${signal.observation.phone}`}>
-            <Phone size={12} /> Call
+          <ActionButton onClick={() => void copyPhone()}>
+            <Phone size={12} /> {signal.observation.phone}
           </ActionButton>
         )}
         {signal.observation.phone && (

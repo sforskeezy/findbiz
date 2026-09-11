@@ -1,20 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState, type DragEvent } from "react";
+import { useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { Pencil } from "lucide-react";
 
-import {
-  ADDRESS_DROP_EVENT,
-  AddressDragGhost,
-  acceptsAddressDrag,
-  addressFromDrop,
-  endAddressDrag,
-  heldAddress,
-  type AddressDropTarget,
-} from "@/components/live/address-chip";
+import { SettingsButton } from "@/components/settings-button";
 import { beginPageTransition } from "@/components/page-transition";
 import { cn } from "@/components/ui";
 
@@ -186,64 +178,8 @@ function modeForPath(pathname: string): Mode {
  */
 export function ModeSwitch({ small = false }: { small?: boolean }) {
   const pathname = usePathname();
-  const router = useRouter();
   const routeMode = modeForPath(pathname);
   const [pending, setPending] = useState<{ target: Mode; from: Mode } | null>(null);
-  const [dropArmed, setDropArmed] = useState(false);
-  const [heldPlace, setHeldPlace] = useState("");
-
-  useEffect(() => {
-    function onDrag(event: Event) {
-      const detail = (event as CustomEvent<{ address?: string; phase: string }>).detail;
-      setHeldPlace(detail.phase === "start" && detail.address ? detail.address : "");
-      if (detail.phase === "end") setDropArmed(false);
-    }
-    function onAddressDrop(event: Event) {
-      const detail = (event as CustomEvent<{ target: AddressDropTarget; address: string }>).detail;
-      if (detail.target !== "normal" || !detail.address.trim()) return;
-      endAddressDrag();
-      beginPageTransition("mode");
-      router.push(`/search?address=${encodeURIComponent(detail.address.trim())}&radius=0.5`);
-    }
-    window.addEventListener("pai-address-drag", onDrag);
-    window.addEventListener(ADDRESS_DROP_EVENT, onAddressDrop);
-    return () => {
-      window.removeEventListener("pai-address-drag", onDrag);
-      window.removeEventListener(ADDRESS_DROP_EVENT, onAddressDrop);
-    };
-  }, [router]);
-
-  function openNormalReport(address: string) {
-    if (!address) return;
-    endAddressDrag();
-    beginPageTransition("mode");
-    router.push(`/search?address=${encodeURIComponent(address)}&radius=0.5`);
-  }
-
-  // An address dragged out of a Live answer lands here and runs the full Normal
-  // report on it, which is the one thing Live deliberately does not do inline.
-  const addressDropProps = (mode: Mode) =>
-    mode !== "normal"
-      ? {}
-      : {
-          onDragOver: (event: DragEvent<HTMLElement>) => {
-            if (!acceptsAddressDrag(event) && !heldAddress()) return;
-            event.preventDefault();
-            event.dataTransfer.dropEffect = "copy" as const;
-            setDropArmed(true);
-          },
-          onDragLeave: (event: DragEvent<HTMLElement>) => {
-            if (event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) return;
-            setDropArmed(false);
-          },
-          onDrop: (event: DragEvent<HTMLElement>) => {
-            if (!acceptsAddressDrag(event) && !heldAddress()) return;
-            event.preventDefault();
-            setDropArmed(false);
-            openNormalReport(addressFromDrop(event));
-          },
-        };
-
   // The optimistic pill position holds only while we are still on the route the
   // click came from. Nothing has to clear it: each mode renders its own switch,
   // so arriving anywhere else mounts a fresh one with no pending state.
@@ -254,12 +190,10 @@ export function ModeSwitch({ small = false }: { small?: boolean }) {
       className={cn(
         "relative inline-grid shrink-0 grid-cols-2 items-center bg-[#ededea] p-[3px]",
         small ? "rounded-[10px]" : "rounded-[11px] sm:rounded-[13px]",
-        heldPlace && "mode-drop-live",
       )}
       role="group"
       aria-label="PAI mode"
     >
-      <AddressDragGhost />
       <span
         aria-hidden="true"
         className={cn(
@@ -271,30 +205,17 @@ export function ModeSwitch({ small = false }: { small?: boolean }) {
       {MODES.map((item) => (
         <Link
           key={item.mode}
-          href={
-            item.mode === "normal" && heldPlace
-              ? `/search?address=${encodeURIComponent(heldPlace)}&radius=0.5`
-              : item.href
-          }
+          href={item.href}
           aria-current={mode === item.mode ? "page" : undefined}
-          data-pai-address-drop={item.mode === "normal" ? "normal" : undefined}
-          onClick={(event) => {
-            if (item.mode === "normal" && heldPlace) {
-              event.preventDefault();
-              openNormalReport(heldPlace);
-              return;
-            }
+          onClick={() => {
             if (item.mode === routeMode) return;
             setPending({ target: item.mode, from: routeMode });
             beginPageTransition("mode");
           }}
-          {...addressDropProps(item.mode)}
           className={cn(
             "relative inline-flex items-center justify-center font-medium tracking-[-0.01em] transition-colors duration-200",
             small ? "h-7 px-3.5 text-[12.5px]" : "h-8 px-3.5 text-[13px] sm:h-10 sm:px-6 sm:text-[15px]",
             mode === item.mode ? "text-[#14140f]" : "text-[#6f6f69] hover:text-[#26261f]",
-            item.mode === "normal" && "mode-drop-target",
-            item.mode === "normal" && dropArmed && "mode-drop-armed",
           )}
         >
           {item.mode === "live" ? (
@@ -305,8 +226,6 @@ export function ModeSwitch({ small = false }: { small?: boolean }) {
                 <i className="live-rec-dot" aria-hidden="true" />
               </span>
             </span>
-          ) : heldPlace || dropArmed ? (
-            "Drop"
           ) : (
             item.label
           )}
@@ -349,6 +268,7 @@ export function ProspectHeader({
             priority
           />
         </Link>
+        <SettingsButton />
         <ModeSwitch />
       </div>
       <div className="flex items-center gap-4 sm:gap-6">

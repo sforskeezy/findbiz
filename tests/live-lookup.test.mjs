@@ -75,6 +75,18 @@ test('named lookup queries retry apostrophe-free and expanded-state forms', () =
   assert.ok(plan.variants.some((query) => /Greenville, South Carolina/.test(query)));
 });
 
+test('exact brand + city pages are kept, including first-party URLs that only name the city in the path', () => {
+  const loc = 'Travelers Rest, SC';
+  const official = {title: 'Travelers Rest, SC', snippet: 'Drive-thru coffee. Open daily.', url: 'https://7brew.com/locations/travelers-rest-sc'};
+  assert.equal(matchesLookupName(official, '7 Brew Coffee', loc), true);
+  assert.equal(matchesLookupName({title: 'Locations | 7 Brew Coffee', snippet: 'Greenville, SC and Spartanburg, SC locations.', url: 'https://7brew.com/locations'}, '7 Brew Coffee', loc), true);
+  assert.equal(matchesLookupName({title: '7 Brew Coffee', snippet: 'Over 1,000 locations nationwide.', url: 'https://7brew.com/'}, '7 Brew Coffee', loc), true);
+  assert.equal(matchesLookupName({title: 'Annas Bakery - Columbia, SC', snippet: 'Columbia bakery', url: 'https://annasbakery.example/columbia'}, "Anna's Bakery", 'Greenville, SC'), false);
+  const brief = parseLiveBrief('Research the 7 Brew Coffee location in Travelers Rest, South Carolina. I want to know who actually owns or operates this specific location.');
+  assert.equal(brief.targetName, '7 Brew Coffee');
+  assert.equal(brief.locationHint, loc);
+});
+
 test('city-prefixed shop names still match a brand homepage that omits the trade word', () => {
   const homepage = {title: 'Home | Mercantile', snippet: 'Welcome.', url: 'https://www.rivertownmercantile.com/'};
   assert.equal(matchesLookupName(homepage, 'Rivertown Mercantile Deli', 'Rivertown, SC'), true);

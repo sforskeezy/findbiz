@@ -3,12 +3,15 @@
 import { Fragment, createContext, useContext, useState, type ReactNode } from "react";
 import { Check, Copy } from "lucide-react";
 
+import { CopyContact } from "@/components/copy-contact";
+import { normalizePhonesForCopy } from "@/lib/phone";
+
 import { AddressChip, isStreetAddress } from "@/components/live/address-chip";
 import { WorkingDots } from "@/components/live/working-dots";
 import { cn } from "@/components/ui";
 
 const PHONE =
-  /(?:\+?1[\s.-]*)?(?:\(?\d{3}\)?[\s.-]*)\d{3}[\s.-]\d{4}(?:\s*(?:x|ext\.?|extension)\s*\d{1,6})?/gi;
+  /(?:\+?1[\s.-]*)?(?:\(?\d{3}\)?[\s.-]*)\d{3}[\s.-]*\d{4}(?:\s*(?:x|ext\.?|extension)\s*\d{1,6})?/gi;
 const URL = /https?:\/\/[^\s)<]+/gi;
 const EMAIL = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi;
 const STREET =
@@ -74,7 +77,7 @@ function linkifyPlain(text: string, keyPrefix: string): ReactNode[] {
         : `tel:${trimmed.replace(/[^\d+]/g, "")}`;
 
     nodes.push(
-      <a
+      href.startsWith("tel:") ? <CopyContact key={`${keyPrefix}-a${index}`} value={trimmed} phone className={linkClass} /> : <a
         key={`${keyPrefix}-a${index}`}
         href={href}
         {...(href.startsWith("http") ? { target: "_blank", rel: "noreferrer" } : {})}
@@ -134,7 +137,7 @@ function inline(text: string, keyPrefix: string): ReactNode[] {
       );
     } else if (linkText && linkHref) {
       nodes.push(
-        <a
+        isStreetAddress(linkText) ? <AddressChip key={key} value={linkText} /> : linkHref.startsWith("tel:") ? <CopyContact key={key} value={linkHref.slice(4)} phone className={linkClass}>{linkText}</CopyContact> : <a
           key={key}
           href={linkHref}
           {...(linkHref.startsWith("http") ? { target: "_blank", rel: "noreferrer" } : {})}
@@ -403,7 +406,7 @@ function CodeBlock({ language, text }: { language: string | null; text: string }
 
   async function copy() {
     try {
-      await navigator.clipboard.writeText(text);
+      await navigator.clipboard.writeText(normalizePhonesForCopy(text));
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1600);
     } catch {

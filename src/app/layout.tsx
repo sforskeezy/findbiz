@@ -1,3 +1,4 @@
+import { ClipboardNormalizer } from "@/components/clipboard-normalizer";
 import type { Metadata } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 
@@ -24,7 +25,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en" className={`${inter.variable} ${jetbrainsMono.variable}`}>
-      <body>{children}</body>
+      <body><ClipboardNormalizer />{children}</body>
     </html>
   );
 }

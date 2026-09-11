@@ -11,6 +11,7 @@ export type LiveBrief = {
   /** A likely company name, used to label close alternatives honestly. */
   targetName: string | null;
   requestedCount: number | null;
+  radiusMiles?: number | null;
   profile: LiveProfile;
   categoryHint: string | null;
   excludeNational: boolean;
@@ -28,7 +29,9 @@ const COUNT_PATTERN =
   /\b(?:give me |show me |find |only |just |top |pull |get me )?(\d{1,2})\s+(?:(?:home[- ]?based|local|nearby|independent|owner[- ]?run)\s+)*(?:business(?:es)?|biz|prospects?|leads?|listings?)\b/i;
 
 function requestedCount(text: string) {
-  const match = text.match(COUNT_PATTERN) ?? text.match(/\b(?:find|show|give|get|pull)(?:\s+me)?\s+(\d{1,2})\b/i);
+  const spoken: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
+  text = text.replace(/\b(one|two|three|four|five|six|seven|eight|nine|ten)(?=\s+(?:more|additional|business|lead|prospect))/gi, word => String(spoken[word.toLowerCase()]));
+  const match = text.match(/\b(\d{1,2})\s+(?:more|additional)\b/i) ?? text.match(COUNT_PATTERN) ?? text.match(/\b(?:find|show|give|get|pull)(?:\s+me)?\s+(\d{1,2})\b/i);
   if (!match) {
     return /\b(?:find|show|get|give|pull)\s+(?:me\s+)?(?:a|an|one)\s+/i.test(text) ? 1 : null;
   }
@@ -73,11 +76,29 @@ const STATE_NAMES: Record<string, string> = {
   "vermont": "VT", "virginia": "VA", "washington": "WA", "west virginia": "WV", "wisconsin": "WI", "wyoming": "WY",
 };
 function normalizeStates(text: string) {
-  return text.replace(new RegExp(`\\b(${Object.keys(STATE_NAMES).sort((a, b) => b.length - a.length).join("|")})\\b(?=\\s*(?:[,.;!?]|\\d{5}\\b|$|\\b(?:and|then|please)\\b))`, "gi"), (name) => STATE_NAMES[name.toLowerCase()]);
+  return text.replace(new RegExp(`\\b(${Object.keys(STATE_NAMES).sort((a, b) => b.length - a.length).join("|")})\\b(?=\\s*(?:[,.;!?]|\\d{5}\\b|$|\\b(?:and|then|please|within|with)\\b))`, "gi"), (name) => STATE_NAMES[name.toLowerCase()]);
+}
+
+function normalizeDiscoveryLanguage(text: string) {
+  return text.replace(/\b(?:businesess|businsess|businses|businness|buisness|busines)(es)?\b/gi, (_, plural) => plural ? "businesses" : "business")
+    .replace(/\b(?:in|around|near)\s+(?:the\s+)?area\s+of\s+/gi, "near ")
+    .replace(/\bwithin\s+(?:a\s+)?(\d+(?:\.\d+)?)\s*[- ]?(?:mile|mi)s?\s+(?:radius\s+)?of\s+/gi, "near ");
+}
+
+export function extractLiveRadius(text: string): number | null {
+  const match = text.match(/\b(\d+(?:\.\d+)?|half|one|two|three|four|five|ten)\s*[- ]?(?:mile|mi)s?\b/i);
+  if (!match) return null;
+  const spoken: Record<string, number> = { half: 0.5, one: 1, two: 2, three: 3, four: 4, five: 5, ten: 10 };
+  const radius = spoken[match[1].toLowerCase()] ?? Number(match[1]);
+  return Number.isFinite(radius) && radius > 0 && radius <= 10 ? radius : null;
+}
+
+export function isLiveMore(text: string) {
+  return /\b(?:find|show|give|get|pull)(?:\s+me)?\s+(?:(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|some|a few)\s+)?(?:more|additional|other)\b|^\s*(?:(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+)?more(?:\s+(?:businesses|leads|prospects))?[.!?\s]*$/i.test(text);
 }
 
 function locationMatch(raw: string): LocationMatch | null {
-  const text = normalizeStates(raw).replace(/\s+/g, " ").trim();
+  const text = normalizeStates(normalizeDiscoveryLanguage(raw)).replace(/\s+/g, " ").trim();
 
   // Keep a complete street address intact. It is more precise than a ZIP that
   // may also be present later in the same sentence.
@@ -170,7 +191,7 @@ function looksLikeBarePlace(value: string) {
  * with "actually …" still reads as a normal follow-up.
  */
 export function repairSelfCorrection(raw: string) {
-  const text = raw.replace(/\s+/g, " ").trim();
+  const text = normalizeDiscoveryLanguage(raw).replace(/\s+/g, " ").trim();
   if (!text) return raw;
   let head = "";
   let tail = "";
@@ -237,6 +258,7 @@ const GENERIC_SEARCH_WORDS = new Set([
   // Trade nouns a rep uses to describe a kind of place, not to name one.
   "bakery", "bakeries", "bar", "bars", "boutique", "cafe", "coffee", "deli", "diner", "grill", "grocery",
   "gym", "gyms", "hotel", "hotels", "laundromat", "market", "motel", "pizza", "pub", "store", "stores",
+  "location", "locations", "storefront", "area", "radius", "mile", "miles", "within", "with", "more",
 ]);
 
 const DISCOVERY_WORDS = new Set("a an the and or for of me one two three four five six seven eight nine ten some few another good great highly rated rating ratings highest top ranks rank high near nearby local".split(" "));
@@ -249,6 +271,7 @@ export function isGenericBusinessPhrase(value: string) {
 
 function cleanSearchPhrase(value: string) {
   return value
+    .replace(/\b(?:with(?:in)?\s+)?(?:a\s+)?(?:\d+(?:\.\d+)?|half|one|two|three|four|five|ten)\s*[- ]?(?:mile|mi)s?(?:\s+radius)?\b/gi, "")
     // A question mark left on either edge is punctuation, not a search phrase.
     .replace(/^[\s,;:.!?-]+|[\s,;:.!?-]+$/g, "")
     .replace(/^(?:is|that(?:'s| is))\s+(?:the\s+)?(?:zip|zip code|postal code)\b.*$/i, "")
@@ -313,7 +336,7 @@ const RESEARCH_QUESTION_LEAD =
   /^(?:(?:the|a|an)\s+)?(?:who(?:'s|s| is| are)?\s+(?:the\s+)?(?:own(?:s|er|ers|ership)|run(?:s)?|operat(?:es|or)|manag(?:es|er)|behind)(?:\s+of)?|who\s+own(?:s)?|own(?:er|ership)\s+of|what\s+company\s+own(?:s)?|which\s+company\s+own(?:s)?)\b[\s:,-]*(?:the\s+|a\s+|an\s+)?/i;
 
 const OWNERSHIP_QUESTION =
-  /\bwho\s+(?:owns|own|runs|run|operates|manages|is\s+(?:the\s+)?owner)\b|\bwho(?:'s|s|\s+is)\s+(?:the\s+owner|behind)\b|\bownership\b|\bowner\s+of\b/i;
+  /\bwho\s+(?:\w+\s+){0,3}(?:owns|own|runs|run|operates|manages)\b|\bwho(?:'s|s|\s+is)\s+(?:the\s+owner|behind)\b|\b(?:local\s+)?(?:ownership|franchisee|operating company)\b|\b(?:owner|operator)s?\s+of\b|\bwho\s+actually\s+(?:owns|operates)\b/i;
 
 const CONTACT_QUESTION = /\bwho\s+(?:do|should)\s+i\s+(?:talk|speak|ask)\b|\bdecision\s*maker\b|\bwho\s+runs\s+the\s+(?:front|counter)\b/i;
 
@@ -333,6 +356,7 @@ export function researchQuestionLabel(text: string) {
 function trimNameEdges(value: string) {
   return value
     .replace(/^[\s,;:.&-]+|[\s,;:.&-]+$/g, "")
+    .replace(/\s+(?:location|locations|storefront)$/i, "")
     .replace(/\s+(?:and|or|&|in|near|at|on|of|the)$/i, "")
     .replace(/^(?:and|or|&|the)\s+/i, "")
     .replace(/\s+/g, " ")
@@ -352,7 +376,8 @@ function nameWithoutPlace(phrase: string, location: string | null) {
 }
 
 function targetName(text: string) {
-  const normalized = text;
+  const normalized = normalizeDiscoveryLanguage(text);
+  if (isLiveMore(normalized)) return null;
   const explicit = normalized.match(/\b(?:named|called)\s+(.+)/i)?.[1];
   const direct = normalized.match(/\b(?:info(?:rmation)? (?:about|on)|tell me about|brief me on|prep(?:are)? me for|look up|research|find(?:\s+me)?|google(?:\s+for)?)\s+(.+)/i)?.[1]?.replace(/^(?:info(?:rmation)? (?:about|on))\s+/i, "");
   const requested = explicit || direct;
@@ -434,6 +459,7 @@ export function parseLiveBrief(input: string): LiveBrief {
     searchTerms: name ? [name] : searchTerms(text),
     targetName: name,
     requestedCount: requestedCount(text),
+    radiusMiles: extractLiveRadius(input),
     profile: homeBased ? "home_based" : independent ? "independent" : "any",
     categoryHint: categoryHint(text),
     excludeNational: !askedForChains,
@@ -471,6 +497,7 @@ export function mergeLiveBrief(previous: LiveBrief | null, next: LiveBrief, carr
       searchTerms: hasNewFocus ? next.searchTerms : previousTerms,
       targetName: hasNewFocus ? next.targetName : previousTarget,
       requestedCount: next.requestedCount ?? previous.requestedCount,
+    radiusMiles: next.radiusMiles ?? previous.radiusMiles,
       profile: "any",
       excludeNational: false,
       wantsWeb: next.wantsWeb,
@@ -483,6 +510,7 @@ export function mergeLiveBrief(previous: LiveBrief | null, next: LiveBrief, carr
     searchTerms: hasNewFocus ? next.searchTerms : previousTerms,
     targetName: hasNewFocus ? next.targetName : previousTarget,
     requestedCount: next.requestedCount ?? previous.requestedCount,
+    radiusMiles: next.radiusMiles ?? previous.radiusMiles,
     profile: next.profile !== "any" ? next.profile : hasNewFocus ? "any" : previous.profile,
     categoryHint: next.categoryHint ?? (hasNewFocus ? null : previous.categoryHint),
     excludeNational: previous.excludeNational && next.excludeNational,
@@ -504,7 +532,8 @@ export function briefNeedsFollowThrough(brief: LiveBrief) {
 /** Dispatch only obvious searches without a model. Mentioning a business or
  * a place inside a question should not replace the current list. */
 export function isLiveSearchRequest(text: string) {
-  const value = text.trim();
+  const value = normalizeDiscoveryLanguage(text).trim();
+  if (isLiveMore(value)) return true;
   if (targetName(value)) return false;
   if (/^(?:how|why|what (?:does|do|is|are)|explain|tell me why)\b/i.test(value)) return false;
   if (
@@ -554,6 +583,7 @@ export function resolveLiveTurn(input: string, previous: LiveBrief | null, conte
   }
   const text = repairSelfCorrection(input);
   const parsed = parseLiveBrief(text);
+  parsed.radiusMiles = extractLiveRadius(input) ?? parsed.radiusMiles;
   const reset = /\b(?:start (?:over|fresh)|new search|clear (?:the |my )?list|forget (?:the |that |my )?(?:list|search)|reset (?:the )?search)\b/i.test(text);
   const retry = !reset && isLiveRetry(text);
   const named = parsed.locationHint;

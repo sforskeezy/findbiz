@@ -1,4 +1,6 @@
 "use client";
+import { useVoiceKey } from "@/components/settings-button";
+import { matchesVoiceShortcut } from "@/lib/voice-shortcut";
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -144,6 +146,7 @@ export function useLiveVoice({
   onNotice: (message: string) => void;
   onSubmit: (text: string) => void;
 }) {
+  const voiceKey = useVoiceKey();
   const [listening, setListening] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [stage, setStage] = useState<LiveVoiceStage>("listening");
@@ -165,9 +168,9 @@ export function useLiveVoice({
   const transcriptionRef = useRef<AbortController | null>(null);
   /** pointerdown already started the session — the following click must not toggle it off. */
   const pointerArmedRef = useRef(false);
-  /** Control is being held as push-to-talk, so silence should not auto-send. */
+  /** The voice key is being held as push-to-talk, so silence should not auto-send. */
   const holdToTalkRef = useRef(false);
-  /** Control is still physically down for this PTT press. */
+  /** The voice key is still physically down for this PTT press. */
   const holdLiveRef = useRef(false);
   const controlsDownRef = useRef(new Set<string>());
   const controlIsShortcutRef = useRef(false);
@@ -520,38 +523,21 @@ export function useLiveVoice({
   }, [cancel, finish, start]);
 
   useEffect(() => {
-    function isControlKey(event: KeyboardEvent) {
-      return event.key === "Control";
-    }
-
     function onKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape" && (sessionRef.current || transcriptionRef.current)) {
         cancelRef.current();
         return;
       }
-
-      if (!isControlKey(event)) {
-        if (event.ctrlKey && controlsDownRef.current.size > 0) {
-          controlIsShortcutRef.current = true;
-          if (holdToTalkRef.current) {
-            holdToTalkRef.current = false;
-            holdLiveRef.current = false;
-            setHolding(false);
-            cancelRef.current();
-          }
-        }
-        return;
-      }
-
-      if (event.repeat || event.metaKey || event.altKey || event.shiftKey || event.isComposing) return;
-
-      controlsDownRef.current.add(event.code || "Control");
-      if (controlsDownRef.current.size > 1) return;
-      if (disabled) return;
-
-      controlIsShortcutRef.current = false;
+      if (!matchesVoiceShortcut(event, voiceKey)) return;
+      const target = event.target instanceof HTMLElement ? event.target : null;
+      // Keep normal keyboard navigation in dialogs, links, and other controls.
+      if (target?.closest("dialog, button, a, select, input, [contenteditable=true]")) return;
+      if (target?.tagName === "TEXTAREA" && target.getAttribute("aria-label") !== "Message Live") return;
+      if (disabled || event.repeat) return;
+      event.preventDefault();
       if (sessionRef.current || recorderRef.current || transcriptionRef.current) return;
-
+      controlsDownRef.current.add(event.code || event.key);
+      controlIsShortcutRef.current = false;
       holdToTalkRef.current = true;
       holdLiveRef.current = true;
       setHolding(true);
@@ -559,8 +545,8 @@ export function useLiveVoice({
     }
 
     function onKeyUp(event: KeyboardEvent) {
-      if (!isControlKey(event)) return;
-      controlsDownRef.current.delete(event.code || "Control");
+      if (!controlsDownRef.current.has(event.code || event.key)) return;
+      controlsDownRef.current.delete(event.code || event.key);
       if (controlsDownRef.current.size > 0) return;
 
       const wasHold = holdToTalkRef.current;
@@ -605,8 +591,9 @@ export function useLiveVoice({
       window.removeEventListener("keyup", onKeyUp, true);
       window.removeEventListener("blur", onLostFocus);
       document.removeEventListener("visibilitychange", onVisibility);
+      onLostFocus();
     };
-  }, [disabled]);
+  }, [disabled, voiceKey]);
 
   return {
     analyserRef,

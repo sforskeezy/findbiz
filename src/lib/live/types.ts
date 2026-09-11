@@ -91,7 +91,19 @@ export type LivePendingLookup = {
   askedAt: string;
 };
 
+export type LiveProfileContext = {
+  prospect: Prospect;
+  brief: import("@/lib/types").AiBriefResult;
+  intelligence: import("@/lib/types").CompanyIntelligence | null;
+  broadband: import("@/lib/types").BroadbandObservation[];
+  fcc?: import("@/lib/types").FccLookupResponse | null;
+  serviceability?: import("@/lib/types").ServiceabilitySignal | null;
+  importedAt: string;
+};
+
 export type LiveSession = {
+  profileContext?: LiveProfileContext | null;
+  seenBusinesses?: Array<Pick<Prospect, "id" | "name" | "address" | "phone">>;
   id: string;
   title: string;
   createdAt: string;

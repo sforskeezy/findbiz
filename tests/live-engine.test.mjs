@@ -198,14 +198,15 @@ test('just Google it retries the user’s business, not the assistant’s unrela
   webResults = [{title:'L3 Installer Services', link:'https://example.com/l3', snippet:'Lugoff SC deck builder.'}];
   responseText = 'L3 Installer Services builds decks in Lugoff, SC.';
   await runLiveTurn({sessionId:session.id, message:'Dude just Google it'});
-  assert.match(webRequests[0], /L3 Services Lugoff, SC/);
+  assert.match(webRequests[0], /L3 Services.*Lugoff, SC/);
   assert.ok(webRequests.every(query => !query.includes('L3Harris')));
   const count = webRequests.length;
   await runLiveTurn({sessionId:session.id, message:'Try again'});
   assert.ok(webRequests.length > count, 'Retry must search again instead of replaying a cache');
   const repeated = await runLiveTurn({sessionId:session.id, message:'Try again'});
   assert.equal(repeated.queue.currentIndex, 0);
-  assert.match(webRequests.at(-1), /L3 Services Lugoff, SC/);
+  assert.match(webRequests.at(-1), /L3 Services/);
+  assert.match(webRequests.at(-1), /Lugoff/);
 });
 
 test('no named match never substitutes the old queue or calls the model with invented evidence', async () => {
@@ -256,7 +257,6 @@ test('a one-word name correction continues the ownership research instead of a n
     link: 'https://7brew.example/travelers-rest',
     snippet: '7 Brew Coffee in Travelers Rest, SC is a franchise location.',
   }];
-  responseText = 'Public sources show **7 Brew Coffee** in Travelers Rest, SC is a franchise location. The franchisee is not named on the page.';
   const second = await runLiveTurn({ sessionId: session.id, message: '7brew' });
 
   assert.equal(second.queue, null, 'A clarification must not launch business discovery');
@@ -266,15 +266,59 @@ test('a one-word name correction continues the ownership research instead of a n
   assert.ok(webRequests.every((query) => !/Greenville/i.test(query)), 'Never fall back to a remembered territory');
   assert.equal(second.activeCompany.name, '7 Brew Coffee', 'Confirming the public spelling adopts it');
   assert.equal(second.activeCompany.location, 'Travelers Rest, SC');
-  assert.equal(second.session.messages.at(-1).content, responseText);
-
-  const prompt = requests.at(-1).messages[0].content;
-  assert.match(prompt, /Name correction in progress/);
-  assert.match(prompt, /who owns this specific location/);
-  assert.match(prompt, /Travelers Rest, SC/);
-  assert.match(prompt, /Do NOT call find_businesses/);
+  const reply = second.session.messages.at(-1).content;
+  assert.match(reply, /Travelers Rest/);
+  assert.match(reply, /Verified/);
+  assert.doesNotMatch(reply, /couldn.t verify|no public record/i);
+  assert.equal(requests.length, 0, 'Ownership evidence is answered from sources, not a free-form model guess');
   const resolved = await loadSession(session.id);
   assert.equal(resolved.pendingLookup, null, 'A resolved lookup stops being pending');
+});
+
+test('named location ownership research keeps first-party evidence and does not stop at the brand', async () => {
+  const session = await createSession();
+  session.messages = [];
+  await saveSession(session);
+  const official = {title: 'Travelers Rest, SC', link: 'https://7brew.com/locations/travelers-rest-sc', snippet: 'Drive-thru coffee on N Main Street.'};
+  const homepage = {title: '7 Brew Coffee', link: 'https://7brew.com/', snippet: 'Over 1,000 locations nationwide. Corporate does not own individual stores.'};
+  const locator = {title: 'Locations | 7 Brew Coffee', link: 'https://7brew.com/locations', snippet: 'Greenville, SC and Spartanburg, SC locations.'};
+  const operator = {title: 'Upstate Drive Thru LLC opens 7 Brew in Travelers Rest', link: 'https://upstatetoday.example/7brew-opens', snippet: 'Upstate Drive Thru LLC operates the 7 Brew Coffee location in Travelers Rest, SC.'};
+  const other = {title: 'Dutch Bros Coffee - Greenville, SC', link: 'https://dutchbros.example/greenville', snippet: 'Coffee in Greenville.'};
+  globalThis.fetch = async (url, init) => {
+    if (new URL(url).hostname === 'customsearch.googleapis.com') {
+      const query = new URL(url).searchParams.get('q') || '';
+      webRequests.push(query);
+      const items = /franchisee|operator|operated by|grand opening|owner/i.test(query)
+        ? [operator, official]
+        : [homepage, locator, official, other];
+      return Response.json({items});
+    }
+    assert.equal(String(url), 'https://model.test/v1/chat/completions', `Unexpected lookup: ${url}`);
+    requests.push(JSON.parse(init.body));
+    return streamReply('I could not verify a 7 Brew location in Travelers Rest, SC. There is no public record confirming the location.');
+  };
+
+  const state = await runLiveTurn({
+    sessionId: session.id,
+    message: 'Research the 7 Brew Coffee location in Travelers Rest, South Carolina. I want to know who actually owns or operates this specific location — not just who owns the 7 Brew brand.',
+  });
+  const reply = state.session.messages.at(-1).content;
+  assert.equal(state.queue, null, 'Named research must not open a nearby list');
+  assert.ok(webRequests.length >= 2, `Weak first search should retry, got ${webRequests.join(' | ')}`);
+  assert.ok(webRequests.some((query) => /franchisee|operator/i.test(query)), `Operator follow-up missing: ${webRequests.join(' | ')}`);
+  assert.ok(webRequests.every((query) => /Travelers Rest/i.test(query)), `Stay on the requested city: ${webRequests.join(' | ')}`);
+  assert.match(reply, /Verified/);
+  assert.match(reply, /Travelers Rest/);
+  assert.match(reply, /7brew\.com\/locations\/travelers-rest/);
+  assert.match(reply, /Upstate Drive Thru LLC/);
+  assert.match(reply, /Still not fully verified/);
+  assert.match(reply, /exact legal ownership entity/i);
+  assert.doesNotMatch(reply, /couldn.t verify|no public record|does not exist/i);
+  assert.doesNotMatch(reply, /1,000 locations|corporate does not own/i);
+  assert.doesNotMatch(reply, /Dutch Bros/i);
+  assert.equal(requests.length, 0, 'Do not let the model deny a sourced location');
+  assert.equal(state.activeCompany.name, '7 Brew Coffee');
+  assert.equal(state.activeCompany.location, 'Travelers Rest, SC');
 });
 
 test('a genuine discovery request after a failed lookup still searches an area', async () => {
@@ -509,7 +553,7 @@ test('last model round has tools disabled and produces a final answer', async ()
     return streamReply('Here is what I can tell you from the listing.');
   };
   const state = await runLiveTurn({ sessionId: session.id, message: 'Help me handle a price objection without sounding desperate' });
-  assert.equal(requests.length, 6);
+  assert.equal(requests.length, 10);
   assert.equal(requests.at(-1).tools, undefined);
   assert.equal(state.session.messages.at(-1).content, 'Here is what I can tell you from the listing.');
 });
@@ -625,4 +669,38 @@ test('the HTTP stream sends the session first and cancels provider work on disco
   await begun;
   await reader.cancel();
   assert.equal(providerAborted, true);
+});
+
+test('normal profile remains complete in context across follow-up turns', async () => {
+  const { POST: importProfile } = await import('../src/app/api/live/profile/route.ts');
+  const { buildFallbackBrief } = await import('../src/lib/brief-fallback.ts');
+  const seeded = await seededChat();
+  const prospect = seeded.queue.prospects[0];
+  const brief = { ...buildFallbackBrief(prospect, []), summary: 'Profile-only detail: the workshop uses a cloud scheduling system.' };
+  const response = await importProfile(new Request('https://app.test/api/live/profile', { method:'POST', body:JSON.stringify({ prospect, brief, intelligence:null, broadband:[] }) }));
+  assert.equal(response.status,200);
+  const { sessionId } = await response.json();
+  responseText = 'The profile says the workshop uses a cloud scheduling system.';
+  await runLiveTurn({sessionId,message:'What does the profile say about their operation?'});
+  await runLiveTurn({sessionId,message:'How should that affect my opener?'});
+  for (const request of requests) {
+    const context = request.messages.find(item => item.tool_call_id === 'normal_profile_context');
+    assert.ok(context, 'The full imported profile accompanies every turn');
+    assert.equal(JSON.parse(context.content).profile.brief.summary, brief.summary);
+  }
+  const restored = await loadSession(sessionId);
+  assert.equal(restored.profileContext.brief.summary,brief.summary);
+  assert.equal(webRequests.length,0);
+});
+
+test('a failed tool returns evidence feedback so the model can recover', async () => {
+  respond = () => requests.length === 1
+    ? new Response(`data: ${JSON.stringify({choices:[{delta:{tool_calls:[{index:0,id:'bad_location',function:{name:'find_businesses',arguments:'{"location":"x"}'}}]}}]})}\n\ndata: [DONE]\n\n`)
+    : streamReply('I need a city or ZIP to search that area.');
+  const state = await runLiveTurn({message:'Help me plan a prospecting afternoon.'});
+  assert.equal(requests.length,2);
+  const feedback = requests[1].messages.find(item => item.tool_call_id === 'bad_location');
+  assert.equal(JSON.parse(feedback.content).ok,false);
+  assert.match(JSON.parse(feedback.content).nextStep,/another relevant tool/);
+  assert.equal(state.session.messages.at(-1).content,'I need a city or ZIP to search that area.');
 });

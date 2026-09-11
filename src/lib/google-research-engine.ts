@@ -347,7 +347,7 @@ async function searchKeylessFallback(query: string, signal?: AbortSignal) {
   return results;
 }
 
-function sourceClassification(urlValue: string, officialHost: string | null) {
+function sourceClassification(urlValue: string, officialHost: string | null, businessName?: string | null) {
   const hostname = new URL(urlValue).hostname.toLowerCase().replace(/^www\./, "");
   const configured = configuredDomains();
   let sourceKind: SearchSourceKind = "other";
@@ -356,6 +356,10 @@ function sourceClassification(urlValue: string, officialHost: string | null) {
   if (officialHost && (hostname === officialHost || hostname.endsWith(`.${officialHost}`))) {
     sourceKind = "official_site";
     authorityScore = 100;
+  } else if (businessName && matchesBusinessName({ title: "", snippet: "", url: urlValue }, businessName)) {
+    // The brand's own host, even when we have no saved website yet.
+    sourceKind = "official_site";
+    authorityScore = 94;
   } else if (hostname.endsWith(".gov") || hostname.endsWith(".gov.uk") || hostname.endsWith(".gc.ca")) {
     sourceKind = "government_registry";
     authorityScore = 98;
@@ -498,7 +502,7 @@ function toWebResult(item: RawSearchResult, rank: number, authorityScore: number
   };
 }
 
-function collectPublicResults(raw: RawSearchResult[], requireQueryRelevance = true) {
+function collectPublicResults(raw: RawSearchResult[], requireQueryRelevance = true, businessName?: string | null) {
   const byUrl = new Map<string, WebSearchResult>();
   for (const item of raw) {
     const relevance = publicQueryRelevance(item);
@@ -508,7 +512,7 @@ function collectPublicResults(raw: RawSearchResult[], requireQueryRelevance = tr
       const hostname = new URL(item.url).hostname.toLowerCase().replace(/^www\./, "");
       if (hostname !== requiredHost && !hostname.endsWith(`.${requiredHost}`)) continue;
     }
-    const { sourceKind, authorityScore } = sourceClassification(item.url, null);
+    const { sourceKind, authorityScore } = sourceClassification(item.url, null, businessName);
     const rank = Math.round(relevance * 75 + authorityScore * 0.1 + Math.max(0, 10 - item.position));
     const key = resultKey(item.url);
     const existing = byUrl.get(key);
@@ -675,7 +679,7 @@ export async function searchPublicWeb(requestedQueries: string[], options: WebSe
   if (!queries.length) throw new Error("Give Google something to search.");
   const build = async () => {
     const gathered = await gatherSearchResults(queries, options);
-    return asResearchResult(queries, gathered, collectPublicResults(gathered.raw, !options.businessName));
+    return asResearchResult(queries, gathered, collectPublicResults(gathered.raw, !options.businessName, options.businessName));
   };
   // A live retry must run a new search. Cancellable requests must not share work.
   if (options.fresh || options.signal) return build();
