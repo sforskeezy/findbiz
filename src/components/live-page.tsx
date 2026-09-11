@@ -30,6 +30,7 @@ import {
 import { CopyContact } from "@/components/copy-contact";
 import { normalizePhonesForCopy } from "@/lib/phone";
 import { useVoiceKey } from "@/components/settings-button";
+import { voiceKeyLabel } from "@/lib/voice-shortcut";
 
 import { ModeSwitch } from "@/components/prospect-header";
 import { AddressText } from "@/components/live/address-chip";
@@ -44,6 +45,7 @@ import { LiveCoachModal } from "@/components/live/live-coach-modal";
 import { useLiveVoice } from "@/components/live/use-live-voice";
 import { WorkingDots } from "@/components/live/working-dots";
 import { cn } from "@/components/ui";
+import { forgetModeLocation, rememberModeLocation } from "@/lib/mode-memory";
 import { readEventStream } from "@/lib/live/stream";
 import {
   formatLiveBugLog,
@@ -198,6 +200,7 @@ export function LivePage() {
   const [sessions, setSessions] = useState<LiveSessionSummary[]>([]);
   const [memory, setMemory] = useState<LiveMemoryFact[]>([]);
   const voiceKey = useVoiceKey();
+  const voiceKeyName = voiceKeyLabel(voiceKey);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<LiveChatMessage[]>([]);
   const [queue, setQueue] = useState<LivePublicState["queue"]>(null);
@@ -265,7 +268,13 @@ export function LivePage() {
           const opened = await fetch(`/api/live/sessions?sessionId=${encodeURIComponent(handoffId)}`);
           const data = await opened.json() as { state?: LivePublicState; error?: string };
           if (cancelled) return;
-          if (!opened.ok || !data.state) throw new Error(data.error || "Could not open the business profile.");
+          if (!opened.ok || !data.state) {
+            // The chat is gone, so drop the pointer instead of stranding the
+            // rep on an error. A blank Live chat is the useful fallback.
+            forgetModeLocation("live");
+            window.history.replaceState(null, "", "/live");
+            return;
+          }
           applyState(data.state);
           inputRef.current?.focus();
         }
@@ -313,7 +322,11 @@ export function LivePage() {
   }, [menuOpen]);
 
   function applyState(state: LivePublicState) {
-    window.history.replaceState(null, "", `/live?session=${encodeURIComponent(state.session.id)}`);
+    const href = `/live?session=${encodeURIComponent(state.session.id)}`;
+    // `replaceState` is invisible to the router, so the mode switch is told
+    // directly. Otherwise leaving Live would forget which chat was open.
+    window.history.replaceState(null, "", href);
+    rememberModeLocation(href);
     activeSession.current = state.session.id;
     setSessionId(state.session.id);
     setMessages(state.session.messages);
@@ -371,6 +384,7 @@ export function LivePage() {
 
   function newChat() {
     window.history.replaceState(null, "", "/live");
+    rememberModeLocation("/live");
     stopReply(false);
     cancelVoiceRef.current();
     activeSession.current = null;
@@ -785,7 +799,7 @@ export function LivePage() {
                   aria-label="Talk to Live"
                   aria-keyshortcuts={voiceKey === "None" ? undefined : voiceKey}
                   aria-pressed={voice.holding || voiceOpen}
-                  title={voiceKey === "None" ? "Talk to Live" : `Talk to Live · hold ${voiceKey}`}
+                  title={voiceKey === "None" ? "Talk to Live" : `Talk to Live · hold ${voiceKeyName}`}
                   onPointerDown={(event) => {
                     setMenuOpen(false);
                     voice.handlePointerDown(event);
@@ -811,7 +825,7 @@ export function LivePage() {
 
             <p className={cn("mt-3 text-[10px] text-[#92938c]", atHome ? "flex flex-wrap justify-between gap-2 px-1" : "text-center")}>
               {busy ? "You can stop or send a new direction at any time." : "Research with public sources."}
-              <span className="ml-3 hidden sm:inline text-[#8a8a84]">{voiceKey === "None" ? "Click the mic to talk" : `Hold ${voiceKey} to talk`} · Enter to send · /livemode · /output</span>
+              <span className="ml-3 hidden sm:inline text-[#8a8a84]">{voiceKey === "None" ? "Click the mic to talk" : `Hold ${voiceKeyName} to talk`} · Enter to send · /livemode · /output</span>
             </p>
           </div>
         </div>

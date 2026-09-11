@@ -1,5 +1,6 @@
 "use client";
 import { useVoiceKey } from "@/components/settings-button";
+import { voiceKeyLabel } from "@/lib/voice-shortcut";
 
 import { useEffect, useRef } from "react";
 import { Check, X } from "lucide-react";
@@ -157,8 +158,8 @@ export function LiveVoiceEdge({ analyserRef, onCancel, onFinish, pushToTalk = fa
   reduceMotion: boolean;
   stage: LiveVoiceStage;
 }) {
-  const voiceKey = useVoiceKey();
-  const copy = stageCopy(stage, pushToTalk, voiceKey);
+  const keyLabel = voiceKeyLabel(useVoiceKey());
+  const copy = stageCopy(stage, pushToTalk, keyLabel);
   return (
     <div className="live-voice-edge" data-stage={stage} data-hold={pushToTalk || undefined} aria-label="Live voice mode">
       <LiveLiquidVoiceCanvas analyserRef={analyserRef} reduceMotion={reduceMotion} stage={stage} />
@@ -169,7 +170,7 @@ export function LiveVoiceEdge({ analyserRef, onCancel, onFinish, pushToTalk = fa
         </span>
         <small className="live-voice-hint">{copy.hint}</small>
         {pushToTalk && stage !== "sending" && (
-          <kbd className="live-voice-key">{voiceKey}</kbd>
+          <kbd className="live-voice-key">{keyLabel}</kbd>
         )}
       </div>
       <div className="live-voice-controls">

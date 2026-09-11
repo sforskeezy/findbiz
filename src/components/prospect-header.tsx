@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -9,6 +9,16 @@ import { Pencil } from "lucide-react";
 import { SettingsButton } from "@/components/settings-button";
 import { beginPageTransition } from "@/components/page-transition";
 import { cn } from "@/components/ui";
+import {
+  currentModeHref,
+  modeForPath,
+  modeMemorySnapshot,
+  modeReturnHref,
+  rememberModeLocation,
+  serverModeMemorySnapshot,
+  subscribeModeMemory,
+  type PaiMode,
+} from "@/lib/mode-memory";
 
 const GITHUB_URL = process.env.NEXT_PUBLIC_GITHUB_URL || "https://github.com/sforskeezy/findbiz";
 
@@ -160,26 +170,24 @@ function RewriteBackLink({ href, label }: { href: string; label: string }) {
   );
 }
 
-type Mode = "normal" | "live";
-
-const MODES: Array<{ mode: Mode; href: string; label: string }> = [
-  { mode: "normal", href: "/", label: "Normal" },
-  { mode: "live", href: "/live", label: "Live" },
+const MODES: Array<{ mode: PaiMode; label: string }> = [
+  { mode: "normal", label: "Normal" },
+  { mode: "live", label: "Live" },
 ];
-
-function modeForPath(pathname: string): Mode {
-  return pathname.startsWith("/live") || pathname.startsWith("/radar") ? "live" : "normal";
-}
 
 /**
  * Shared Normal/Live switch. Reads the route itself so callers only pick a size.
  * The indicator moves the moment you click rather than when the next route
  * commits, so the pill is the one thing that holds still across the navigation.
+ *
+ * Each side links to wherever that mode was last left rather than its home
+ * screen, so flipping across and back keeps the search or chat you were on.
  */
 export function ModeSwitch({ small = false }: { small?: boolean }) {
   const pathname = usePathname();
   const routeMode = modeForPath(pathname);
-  const [pending, setPending] = useState<{ target: Mode; from: Mode } | null>(null);
+  const memory = useSyncExternalStore(subscribeModeMemory, modeMemorySnapshot, serverModeMemorySnapshot);
+  const [pending, setPending] = useState<{ target: PaiMode; from: PaiMode } | null>(null);
   // The optimistic pill position holds only while we are still on the route the
   // click came from. Nothing has to clear it: each mode renders its own switch,
   // so arriving anywhere else mounts a fresh one with no pending state.
@@ -205,10 +213,12 @@ export function ModeSwitch({ small = false }: { small?: boolean }) {
       {MODES.map((item) => (
         <Link
           key={item.mode}
-          href={item.href}
+          href={modeReturnHref(memory, item.mode)}
           aria-current={mode === item.mode ? "page" : undefined}
           onClick={() => {
             if (item.mode === routeMode) return;
+            // Record where this mode is being left before the route changes.
+            rememberModeLocation(currentModeHref());
             setPending({ target: item.mode, from: routeMode });
             beginPageTransition("mode");
           }}

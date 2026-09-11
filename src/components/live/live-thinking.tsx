@@ -109,12 +109,10 @@ function ThoughtStream({
   );
 }
 
-/** In-flight: expanded, scrollable reasoning trail. */
-export function LiveThinking({ steps, status }: { steps: LiveThinkingStep[]; status: string }) {
-  return <LiveThoughtTrace steps={steps} live status={status} />;
-}
-
-/** ChatGPT-style thinking: muted toggle, independent scroll when open. */
+/**
+ * ChatGPT-style thinking: a muted toggle that stays collapsed until it is
+ * opened, in flight and afterwards alike, with its own scroll when open.
+ */
 export function LiveThoughtTrace({
   steps,
   seconds,
@@ -127,7 +125,9 @@ export function LiveThoughtTrace({
   status?: string;
 }) {
   const panelId = useId();
-  const [open, setOpen] = useState(live);
+  // Reasoning stays behind the caret. The toggle row carries the status, so a
+  // reply streams in without a wall of steps pushing it down the page.
+  const [open, setOpen] = useState(false);
   const tick = useElapsedSeconds(live);
   const items = visibleSteps(steps);
   if (!items.length && !live) return null;

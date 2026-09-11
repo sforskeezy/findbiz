@@ -1,6 +1,6 @@
 "use client";
 import { useVoiceKey } from "@/components/settings-button";
-import { matchesVoiceShortcut } from "@/lib/voice-shortcut";
+import { isModifierVoiceKey, matchesVoiceShortcut } from "@/lib/voice-shortcut";
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -24,6 +24,11 @@ const VOICE_NOISE_FLOOR_CEILING = 0.05;
 /** Close the mic if the session opens and nothing is ever said. */
 const VOICE_NO_SPEECH_TIMEOUT_MS = 9000;
 const VOICE_MAX_SESSION_MS = 60_000;
+/**
+ * A modifier bound as push-to-talk waits this long before opening the mic, so
+ * the Ctrl in a quick Ctrl+C never blips the recorder on.
+ */
+const VOICE_MODIFIER_HOLD_MS = 250;
 const VOICE_MONITOR_INTERVAL_MS = 55;
 
 const AUDIO_CONSTRAINTS: MediaStreamConstraints = {
@@ -174,6 +179,8 @@ export function useLiveVoice({
   const holdLiveRef = useRef(false);
   const controlsDownRef = useRef(new Set<string>());
   const controlIsShortcutRef = useRef(false);
+  /** Pending grace timer for a modifier binding, before the mic actually opens. */
+  const modifierHoldRef = useRef<number | null>(null);
   const onNoticeRef = useRef(onNotice);
   const onSubmitRef = useRef(onSubmit);
   const getDraftRef = useRef(getDraft);
@@ -528,13 +535,21 @@ export function useLiveVoice({
         cancelRef.current();
         return;
       }
-      if (!matchesVoiceShortcut(event, voiceKey)) return;
+      if (!matchesVoiceShortcut(event, voiceKey)) {
+        // A second key pressed while the voice key is held means the rep is
+        // running a real shortcut such as copy or paste. Leave it to the
+        // browser and drop the recording on release instead of sending it.
+        if (holdLiveRef.current) controlIsShortcutRef.current = true;
+        return;
+      }
       const target = event.target instanceof HTMLElement ? event.target : null;
       // Keep normal keyboard navigation in dialogs, links, and other controls.
       if (target?.closest("dialog, button, a, select, input, [contenteditable=true]")) return;
       if (target?.tagName === "TEXTAREA" && target.getAttribute("aria-label") !== "Message Live") return;
       if (disabled || event.repeat) return;
-      event.preventDefault();
+      // A held modifier has no default action worth blocking, and swallowing it
+      // can strand a shortcut the rep is part-way through pressing.
+      if (!isModifierVoiceKey(voiceKey)) event.preventDefault();
       if (sessionRef.current || recorderRef.current || transcriptionRef.current) return;
       controlsDownRef.current.add(event.code || event.key);
       controlIsShortcutRef.current = false;
