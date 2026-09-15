@@ -173,6 +173,7 @@ function RewriteBackLink({ href, label }: { href: string; label: string }) {
 const MODES: Array<{ mode: PaiMode; label: string }> = [
   { mode: "normal", label: "Normal" },
   { mode: "live", label: "Live" },
+  { mode: "swarm", label: "Swarm" },
 ];
 
 /**
@@ -196,7 +197,7 @@ export function ModeSwitch({ small = false }: { small?: boolean }) {
   return (
     <div
       className={cn(
-        "relative inline-grid shrink-0 grid-cols-2 items-center bg-[#ededea] p-[3px]",
+        "relative inline-grid shrink-0 grid-cols-3 items-center bg-[#ededea] p-[3px]",
         small ? "rounded-[10px]" : "rounded-[11px] sm:rounded-[13px]",
       )}
       role="group"
@@ -205,10 +206,10 @@ export function ModeSwitch({ small = false }: { small?: boolean }) {
       <span
         aria-hidden="true"
         className={cn(
-          "pointer-events-none absolute inset-y-[3px] left-[3px] w-[calc(50%-3px)] border border-[#e2e2dd] bg-white shadow-[0_1px_2px_rgba(20,20,16,0.10),0_2px_6px_rgba(20,20,16,0.05)] transition-transform duration-[460ms] ease-[cubic-bezier(0.34,1.26,0.38,1)] motion-reduce:transition-none",
+          "pointer-events-none absolute inset-y-[3px] left-[3px] w-[calc((100%-6px)/3)] border border-[#e2e2dd] bg-white shadow-[0_1px_2px_rgba(20,20,16,0.10),0_2px_6px_rgba(20,20,16,0.05)] transition-transform duration-[460ms] ease-[cubic-bezier(0.34,1.26,0.38,1)] motion-reduce:transition-none",
           small ? "rounded-[8px]" : "rounded-[9px] sm:rounded-[11px]",
         )}
-        style={{ transform: mode === "live" ? "translateX(100%)" : "translateX(0)" }}
+        style={{ transform: `translateX(${MODES.findIndex((item) => item.mode === mode) * 100}%)` }}
       />
       {MODES.map((item) => (
         <Link

@@ -1,4 +1,4 @@
-import { readFile, rename, writeFile } from "node:fs/promises";
+import { readFile, rename, writeFile, rm, mkdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 
@@ -26,15 +26,35 @@ async function readJson<T>(file: string, fallback: T): Promise<T> {
   try {
     const raw = await readFile(/* turbopackIgnore: true */ file, "utf8");
     return JSON.parse(raw) as T;
-  } catch {
-    return fallback;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return fallback;
+    throw error;
   }
 }
 
 async function writeJson(file: string, value: unknown) {
   const tmp = `${file}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
-  await writeFile(/* turbopackIgnore: true */ tmp, JSON.stringify(value));
-  await rename(/* turbopackIgnore: true */ tmp, file);
+  try {
+    await writeFile(/* turbopackIgnore: true */ tmp, JSON.stringify(value));
+    await rename(/* turbopackIgnore: true */ tmp, file);
+  } finally { await rm(tmp, { force: true }); }
+}
+
+/** Serialize read/modify/write transactions across requests and Node workers. */
+async function withStoreLock<T>(name: string, work: () => Promise<T>): Promise<T> {
+  const lock = path.join(await ensureRoot(), `${name}.lock`);
+  let acquired = false;
+  for (let attempt = 0; attempt < 250; attempt++) {
+    try { await mkdir(lock); acquired = true; break; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      try { if (Date.now() - (await stat(lock)).mtimeMs > 60_000) await rm(lock, {recursive: true, force: true}); } catch { /* Another writer released it. */ }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+  if (!acquired) throw new Error("Memory is busy saving. Please retry.");
+  try { return await work(); }
+  finally { await rm(lock, {recursive: true, force: true}); }
 }
 
 export function liveId(prefix: string) {
@@ -73,13 +93,15 @@ export function emptySession(id = liveId("live")): LiveSession {
 }
 
 export async function createSession() {
-  const session = emptySession();
-  const root = await ensureRoot();
-  await writeJson(path.join(root, "sessions", `${session.id}.json`), session);
-  const index = await loadIndex();
-  index.sessionIds = [session.id, ...index.sessionIds.filter((item) => item !== session.id)].slice(0, 40);
-  await saveIndex(index);
-  return session;
+  return withStoreLock("index", async () => {
+    const session = emptySession();
+    const root = await ensureRoot();
+    await writeJson(path.join(root, "sessions", `${session.id}.json`), session);
+    const index = await loadIndex();
+    index.sessionIds = [session.id, ...index.sessionIds.filter((item) => item !== session.id)];
+    await saveIndex(index);
+    return session;
+  });
 }
 
 export async function loadSession(id: string) {
@@ -90,20 +112,25 @@ export async function loadSession(id: string) {
 }
 
 export async function saveSession(session: LiveSession) {
-  if (!isLiveSessionId(session.id)) throw new Error("Invalid Live session.");
-  session.updatedAt = new Date().toISOString();
-  const root = await ensureRoot();
-  await writeJson(path.join(root, "sessions", `${session.id}.json`), session);
-  const index = await loadIndex();
-  index.sessionIds = [session.id, ...index.sessionIds.filter((item) => item !== session.id)].slice(0, 40);
-  await saveIndex(index);
-  return session;
+  return withStoreLock("index", async () => {
+    if (!isLiveSessionId(session.id)) throw new Error("Invalid Live session.");
+    session.updatedAt = new Date().toISOString();
+    const root = await ensureRoot();
+    await writeJson(path.join(root, "sessions", `${session.id}.json`), session);
+    const index = await loadIndex();
+    index.sessionIds = [session.id, ...index.sessionIds.filter((item) => item !== session.id)];
+    await saveIndex(index);
+    return session;
+  });
 }
 
 export async function deleteSession(id: string) {
-  const index = await loadIndex();
-  index.sessionIds = index.sessionIds.filter((item) => item !== id);
-  await saveIndex(index);
+  return withStoreLock("index", async () => {
+    const index = await loadIndex();
+    index.sessionIds = index.sessionIds.filter((item) => item !== id);
+    await saveIndex(index);
+    if (isLiveSessionId(id)) await rm(path.join(await ensureRoot(), "sessions", `${id}.json`), { force: true });
+  });
 }
 
 export function sessionSummary(session: LiveSession): LiveSessionSummary {
@@ -131,35 +158,43 @@ export async function loadMemory(): Promise<LiveMemoryFact[]> {
   return payload.facts ?? [];
 }
 
-export async function saveMemory(facts: LiveMemoryFact[]) {
+async function writeMemory(facts: LiveMemoryFact[]) {
   const root = await ensureRoot();
-  await writeJson(path.join(root, "memory.json"), { facts: facts.slice(0, 40) });
+  await writeJson(path.join(root, "memory.json"), { facts: facts.slice(0, 500) });
+}
+
+export async function saveMemory(facts: LiveMemoryFact[]) {
+  return withStoreLock("memory", () => writeMemory(facts));
 }
 
 export async function rememberFact(input: { kind: LiveMemoryFact["kind"]; text: string }) {
-  const text = input.text.replace(/\s+/g, " ").trim();
-  if (text.length < 8 || text.length > 280) return loadMemory();
-  const facts = await loadMemory();
-  const duplicate = facts.find((item) => item.text.toLowerCase() === text.toLowerCase());
-  if (duplicate) return facts;
-  const next = [
-    {
-      id: liveId("mem"),
-      kind: input.kind,
-      text,
-      createdAt: new Date().toISOString(),
-    },
-    ...facts.filter((item) => !(item.kind === input.kind && item.kind === "territory")),
-  ].slice(0, 40);
-  await saveMemory(next);
-  return next;
+  return withStoreLock("memory", async () => {
+    const text = input.text.replace(/\s+/g, " ").trim();
+    if (text.length < 8 || text.length > 280) return loadMemory();
+    const facts = await loadMemory();
+    const duplicate = facts.find((item) => item.text.toLowerCase() === text.toLowerCase());
+    if (duplicate) return facts;
+    const next = [
+      {
+        id: liveId("mem"),
+        kind: input.kind,
+        text,
+        createdAt: new Date().toISOString(),
+      },
+      ...facts,
+    ];
+    await writeMemory(next);
+    return next;
+  });
 }
 
 export async function forgetFact(id: string) {
-  const facts = await loadMemory();
-  const next = facts.filter((item) => item.id !== id);
-  await saveMemory(next);
-  return next;
+  return withStoreLock("memory", async () => {
+    const facts = await loadMemory();
+    const next = facts.filter((item) => item.id !== id);
+    await writeMemory(next);
+    return next;
+  });
 }
 
 export async function liveStoreStatus() {
@@ -170,4 +205,11 @@ export async function liveStoreStatus() {
     sessions: index.sessionIds.length,
     memory: (await loadMemory()).length,
   };
+}
+
+/** Full saved history for retrieval; the model prompt still uses a bounded excerpt. */
+export async function listStoredSessions(): Promise<LiveSession[]> {
+  const index = await loadIndex();
+  const sessions = await Promise.all(index.sessionIds.map(loadSession));
+  return sessions.filter((session): session is LiveSession => !!session && session.messages.length > 0).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }

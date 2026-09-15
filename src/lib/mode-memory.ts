@@ -1,11 +1,12 @@
-export type PaiMode = "normal" | "live";
+export type PaiMode = "normal" | "live" | "swarm";
 
-export const MODE_HOME: Record<PaiMode, string> = { normal: "/", live: "/live" };
+export const MODE_HOME: Record<PaiMode, string> = { normal: "/", live: "/live", swarm: "/swarm" };
 
-const MODES: readonly PaiMode[] = ["normal", "live"];
+const MODES: readonly PaiMode[] = ["normal", "live", "swarm"];
 const STORAGE_KEY = "pai.mode-return.v1";
 
 export function modeForPath(pathname: string): PaiMode {
+  if (/^\/swarm(?:[/?#]|$)/.test(pathname)) return "swarm";
   return pathname.startsWith("/live") || pathname.startsWith("/radar") ? "live" : "normal";
 }
 

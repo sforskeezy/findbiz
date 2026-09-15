@@ -1,0 +1,110 @@
+"use client";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Image from "next/image";
+import Link from "next/link";
+import { AnimatePresence, MotionConfig, motion } from "motion/react";
+import { ArrowDownToLine, ArrowRight, Check, ChevronLeft, ChevronRight, Copy, FileText, Layers3, List, LoaderCircle, Map, MapPin, Menu, Pause, Play, Plus, Search, X, Route } from "lucide-react";
+import { ModeSwitch } from "@/components/prospect-header";
+import { SettingsButton } from "@/components/settings-button";
+import { SwarmMap } from "@/components/swarm/swarm-map";
+import { SwarmRoute } from "@/components/swarm/swarm-route";
+import { SwarmDetail } from "@/components/swarm/swarm-detail";
+import { exportSwarm, parseAddressBatch, swarmClusters } from "@/lib/swarm/logic";
+import { rememberModeLocation } from "@/lib/mode-memory";
+import type { SwarmResponse } from "@/lib/swarm/types";
+
+const working = (status?: string) => ['queued','scanning','qualifying','researching'].includes(status ?? '');
+const PAGE_SIZE = 40;
+export function SwarmPage() {
+  const [data,setData] = useState<SwarmResponse | null>(null);
+  const [id,setId] = useState<string | null>(null);
+  const [draft,setDraft] = useState('');
+  const [radius,setRadius] = useState(1);
+  const [pending,setPending] = useState(false);
+  const [loading,setLoading] = useState(true);
+  const [error,setError] = useState('');
+  const [sidebar,setSidebar] = useState(false);
+  const [view,setView] = useState<'prospects'|'map'|'clusters'>('prospects');
+  const [query,setQuery] = useState('');
+  const [priority,setPriority] = useState('all');
+  const [cluster,setCluster] = useState<string | null>(null);
+  const [selected,setSelected] = useState<Set<string>>(new Set());
+  const [routeOpen,setRouteOpen] = useState(false);
+  const [detail,setDetail] = useState<string | null>(null);
+  const [page,setPage] = useState(0);
+  const [toast,setToast] = useState('');
+  const initial = useRef(false), revision = useRef(0), currentId = useRef<string | null>(null);
+  const input = useRef<HTMLTextAreaElement>(null);
+  const batch = data?.batch?.id === id ? data.batch : null;
+  const busy = working(batch?.status);
+  const parsed = useMemo(() => { try { return {...parseAddressBatch(draft), error:''}; } catch(error) { return {addresses:[],duplicates:0,invalid:[],error:error instanceof Error ? error.message : 'Invalid addresses.'}; } },[draft]);
+  const refresh = useCallback(async (batchId: string | null) => {
+    const generation = revision.current;
+    try {
+      const response = await fetch(`/api/swarm${batchId ? `?id=${batchId}` : ''}`, {cache:'no-store'});
+      const result = await response.json() as SwarmResponse;
+      if (!response.ok) throw new Error(result.error || 'Could not load Swarm.');
+      if (batchId && !result.batch) throw new Error('This batch could not be found. Start a new swarm or choose a saved batch.');
+      if (generation === revision.current && batchId === currentId.current) setData(result);
+    } catch(error) { if (generation === revision.current) setError(error instanceof Error ? error.message : 'Connection lost.'); }
+    finally { setLoading(false); }
+  },[]);
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      const requested = new URLSearchParams(window.location.search).get('batch');
+      currentId.current = requested; setId(requested); initial.current = true;
+      try { setDraft(localStorage.getItem('pai.swarm.draft') ?? ''); } catch { /* Storage is optional. */ }
+      void refresh(requested);
+    },0);
+    const interval = setInterval(() => { if (!document.hidden) void refresh(currentId.current); },4000);
+    return () => {clearTimeout(timer);clearInterval(interval);};
+  },[refresh]);
+  useEffect(() => { if (initial.current) { try {localStorage.setItem('pai.swarm.draft',draft);} catch { /* Storage is optional. */ } } },[draft]);
+  useEffect(() => { if (!toast) return; const timer=setTimeout(()=>setToast(''),2500); return ()=>clearTimeout(timer); },[toast]);
+  function choose(next: string | null) {
+    revision.current++;currentId.current=next;setId(next);setSelected(new Set());setDetail(null);setCluster(null);setQuery('');setPage(0);setSidebar(false);setError('');
+    const href=next?`/swarm?batch=${next}`:'/swarm';window.history.replaceState(null,'',href);rememberModeLocation(href);void refresh(next);
+  }
+  async function action(body: Record<string,unknown>) {
+    setPending(true);setError('');revision.current++;
+    try {
+      const response=await fetch('/api/swarm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      const result=await response.json() as SwarmResponse;
+      if(!response.ok)throw new Error(result.error||'Could not save your batch.');
+      revision.current++;setData(result);
+      if(result.batch){currentId.current=result.batch.id;setId(result.batch.id);const href=`/swarm?batch=${result.batch.id}`;window.history.replaceState(null,'',href);rememberModeLocation(href);}
+      return true;
+    }catch(error){setError(error instanceof Error?error.message:'Please try again.');return false;}finally{setPending(false);}
+  }
+  const prospects=useMemo(()=>[...(batch?.prospects??[])].filter((p)=>(priority==='all'||p.opportunity===priority)&&(!cluster||p.clusterId===cluster)&&`${p.business.name} ${p.business.address} ${p.business.category}`.toLowerCase().includes(query.toLowerCase())).sort((a,b)=>b.rank-a.rank||a.business.name.localeCompare(b.business.name)),[batch,priority,cluster,query]);
+  const clusters=useMemo(()=>swarmClusters(batch?.prospects??[]),[batch]);
+  const maxPage=Math.max(0,Math.ceil(prospects.length/PAGE_SIZE)-1);
+  const visible=prospects.slice(Math.min(page,maxPage)*PAGE_SIZE,(Math.min(page,maxPage)+1)*PAGE_SIZE);
+  function toggle(key:string){setSelected((old)=>{const next=new Set(old);if(next.has(key))next.delete(key);else next.add(key);return next;});}
+  async function exportResults(copy=false){if(!batch)return;const cards=selected.size?batch.prospects.filter((p)=>selected.has(p.id)):prospects;const csv=exportSwarm(batch,cards);if(copy){try{await navigator.clipboard.writeText(csv);setToast(`${cards.length} prospects copied`);}catch{setError('Clipboard unavailable. Use Export CSV instead.');}}else{const url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8;'}));const link=document.createElement('a');link.href=url;link.download=`findbiz-swarm-${batch.id.slice(0,8)}.csv`;link.click();URL.revokeObjectURL(url);}}
+  const inspected=batch?.prospects.find((p)=>p.id===detail);
+  const scanned=batch?.addresses.filter((a)=>a.status==='complete').length??0;
+  const failures=batch?.addresses.filter((a)=>a.status==='error')??[];
+  const discovered=batch?.addresses.reduce((sum,a)=>sum+a.discovered,0)??0;
+  return <MotionConfig reducedMotion="user"><div className="sw-app">
+    {sidebar&&<button className="sw-mobile-shade" aria-label="Close navigation" onClick={()=>setSidebar(false)}/>}
+    <aside inert={!!detail || routeOpen} className={`sw-sidebar ${sidebar?'open':''}`} aria-label="Swarm batches"><div className="sw-brand"><Link href="/" aria-label="PAI home"><Image src="/pai-logo-lockup.png" width={960} height={321} alt="PAI" priority/></Link><button className="sw-icon sw-mobile-only" onClick={()=>setSidebar(false)} aria-label="Close navigation"><X size={18}/></button></div><button className="sw-new" onClick={()=>{choose(null);input.current?.focus();}}><Plus size={17}/>New swarm</button><div className="sw-sidebar-label">Your batches <span>{data?.batches.length??0}</span></div><nav>{data?.batches.map((item)=><button key={item.id} className={`sw-batch-link ${id===item.id?'selected':''}`} onClick={()=>choose(item.id)}><Layers3 size={15}/><span><strong>{item.title}</strong><small>{item.addresses} addresses · {item.prospects} prospects</small></span>{working(item.status)&&<LoaderCircle className="sw-spin" size={12}/>}</button>)}</nav>{!data?.batches.length&&<p className="sw-sidebar-empty">Your batches will appear here.</p>}<div className="sw-sidebar-bottom"><FileText size={14}/><span>Saved in this workspace</span></div></aside>
+    <div className="sw-workspace" inert={!!detail || routeOpen}><header className="sw-header"><div><button className="sw-icon sw-mobile-only" aria-label="Open navigation" onClick={()=>setSidebar(true)}><Menu size={20}/></button></div><ModeSwitch small/><div><SettingsButton/></div></header>
+      <main className="sw-main">{error&&<div className="sw-error" role="alert">{error}<button className="sw-icon" aria-label="Dismiss error" onClick={()=>setError('')}><X size={14}/></button></div>}
+      {!id?<motion.div className="sw-entry" initial={{opacity:0,y:10}} animate={{opacity:1,y:0}} transition={{duration:.3}}><h1>Swarm mode</h1><p>Drop in a batch of addresses. FindBiz searches them together, removes duplicates, and builds one territory-wide prospect list.</p><form onSubmit={(event)=>{event.preventDefault();void action({action:'create',addresses:draft,radiusMiles:radius});}}><div className="sw-input-label"><label htmlFor="sw-addresses">Addresses</label><span>One per line</span></div><div className="sw-editor"><textarea id="sw-addresses" ref={input} value={draft} onChange={(event)=>setDraft(event.target.value)} spellCheck={false} placeholder={'101 Main St, Columbia, SC\n140 Main St, Columbia, SC\n221 Main St, Columbia, SC'} maxLength={300000}/><div className="sw-editor-footer"><span>{parsed.addresses.length} addresses{parsed.duplicates?` · ${parsed.duplicates} duplicates removed`:''}</span>{draft&&<button type="button" onClick={()=>setDraft('')}>Clear</button>}</div></div>{(parsed.error||parsed.invalid.length>0)&&<p className="sw-validation">{parsed.error||`${parsed.invalid.length} invalid lines. Include a street and city or ZIP.`}</p>}<div className="sw-start-row"><label>Search radius <select aria-label="Radius around each address" value={radius} onChange={(event)=>setRadius(Number(event.target.value))}>{[.25,.5,1,2,5,10].map((r)=><option key={r} value={r}>{r} mi per address</option>)}</select></label><motion.button type="submit" className="sw-primary" disabled={loading||pending||!parsed.addresses.length||!!parsed.invalid.length||!!parsed.error} whileTap={{scale:.98}}>{pending?<LoaderCircle size={16} className="sw-spin"/>:<Layers3 size={16}/>}Start swarm<ArrowRight size={15}/></motion.button></div><small className="sw-entry-note">Up to 1,000 addresses per batch. Include a city or ZIP for each address.</small></form></motion.div>:!batch?<div className="sw-loading"><LoaderCircle className="sw-spin" size={20}/><span>{error ? 'Batch unavailable' : 'Loading batch…'}</span></div>:<>
+        <div className="sw-result-heading"><div><span className="sw-overline">{busy?'SWARM RUNNING':batch.status==='paused'?'SWARM PAUSED':batch.status==='error'?'SWARM NEEDS ATTENTION':failures.length?'SWARM COMPLETE · PARTIAL COVERAGE':'SWARM COMPLETE'}</span><h1>{batch.title}</h1></div><button className="sw-secondary" disabled={pending} onClick={()=>void action({action:busy?'pause':batch.status==='complete'&&!failures.length?'refresh':'resume',id:batch.id})}>{busy?<Pause size={14}/>:<Play size={14}/>} {busy?'Pause':batch.status==='complete'&&!failures.length?'Check again':'Resume'}</button></div>
+        <div className="sw-stats">{[[scanned,'addresses scanned'],[discovered,'businesses discovered'],[batch.prospects.length,'unique prospects'],[batch.prospects.filter((p)=>p.opportunity==='high').length,'high-priority opportunities'],[clusters.filter((c)=>c.id!=='unmapped').length,'geographic clusters']].map(([count,label])=><div key={label}><motion.strong key={count} initial={{opacity:.4,y:3}} animate={{opacity:1,y:0}}>{count}</motion.strong><span>{label}</span></div>)}</div>
+        {busy&&<div className="sw-progress" role="status"><LoaderCircle size={13} className="sw-spin"/><span>{batch.status==='qualifying'?`Checking broadband · ${batch.prospects.filter((p)=>p.broadbandChecked).length} of ${batch.prospects.length}`:batch.status==='researching'?`Researching ${batch.prospects.filter((p)=>p.researchStatus==='researching').map((p)=>p.business.name).join(', ')}`:`Scanning ${scanned+failures.length} of ${batch.addresses.length} addresses`}</span></div>}
+        {!data?.persistent&&<p className="sw-validation">This host uses temporary storage. Keep this page open to advance the batch and export results before leaving.</p>}
+        <div className="sw-toolbar"><div className="sw-tabs" aria-label="Result views">{([{key:'prospects',label:'Prospects',Icon:List},{key:'map',label:'Map',Icon:Map},{key:'clusters',label:'Clusters',Icon:Layers3}] as const).map(({key,label,Icon})=><button key={key} aria-pressed={view===key} className={view===key?'active':''} onClick={()=>setView(key)}>{view===key&&<motion.span layoutId="sw-view" className="sw-tab-pill" transition={{type:'spring',stiffness:380,damping:33}}/>}<Icon size={14}/><span>{label}</span></button>)}</div><div className="sw-export-actions"><button title="Copy CSV" aria-label="Copy prospects" onClick={()=>void exportResults(true)} disabled={!prospects.length}><Copy size={15}/></button><button onClick={()=>void exportResults()} disabled={!prospects.length}><ArrowDownToLine size={15}/>Export CSV</button></div></div>
+        <div className="sw-filter-row"><label className="sw-search"><Search size={14}/><input aria-label="Search prospects" placeholder="Search prospects" value={query} onChange={(event)=>{setQuery(event.target.value);setPage(0);}}/></label><select aria-label="Priority filter" value={priority} onChange={(event)=>{setPriority(event.target.value);setPage(0);}}><option value="all">All priorities</option><option value="high">High priority</option><option value="review">Review</option><option value="contact_needed">Find contact</option></select>{cluster&&<button className="sw-cluster-filter" onClick={()=>setCluster(null)}>Cluster selected<X size={12}/></button>}<span className="sw-selection-count">{selected.size?`${selected.size} selected`:''}</span><button className="sw-route-trigger" disabled={!prospects.length} onClick={()=>setRouteOpen(true)}><Route size={14}/>Build a route</button><button className="sw-small-button" disabled={!selected.size||pending} onClick={()=>void action({action:'research',id:batch.id,selected:[...selected]})}><Search size={13}/>Research selected</button></div>
+        <AnimatePresence mode="wait" initial={false}><motion.div key={view} initial={{opacity:0,y:5}} animate={{opacity:1,y:0}} exit={{opacity:0,y:-3}} transition={{duration:.16}}>
+        {view==='map'?<SwarmMap prospects={prospects} batchId={batch.id} onSelect={setDetail}/>:view==='clusters'?<div className="sw-clusters">{clusters.map((group,index)=><button key={group.id} className="sw-cluster" onClick={()=>{setCluster(group.id);setView('prospects');setPage(0);}}><span className="sw-cluster-number">{String(index+1).padStart(2,'0')}</span><div><strong>{group.cards[0].business.address.split(',').slice(1).join(',').trim()||'Nearby businesses'}</strong><span>{group.cards.length} prospects · {group.high} high priority</span><small>{group.cards.slice(0,3).map((p)=>p.business.name).join(' · ')}</small></div><ChevronRight size={16}/></button>)}{!clusters.length&&<p className="sw-empty">Clusters appear as businesses are discovered.</p>}<p className="sw-cluster-note">Businesses are grouped into geographic cells at neighborhood scale.</p></div>:<><div className="sw-table-wrap"><table><thead><tr><th><input type="checkbox" aria-label="Select visible prospects" checked={!!visible.length&&visible.every((p)=>selected.has(p.id))} onChange={(event)=>setSelected((old)=>{const next=new Set(old);for(const p of visible){if(event.target.checked)next.add(p.id);else next.delete(p.id);}return next;})}/></th><th>Business</th><th>Priority</th><th>Available providers</th><th>Source addresses</th><th>Research</th><th/></tr></thead><tbody>{visible.map((p)=><motion.tr key={p.id} initial={{opacity:0}} animate={{opacity:1}} className={selected.has(p.id)?'selected':''}><td><input type="checkbox" aria-label={`Select ${p.business.name}`} checked={selected.has(p.id)} onChange={()=>toggle(p.id)}/></td><td><button className="sw-business" onClick={()=>setDetail(p.id)}><strong>{p.business.name}</strong><span>{p.business.address}</span><small>{p.business.category}</small></button></td><td><span className={`sw-status ${p.opportunity}`}>{p.opportunity==='high'?'High priority':p.opportunity==='contact_needed'?'Find contact':'Review'}</span><small className="sw-rank">{p.rank}/100</small></td><td><span className="sw-provider">{p.broadband?.observations.length?[...new Set(p.broadband.observations.map((o)=>o.provider))].slice(0,3).join(', '):p.broadbandChecked?'Not confirmed':'Queued'}</span>{p.broadband?.asOfDate&&<small className="sw-date">Reported {p.broadband.asOfDate}</small>}</td><td><button className="sw-source-count" onClick={()=>setDetail(p.id)}><MapPin size={12}/>{p.sourceAddressIds.length}</button></td><td><span className="sw-research-status">{p.researchStatus==='listing'?'Listing ready':p.researchStatus==='queued'||p.researchStatus==='researching'?<><LoaderCircle size={11} className="sw-spin"/>Queued research</>:p.researchStatus==='partial'?'Partial':'Researched'}</span></td><td><button className="sw-icon" aria-label={`Open ${p.business.name}`} onClick={()=>setDetail(p.id)}><ChevronRight size={15}/></button></td></motion.tr>)}</tbody></table>{!visible.length&&<div className="sw-empty">{busy?'Prospects will appear as each address finishes.':'No prospects match these filters.'}</div>}</div><div className="sw-pagination"><span>{prospects.length?`${Math.min(page,maxPage)*PAGE_SIZE+1}–${Math.min((Math.min(page,maxPage)+1)*PAGE_SIZE,prospects.length)} of ${prospects.length}`:'0 prospects'}</span><div><button className="sw-icon" disabled={page===0} aria-label="Previous page" onClick={()=>setPage(page-1)}><ChevronLeft size={16}/></button><button className="sw-icon" disabled={page>=maxPage} aria-label="Next page" onClick={()=>setPage(page+1)}><ChevronRight size={16}/></button></div></div></>}
+        </motion.div></AnimatePresence>
+        <details className="sw-address-log"><summary>Address results · {failures.length} failed</summary>{batch.addresses.map((a)=><div key={a.id}><span>{a.text}</span><span>{a.status==='complete'?`${a.discovered} found`:a.status}</span>{a.error&&<small>{a.error}</small>}</div>)}</details>
+        <p className="sw-data-note">Priority is a prospecting rank, not buying intent. Broadband reports show availability, not the current ISP.</p>
+      </>}
+      </main>
+    </div><AnimatePresence>{routeOpen&&batch&&<SwarmRoute batch={batch} cards={selected.size?batch.prospects.filter(p=>selected.has(p.id)):prospects} selected={!!selected.size} close={()=>setRouteOpen(false)} inspect={(key)=>{setRouteOpen(false);setDetail(key);}}/>}</AnimatePresence><AnimatePresence>{inspected&&batch&&<SwarmDetail key={inspected.id} pending={pending} card={inspected} batch={batch} close={()=>setDetail(null)} research={()=>void action({action:'research',id:batch.id,selected:[inspected.id]})}/>}</AnimatePresence><AnimatePresence>{toast&&<motion.div className="sw-toast" role="status" initial={{opacity:0,y:8}} animate={{opacity:1,y:0}} exit={{opacity:0}}><Check size={15}/>{toast}</motion.div>}</AnimatePresence>
+  </div></MotionConfig>;
+}

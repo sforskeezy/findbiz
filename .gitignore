@@ -36,6 +36,8 @@ next-env.d.ts
 
 # Live chat sessions and remembered facts
 /data/live/
+/data/auto/
+/data/swarm/
 
 # Local Netlify folder
 .netlify

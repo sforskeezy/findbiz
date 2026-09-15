@@ -150,3 +150,24 @@ npm run build
 ```
 
 Saved businesses remain in browser `localStorage`; selected search state uses `sessionStorage`. Secrets and local FCC indexes are ignored by Git.
+
+## Swarm mode
+
+`/swarm` replaces Auto. Normal and Live remain available. Paste up to 1,000 addresses, one per line (include city/state or ZIP), and choose the radius around each address. The worker searches three addresses concurrently, keeps one prospect per business location, preserves all source addresses, groups prospects into neighborhood-scale H3 cells, and ranks them using listing/contact evidence. Provider coverage limits still apply; this is not an exhaustive census of every business.
+
+Results include a ranked table, interactive map, geographic clusters, selection, CSV export/copy, and individual profiles. Listing profiles and broadband checks are automatic; **Research selected** adds deeper public company research, sourced professional facts, and talking points. Broadband observations retain their reporting date and matching quality. Available providers are potential competitors, not proof of a business's current ISP, buying intent, or service orderability.
+
+Pause/resume uses persisted checkpoints and worker leases. Failed addresses remain visible and can be retried. **Check again** rescans a completed batch and checks availability again. The worker continues while a persistent Node server runs; on serverless hosts the page requests bounded continuation work. Large unattended batches require an always-running Node deployment with persistent storage.
+
+```dotenv
+SWARM_STORE_PATH=data/swarm
+LIVE_STORE_PATH=data/live
+```
+
+These stores contain private workspace data and are gitignored. Serverless read-only deployments fall back to temporary `/tmp` storage, which is not durable across instances or restarts. Use persistent volumes for reliable retained history and unattended work. This app currently treats an installation as one rep's workspace; it does not isolate multiple authenticated users.
+
+## Live memory
+
+Live saves complete conversations without the previous 40-message/40-chat cutoff. Every turn retrieves relevant excerpts from saved chats, previous territory checks, seen businesses, and Swarm batches. Live can search older conversations, resume a previous chat's list and filters, and explain its actual configured capabilities without exposing credentials. New discovery excludes previously seen businesses unless the user explicitly requests a refresh/recheck. Multiple territory notes are retained, and concurrent saves are serialized to prevent lost history entries.
+
+Historical evidence is dated and distinct from a fresh verification. Removing a chat deletes its transcript from history retrieval; explicit remembered facts can be removed separately. Previously truncated or lost serverless history cannot be reconstructed by this update.

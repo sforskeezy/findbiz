@@ -103,6 +103,7 @@ export type LiveProfileContext = {
 
 export type LiveSession = {
   profileContext?: LiveProfileContext | null;
+  searchedAreas?: Array<{ location: string; radius: number; at: string; businesses: number }>;
   seenBusinesses?: Array<Pick<Prospect, "id" | "name" | "address" | "phone">>;
   id: string;
   title: string;

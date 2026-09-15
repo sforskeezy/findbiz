@@ -28,6 +28,7 @@ function streamReply(content) {
 before(async () => {
   root = await mkdtemp(path.join(os.tmpdir(), 'findbiz-live-tests-'));
   process.env.LIVE_STORE_PATH = root;
+  process.env.SWARM_STORE_PATH = path.join(root, "swarm");
   process.env.GROQ_API_KEY = 'test-only';
   process.env.DASHSCOPE_API_KEY = '';
   process.env.LIVE_BASE_URL = 'https://model.test/v1';
@@ -703,4 +704,20 @@ test('a failed tool returns evidence feedback so the model can recover', async (
   assert.equal(JSON.parse(feedback.content).ok,false);
   assert.match(JSON.parse(feedback.content).nextStep,/another relevant tool/);
   assert.equal(state.session.messages.at(-1).content,'I need a city or ZIP to search that area.');
+});
+
+test('a fresh chat automatically receives relevant previous-chat evidence and accurate backend capabilities',async()=>{
+  const previous=await seededChat(); previous.title='Juniper route follow-up'; previous.messages=[{id:'memory_seed',role:'user',content:'For the Juniper route, call the bakery on Thursday after 2pm.',createdAt:new Date().toISOString()}]; await saveSession(previous);
+  responseText='For the Juniper route, you planned to call the bakery Thursday after 2pm.';
+  await runLiveTurn({message:'What did we decide about the Juniper route in the previous chat?'});
+  const context=requests[0].messages.find(m=>m.role==='tool'&&m.tool_call_id==='saved_history_context');
+  assert.match(context.content,/Thursday after 2pm/);
+  const capabilities=requests[0].messages.filter(m=>m.role==='system').map(m=>m.content).join('\n');
+  assert.match(capabilities,/crossChatSearch/);assert.match(capabilities,/currentProviderKnown/);assert.match(capabilities,/swarm/);
+});
+
+test('a new turn does not truncate the saved conversation to 40 messages',async()=>{
+  const session=await createSession();session.messages=Array.from({length:60},(_,i)=>({id:`long_${i}`,role:i%2?'assistant':'user',content:`Conversation note ${i}`,createdAt:new Date().toISOString()}));await saveSession(session);
+  await runLiveTurn({sessionId:session.id,message:'Give me a shorter greeting.'});
+  const saved=await loadSession(session.id);assert.equal(saved.messages.length,62);assert.equal(saved.messages[0].content,'Conversation note 0');
 });

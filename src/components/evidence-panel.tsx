@@ -37,7 +37,7 @@ const SOURCE_KIND_TONE: Record<SearchSourceKind, string> = {
 const FACT_GROUPS: Array<{ label: string; kinds: PublicFactKind[] }> = [
   { label: "Contact", kinds: ["address", "phone", "email", "website"] },
   { label: "Profile", kinds: ["rating", "hours", "description", "social", "team_size", "founded"] },
-  { label: "Identity", kinds: ["legal_name", "company_id"] },
+  { label: "Identity", kinds: ["legal_name", "company_id", "leadership"] },
 ];
 
 function hostname(url: string) {

@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { isIP } from "node:net";
 
 import { researchGoogleWeb } from "@/lib/google-research-engine";
+import { publishedLeadership } from "@/lib/leadership";
 import type {
   CompanyIntelligence,
   Confidence,
@@ -305,7 +306,7 @@ function jsonLdObjects(html: string) {
   return objects;
 }
 
-function addPageFacts(page: PageSnapshot, facts: PublicFact[], retrievedAt: string) {
+function addPageFacts(page: PageSnapshot, facts: PublicFact[], retrievedAt: string, leadership = false) {
   const description = metaContent(page.html, ["description", "og:description"]);
   addFact(facts, {
     kind: "description",
@@ -315,11 +316,22 @@ function addPageFacts(page: PageSnapshot, facts: PublicFact[], retrievedAt: stri
     retrievedAt,
   });
 
+  if (leadership) {
+    for (const person of publishedLeadership(page.text)) {
+      addFact(facts, { kind: "leadership", ...person, sourceUrl: page.url, retrievedAt, confidence: "Estimated" });
+    }
+  }
+
   for (const object of jsonLdObjects(page.html)) {
     const types = values(object["@type"]).join(" ").toLowerCase();
     if (!/(organization|business|corporation|company|store|service|restaurant|contractor|school|office)/.test(types)) continue;
 
     addFact(facts, { kind: "legal_name", label: "Published legal name", value: object.legalName, sourceUrl: page.url, retrievedAt });
+    if (leadership) {
+      for (const founder of values(object.founder)) {
+        addFact(facts, { kind: "leadership", label: "Published founder", value: founder, sourceUrl: page.url, retrievedAt, confidence: "Estimated" });
+      }
+    }
     addFact(facts, { kind: "phone", label: "Published phone", value: object.telephone, sourceUrl: page.url, retrievedAt });
     addFact(facts, { kind: "email", label: "Published email", value: object.email, sourceUrl: page.url, retrievedAt });
     addFact(facts, { kind: "founded", label: "Founded", value: object.foundingDate, sourceUrl: page.url, retrievedAt });
@@ -396,7 +408,7 @@ function descriptionFromHome(page: PageSnapshot | undefined) {
   return metaContent(page.html, ["description", "og:description"])?.replace(/\s+/g, " ").trim().slice(0, 320) || null;
 }
 
-export async function researchCompany(prospect: Prospect): Promise<CompanyIntelligence> {
+export async function researchCompany(prospect: Prospect, options: { businessOnly?: boolean } = {}): Promise<CompanyIntelligence> {
   const retrievedAt = new Date().toISOString();
   const facts: PublicFact[] = [];
   const pages: PageSnapshot[] = [];
@@ -490,14 +502,16 @@ export async function researchCompany(prospect: Prospect): Promise<CompanyIntell
   const [crawled, googleOutcome] = await Promise.all([sitePages, googleSearch]);
   pages.push(...crawled);
 
-  for (const page of pages) addPageFacts(page, facts, retrievedAt);
+  for (const page of pages) addPageFacts(page, facts, retrievedAt, Boolean(options.businessOnly && prospect.website && comparableHost(page.url) === comparableHost(prospect.website)));
 
   let searchResults: WebSearchResult[] = [];
   let research = emptyResearch();
   try {
     if (!googleOutcome.ok) throw googleOutcome.error;
     const google = googleOutcome.value;
-    searchResults = google.results;
+    searchResults = options.businessOnly
+      ? google.results.filter((result) => ["official_site", "government_registry", "professional_registry", "news"].includes(result.sourceKind))
+      : google.results;
     research = { ...google.diagnostics };
     addSearchFacts(searchResults, facts, retrievedAt);
 

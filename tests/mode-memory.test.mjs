@@ -140,3 +140,14 @@ test('reasoning stays collapsed until the caret is opened', () => {
   assert.match(source, /\{open && \(/);
   assert.doesNotMatch(source, /useState\(live\)/);
 });
+
+test('Swarm retains its search independently of Normal and Live', () => {
+  reset();
+  rememberModeLocation('/swarm?batch=example');
+  rememberModeLocation('/live?session=live_abc');
+  assert.equal(modeForPath('/swarm'), 'swarm');
+  assert.equal(modeForPath('/swarm?batch=example'), 'swarm');
+  assert.equal(modeForPath('/automotive'), 'normal');
+  assert.equal(modeReturnHref(modeMemorySnapshot(), 'swarm'), '/swarm?batch=example');
+  assert.equal(modeReturnHref(modeMemorySnapshot(), 'live'), '/live?session=live_abc');
+});

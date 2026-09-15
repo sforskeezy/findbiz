@@ -110,6 +110,7 @@ export type ResearchResponse = {
 };
 
 export type PublicFactKind =
+  | "leadership"
   | "address"
   | "phone"
   | "email"
