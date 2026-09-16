@@ -157,6 +157,8 @@ Saved businesses remain in browser `localStorage`; selected search state uses `s
 
 Results include a ranked table, interactive map, geographic clusters, selection, CSV export/copy, and individual profiles. Listing profiles and broadband checks are automatic; **Research selected** adds deeper public company research, sourced professional facts, and talking points. Broadband observations retain their reporting date and matching quality. Available providers are potential competitors, not proof of a business's current ISP, buying intent, or service orderability.
 
+**Saved businesses** keeps complete profile snapshots, research, source addresses, a contact name, and editable notes in browser IndexedDB. It remains available after the server's temporary batch data expires. **Never see again** suppresses matching business locations across Swarm batches, maps, routes, and exports; restore a business from the Hidden tab. These records belong to the current browser and site origin, do not sync between devices, and are removed if site storage is cleared. Address and phone controls copy their values; phone fields and exports use digits only. Spectrum/Charter observations are highlighted in green without changing their reported-availability status.
+
 Pause/resume uses persisted checkpoints and worker leases. Failed addresses remain visible and can be retried. **Check again** rescans a completed batch and checks availability again. The worker continues while a persistent Node server runs; on serverless hosts the page requests bounded continuation work. Large unattended batches require an always-running Node deployment with persistent storage.
 
 ```dotenv

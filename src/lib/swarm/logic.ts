@@ -67,6 +67,6 @@ function csvCell(value: unknown) {
 }
 export function exportSwarm(batch: SwarmBatch, cards = batch.prospects) {
   const rows: unknown[][] = [["Business", "Category", "Address", "Phone", "Website", "Priority", "Rank", "Available providers (not current ISP)", "Broadband as of", "Current ISP", "Source addresses", "Cluster", "Research status"]];
-  for (const card of cards) rows.push([card.business.name, card.business.category, card.business.address, card.business.phone, card.business.website, card.opportunity, card.rank, [...new Set(card.broadband?.observations.map((o) => o.provider))].join('; '), card.broadband?.asOfDate, 'Not verified', card.sourceAddressIds.map((id) => batch.addresses.find((a) => a.id === id)?.text).filter(Boolean).join('; '), card.clusterId, card.researchStatus]);
+  for (const card of cards) rows.push([card.business.name, card.business.category, card.business.address, card.business.phone?.replace(/\D/g, ''), card.business.website, card.opportunity, card.rank, [...new Set(card.broadband?.observations.map((o) => o.provider))].join('; '), card.broadband?.asOfDate, 'Not verified', card.sourceAddressIds.map((id) => batch.addresses.find((a) => a.id === id)?.text).filter(Boolean).join('; '), card.clusterId, card.researchStatus]);
   return rows.map((row) => row.map(csvCell).join(',')).join('\r\n');
 }

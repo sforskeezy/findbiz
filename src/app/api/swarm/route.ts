@@ -9,6 +9,27 @@ export const maxDuration = 300;
 async function payload(id?: string | null) {
   return { batch: id ? await readSwarm(id) : null, batches: await listSwarmBatches(), persistent: !isServerlessFilesystem() };
 }
+
+function originFor(value: string | null) {
+  if (!value) return null;
+  try { return new URL(value).origin.toLowerCase(); } catch { return null; }
+}
+
+/** Netlify terminates TLS before forwarding the request, so request.url can use an internal origin. */
+function allowedOrigins(request: Request) {
+  const origins = new Set<string>();
+  const requestOrigin = originFor(request.url);
+  if (requestOrigin) origins.add(requestOrigin);
+  const host = request.headers.get("x-forwarded-host")?.split(",")[0]?.trim() || request.headers.get("host")?.trim();
+  const proto = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim() || new URL(request.url).protocol.replace(":", "");
+  if (host && /^(?:https?|http)$/i.test(proto) && /^[a-z0-9.-]+(?::\d+)?$/i.test(host)) origins.add(`${proto.toLowerCase()}://${host.toLowerCase()}`);
+  for (const configured of [process.env.NEXT_PUBLIC_APP_URL, process.env.APP_URL]) {
+    const configuredOrigin = originFor(configured ?? null);
+    if (configuredOrigin) origins.add(configuredOrigin);
+  }
+  return origins;
+}
+
 export async function GET(request: Request) {
   try {
     ensureSwarmWorker();
@@ -19,7 +40,7 @@ export async function GET(request: Request) {
 }
 export async function POST(request: Request) {
   const origin = request.headers.get('origin');
-  if (origin && origin !== new URL(request.url).origin) return Response.json({ error: 'Cross-origin request rejected.' }, { status: 403 });
+  if (origin && !allowedOrigins(request).has(originFor(origin) ?? "")) return Response.json({ error: 'Cross-origin request rejected.' }, { status: 403 });
   try {
     const body = await request.json();
     if (!body || typeof body !== 'object') throw new Error('A JSON request is required.');

@@ -33,14 +33,15 @@ export function SwarmMap({ prospects, batchId, onSelect, numbered = false, origi
         coordinates.push([lat, lng]);
         const content = document.createElement('div');
         const title = document.createElement('strong'); title.textContent = prospect.business.name;
-        const address = document.createElement('p'); address.textContent = prospect.business.address;
+        const address = document.createElement('button'); address.textContent = prospect.business.address; address.className = 'sw-map-address'; address.setAttribute('aria-label', `Copy address: ${prospect.business.address}`);
+        address.addEventListener('click', () => { void navigator.clipboard.writeText(prospect.business.address).then(() => { address.textContent = 'Address copied'; }).catch(() => { address.textContent = 'Copy unavailable'; }); });
         const button = document.createElement('button'); button.textContent = 'View prospect'; button.className = 'sw-map-link'; button.addEventListener('click', () => onPick.current(prospect.id));
         content.append(title, address, button);
         L.marker([lat, lng], { title: prospect.business.name, icon: L.divIcon({ className: `sw-map-marker ${prospect.opportunity === 'high' ? 'high' : prospect.opportunity === 'contact_needed' ? 'contact-needed' : ''} ${numbered ? 'numbered' : ''}`, html: numbered ? `<span>${index + 1}</span>` : '<span></span>', iconSize: numbered ? [28, 28] : [18, 18] }) }).bindPopup(content).addTo(layer.current!);
       }
       if (numbered && coordinates.length) {
         const line: [number, number][] = origin ? [[origin.lat, origin.lng], ...coordinates] : coordinates;
-        L.polyline(line, { color: '#4877dc', weight: 3, opacity: .75, dashArray: '6 8', interactive: false }).addTo(layer.current!);
+        L.polyline(line, { color: '#64765b', weight: 3, opacity: .75, dashArray: '6 8', interactive: false }).addTo(layer.current!);
         if (origin) coordinates.push([origin.lat, origin.lng]);
       }
       if (coordinates.length && fitted.current !== batchId) { map.current.fitBounds(L.latLngBounds(coordinates), { padding: [35, 35], maxZoom: 15 }); fitted.current = batchId; }
