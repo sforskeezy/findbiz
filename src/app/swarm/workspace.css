@@ -1,8 +1,5 @@
 /* Solid surfaces, warm ink, and motion that follows the rep's work. */
-.sw-orbit-icon { display: inline-flex; flex-shrink: 0; color: #536b41; align-items: center; justify-content: center; }
-.sw-primary .sw-orbit-icon { color: inherit; }
-.sw-batch-item:hover .sw-orbit-icon:not(.running) svg,.sw-batch-item:focus-within .sw-orbit-icon:not(.running) svg,.sw-primary:hover .sw-orbit-icon svg { animation: sw-orbit-greet 1.8s cubic-bezier(.3,.1,.25,1) both; }
-@keyframes sw-orbit-greet { 0% { transform: rotate(0) scale(1); } 45% { transform: rotate(160deg) scale(1.1); } 100% { transform: rotate(360deg) scale(1); } }
+.sw-batch-pick > svg { color: #252a23; }
 .sw-sidebar .sw-compact-batches { display: block; padding: 0 8px; overflow-y: auto; overflow-x: hidden; }
 .sw-batch-item { display: flex; position: relative; align-items: center; min-width: 0; margin-bottom: 3px; height: 54px; border: 1px solid transparent; border-radius: 8px; transition: background .15s,border-color .15s; }
 .sw-batch-item:hover { background: #e9ede4; }

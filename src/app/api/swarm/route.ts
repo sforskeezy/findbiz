@@ -1,4 +1,5 @@
 import { after } from "next/server";
+import { createHash } from 'node:crypto';
 import { createSwarm, ensureSwarmWorker, runSwarm, swarmPending } from "@/lib/swarm/engine";
 import { listSwarmBatches, mutateSwarm, readSwarm } from "@/lib/swarm/store";
 import { parseAddressBatch } from "@/lib/swarm/logic";
@@ -15,10 +16,17 @@ async function payload(id?: string | null) {
 export async function GET(request: Request) {
   try {
     ensureSwarmWorker();
-    const result = await payload(new URL(request.url).searchParams.get('id'));
+    const requested = new URL(request.url).searchParams.get('id');
+    const summaries = await listSwarmBatches(true);
+    const summary = summaries.find(batch => batch.id === requested);
+    const etag = `"${createHash('sha256').update(JSON.stringify([requested,summaries])).digest('hex')}"`;
+    const headers = { 'Cache-Control': 'private, no-store', ETag: etag };
+    if (summary && swarmPending(summary)) { const id = summary.id; after(() => runSwarm(id)); }
+    // Most polls need only the small indexed summaries, not a multi-MB snapshot.
+    if ((!requested || summary) && request.headers.get('if-none-match') === etag) return new Response(null, { status: 304, headers });
+    const result = { batch: requested ? await readSwarm(requested) : null, batches: summaries.filter(b=>!b.archivedAt), archivedBatches: summaries.filter(b=>b.archivedAt), persistent: true, storage: cloudConfigured() ? 'convex' : 'local' };
     if (new URL(request.url).searchParams.get('id') && !result.batch) return Response.json({ ...result, error: 'This batch is not in saved storage. Retry the connection or choose another saved batch.' }, { status: 404, headers: { 'Cache-Control': 'private, no-store' } });
-    if (result.batch && swarmPending(result.batch)) { const id = result.batch.id; after(() => runSwarm(id)); }
-    return Response.json(result, { headers: { 'Cache-Control': 'private, no-store' } });
+    return Response.json(result, { headers });
   } catch (error) { return Response.json({ error: error instanceof StorageUnavailable ? error.message : 'Storage is temporarily unavailable. Your saved results have not been deleted. Retrying…' }, { status: 503 }); }
 }
 export async function POST(request: Request) {
