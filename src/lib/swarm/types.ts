@@ -12,6 +12,7 @@ export type SwarmBatch = {
   status: "queued" | "scanning" | "qualifying" | "researching" | "complete" | "paused" | "error";
   radiusMiles: number; addresses: SwarmAddress[]; prospects: SwarmProspect[];
   lease: string | null; leaseUntil: string | null; warnings: string[];
+  archivedAt?: string | null;
 };
-export type SwarmSummary = Pick<SwarmBatch, "id" | "title" | "createdAt" | "updatedAt" | "status"> & { addresses: number; prospects: number };
-export type SwarmResponse = { batch: SwarmBatch | null; batches: SwarmSummary[]; persistent: boolean; error?: string };
+export type SwarmSummary = Pick<SwarmBatch, "id" | "title" | "createdAt" | "updatedAt" | "status" | "archivedAt"> & { addresses: number; prospects: number };
+export type SwarmResponse = { batch: SwarmBatch | null; batches: SwarmSummary[]; archivedBatches?: SwarmSummary[]; persistent: boolean; error?: string };

@@ -2,11 +2,13 @@ import { googleMapsScraperEnabled } from "@/lib/google-maps-scraper";
 import { hasGooglePlacesKey } from "@/lib/google-places";
 import { hasRapidApiKey } from "@/lib/rapidapi-local-business";
 import { isServerlessFilesystem } from "@/lib/writable-store";
+import { cloudConfigured } from "@/lib/swarm/cloud-store";
 
 /** Public runtime facts only. Never expose keys, secrets, or environment values. */
 export function liveCapabilities() {
   return {
-    modes: { normal: "Single-address discovery and business profiles", live: "Conversation, public research, call prep and cross-chat memory", swarm: "Batch address discovery, cross-address deduplication, geographic clusters, map, CSV/copy export and selected-business research at /swarm" },
+    modes: { normal: "Single-address discovery and business profiles", live: "Conversation, public research, call prep and cross-chat memory", swarm: "Batch discovery, deduplication, reviewed geographic clusters, territory map, saved businesses with editable notes, a ranked call queue with callbacks, CSV export and selected-business research at /swarm. Double-click hides a business with Undo. Batch settings support rename, pause, removal and restore." },
+    swarmStorage: { backend: cloudConfigured() ? 'durable Convex database and snapshots' : 'local workspace files; serverless hosts require Convex', retains: ['batches','saved and hidden businesses','contact notes','call outcomes and callbacks','reviewed clusters'], scope: 'One shared rep workspace' },
     discovery: { mapsScraper: googleMapsScraperEnabled(), googlePlaces: hasGooglePlacesKey(), rapidApi: hasRapidApiKey(), openStreetMapAndLocalCache: true },
     research: "Public company websites and indexed web search; no private personal dossiers or direct access to a business's ISP account.",
     broadband: { localIndexConfigured: Boolean(process.env.FCC_AVAILABILITY_DB_PATH), legacyPublicFallback: true, currentProviderKnown: false, note: "FCC availability describes reported providers at an address/area, NOT who a business subscribes to or guaranteed orderability. Legacy fallback is June 2021 and must be dated." },

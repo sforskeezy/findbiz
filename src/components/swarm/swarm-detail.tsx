@@ -6,7 +6,6 @@ import { SwarmDialog } from '@/components/swarm/swarm-dialog';
 import { CopyContact } from '@/components/swarm/copy-contact';
 import { ProviderLabels } from '@/components/swarm/provider-labels';
 import { digits, draftLead, isSpectrumProvider, type LeadRecord } from '@/lib/swarm/lead-book';
-import { prospectTalkingPoints } from '@/lib/prospect-talking-points';
 import { normalizePhonesForCopy } from '@/lib/phone';
 import type { SwarmBatch, SwarmProspect } from '@/lib/swarm/types';
 
@@ -26,7 +25,6 @@ export function SwarmDetail({ card, batch, close, research, pending = false, rec
   const [saveError, setSaveError] = useState('');
   const p = card.business;
   const facts = card.intelligence?.facts ?? [];
-  const points = prospectTalkingPoints(p, card.intelligence);
   const researching = ['queued', 'researching'].includes(card.researchStatus);
   const providers = [...new Set(card.broadband?.observations.map((o) => o.provider))];
   async function save(disposition: LeadRecord['disposition']) {
@@ -36,7 +34,7 @@ export function SwarmDetail({ card, batch, close, research, pending = false, rec
     finally { setSaving(false); }
   }
   async function copyBrief() {
-    try { await navigator.clipboard.writeText(normalizePhonesForCopy([p.name, p.address, digits(p.phone), contactName && `Contact: ${contactName}`, notes, ...points].filter(Boolean).join('\n\n'))); setMessage('Brief copied'); }
+    try { await navigator.clipboard.writeText(normalizePhonesForCopy([p.name, p.address, digits(p.phone), contactName && `Contact: ${contactName}`, notes].filter(Boolean).join('\n\n'))); setMessage('Brief copied'); }
     catch { setSaveError('Clipboard unavailable in this browser.'); }
   }
   return <SwarmDialog label={p.name} close={close} className="sw-profile-modal">
@@ -46,7 +44,6 @@ export function SwarmDetail({ card, batch, close, research, pending = false, rec
       <div className="sw-profile-actions">
         {digits(p.phone) && <CopyContact value={digits(p.phone)} label="phone number" className="sw-phone-action"/>}
         {safeUrl(p.website) && <a href={safeUrl(p.website)} target="_blank" rel="noreferrer"><Globe size={14}/>Website<ArrowUpRight size={12}/></a>}
-        <a href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(p.address)}&travelmode=driving`} target="_blank" rel="noreferrer"><MapPin size={14}/>Directions</a>
         {research && <button className="sw-research-cta" disabled={researching || pending} onClick={research}>{researching ? <LoaderCircle className="sw-spin" size={14}/> : <Search size={14}/>} {researching ? 'Researching' : card.intelligence ? 'Refresh research' : 'Research business'}</button>}
       </div>
       <div className="sw-profile-tabs">{(['overview', 'research', 'sources'] as const).map((key) => <button key={key} aria-pressed={tab === key} onClick={() => setTab(key)}>{key === 'overview' ? 'Overview & notes' : key === 'research' ? 'Research' : 'Sources & discovery'}{key === 'research' && facts.length > 0 && <small>{facts.length}</small>}{tab === key && <motion.span layoutId="profile-tab"/>}</button>)}</div>
@@ -55,7 +52,6 @@ export function SwarmDetail({ card, batch, close, research, pending = false, rec
       {tab === 'overview' ? <div className="sw-profile-grid"><div className="sw-profile-main">
         <section><h3>About the business</h3><p className="sw-profile-summary">{normalizePhonesForCopy(card.intelligence?.summary || p.publicNotes || `Listed as ${p.category.toLowerCase()}. Research this business for more company details.`)}</p><div className="sw-listing-metrics">{p.rating != null && <span><Star size={13}/><strong>{p.rating}</strong>{p.reviewCount != null ? ` · ${p.reviewCount} reviews` : ' listing rating'}</span>}{p.operatingStatus !== 'Unknown' && <span>{p.operatingStatus === 'Open' ? 'Listed operational' : p.operatingStatus}</span>}</div></section>
         <section className="sw-lead-notes"><div className="sw-section-heading"><h3>Your notes</h3>{record?.disposition === 'saved' && <span className="sw-saved-indicator"><BookmarkCheck size={13}/>Saved</span>}</div><label htmlFor="sw-contact-name">Contact / name they go by</label><input id="sw-contact-name" value={contactName} onChange={(e) => setContactName(e.target.value)} maxLength={200} placeholder="Add a name or nickname"/><label htmlFor="sw-lead-notes">Business notes</label><textarea id="sw-lead-notes" value={notes} onChange={(e) => setNotes(e.target.value)} maxLength={20000} placeholder="What you learned, who to ask for, and anything worth following up on…" rows={6}/><small>Saved with the full profile when you click {record?.disposition === 'saved' ? 'Save changes' : 'Save business'}.</small></section>
-        <section><h3>Worth asking</h3><ol className="sw-talking-points">{points.map((point, i) => <li key={point}><span>{String(i + 1).padStart(2, '0')}</span><p>{point}</p></li>)}</ol></section>
       </div><aside className="sw-profile-context">
         <section className="sw-opportunity-box"><h3>Prospecting fit <small>{card.rank}/100</small></h3><ul>{card.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul></section>
         <section className="sw-broadband-box"><h3><Wifi size={15}/>Reported availability</h3>{providers.length ? <div className="sw-provider-list">{providers.sort((a,b)=>Number(isSpectrumProvider(b))-Number(isSpectrumProvider(a))).map((provider) => <div key={provider} className={isSpectrumProvider(provider) ? 'sw-spectrum-provider' : ''}><ProviderLabels providers={[provider]}/><span>{[...new Set(card.broadband!.observations.filter((o) => o.provider === provider).map((o) => o.technology))].join(' · ')}</span></div>)}</div> : <p>{card.broadbandChecked ? 'No provider availability confirmed.' : 'Availability check queued.'}</p>}<small>{card.broadband?.asOfDate ? `Reported ${card.broadband.asOfDate} · ${card.broadband.matchQuality.replaceAll('_', ' ')} match` : card.broadband?.message}</small><p className="sw-evidence-note">Current ISP is unverified. Availability does not confirm a subscription or orderability.</p></section>

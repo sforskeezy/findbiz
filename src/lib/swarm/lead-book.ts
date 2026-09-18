@@ -4,14 +4,16 @@ import type { SwarmBatch, SwarmProspect } from "@/lib/swarm/types";
 
 export type LeadRecord = {
   key: string;
-  disposition: 'saved' | 'hidden';
+  disposition: 'saved' | 'hidden' | 'active';
   card: SwarmProspect;
   source: Pick<SwarmBatch, 'id' | 'title' | 'radiusMiles' | 'addresses'>;
   contactName: string;
   notes: string;
   createdAt: string;
   updatedAt: string;
+  activity?: { outcome: 'connected' | 'no_answer' | 'callback'; at: string; callbackAt?: string };
 };
+export type LeadEdits = { contactName: string; notes: string; activity?: LeadRecord['activity'] };
 export const digits = (phone: string | null | undefined) => (phone ?? '').replace(/\D/g, '');
 export const isSpectrumProvider = (provider: string) => /\b(?:spectrum|charter)\b/i.test(provider);
 export function findLead(records: LeadRecord[], card: SwarmProspect) {
@@ -27,7 +29,7 @@ export function draftLead(card: SwarmProspect) {
   ].filter(Boolean).map((text) => normalizePhonesForCopy(text!)).join('\n\n');
   return { contactName, notes };
 }
-export function leadSnapshot(card: SwarmProspect, batch: SwarmBatch, disposition: LeadRecord['disposition'], previous?: LeadRecord, edits?: { contactName: string; notes: string }): LeadRecord {
+export function leadSnapshot(card: SwarmProspect, batch: SwarmBatch, disposition: LeadRecord['disposition'], previous?: LeadRecord, edits?: LeadEdits): LeadRecord {
   const now = new Date().toISOString();
   const snapshot = structuredClone(card);
   snapshot.business.phone = digits(snapshot.business.phone) || null;
@@ -38,7 +40,7 @@ export function leadSnapshot(card: SwarmProspect, batch: SwarmBatch, disposition
     key: previous?.key ?? `${card.business.name.toLowerCase().replace(/[^a-z0-9]/g, '')}|${card.business.address.toLowerCase().replace(/[^a-z0-9]/g, '')}`,
     disposition, card: snapshot, source: { id: batch.id, title: batch.title, radiusMiles: batch.radiusMiles, addresses },
     ...(previous ? { contactName: previous.contactName, notes: previous.notes } : draftLead(snapshot)),
-    ...edits, createdAt: previous?.createdAt ?? now, updatedAt: now,
+    ...(previous?.activity ? { activity: previous.activity } : {}), ...edits, createdAt: previous?.createdAt ?? now, updatedAt: now,
   };
 }
 export function leadBatch(record: LeadRecord): SwarmBatch {

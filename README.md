@@ -153,20 +153,33 @@ Saved businesses remain in browser `localStorage`; selected search state uses `s
 
 ## Swarm mode
 
-`/swarm` replaces Auto. Normal and Live remain available. Paste up to 1,000 addresses, one per line (include city/state or ZIP), and choose the radius around each address. The worker searches three addresses concurrently, keeps one prospect per business location, preserves all source addresses, groups prospects into neighborhood-scale H3 cells, and ranks them using listing/contact evidence. Provider coverage limits still apply; this is not an exhaustive census of every business.
+`/swarm` replaces Auto. Paste up to 1,000 addresses, one per line with a city/state or ZIP. Discovery runs six addresses concurrently; availability runs twelve profiles concurrently, with one checkpoint per qualification group. Census-block FCC reports share in-flight requests for one minute. This is a bounded provider search, not an exhaustive census.
 
-Results include a ranked table, interactive map, geographic clusters, selection, CSV export/copy, and individual profiles. Listing profiles and broadband checks are automatic; **Research selected** adds deeper public company research, sourced professional facts, and talking points. Broadband observations retain their reporting date and matching quality. Available providers are potential competitors, not proof of a business's current ISP, buying intent, or service orderability.
+Swarm preserves source-address provenance and merges duplicate business locations. Results include ranked prospects, an interactive territory map, geographic clusters, CSV/copy export and public company research. Provider reports keep their vintage and matching quality; availability does not establish the current ISP or orderability. Spectrum/Charter reports are highlighted in green. Address and phone buttons copy values; phone output uses digits only.
 
-**Saved businesses** keeps complete profile snapshots, research, source addresses, a contact name, and editable notes in browser IndexedDB. It remains available after the server's temporary batch data expires. **Never see again** suppresses matching business locations across Swarm batches, maps, routes, and exports; restore a business from the Hidden tab. These records belong to the current browser and site origin, do not sync between devices, and are removed if site storage is cleared. Address and phone controls copy their values; phone fields and exports use digits only. Spectrum/Charter observations are highlighted in green without changing their reported-availability status.
+**Saved businesses** retains complete profiles, research, contact names, editable notes and the latest call outcome in the workspace database. Existing browser IndexedDB records import once without overwriting newer server records. **Never see again** excludes that business location from all batches, maps, call queues and exports; Hidden provides a restore action.
 
-Pause/resume uses persisted checkpoints and worker leases. Failed addresses remain visible and can be retried. **Check again** rescans a completed batch and checks availability again. The worker continues while a persistent Node server runs; on serverless hosts the page requests bounded continuation work. Large unattended batches require an always-running Node deployment with persistent storage.
+**Call queue** replaces route building. It prioritizes due callbacks, then untouched prospects, ordered by opportunity rank. Reps copy the business number, edit notes and save Connected, No answer or Call back with a callback time. No calls are placed automatically. Call outcomes and notes are available in Saved businesses.
 
-```dotenv
-SWARM_STORE_PATH=data/swarm
-LIVE_STORE_PATH=data/live
-```
+**Clusters** support right-click or the options button → Mark as already looked at. Review memory is keyed to the geographic cell across batches. Newly discovered businesses in reviewed cells remain visible, with a “new since review” count. The map outlines reviewed cells.
 
-These stores contain private workspace data and are gitignored. Serverless read-only deployments fall back to temporary `/tmp` storage, which is not durable across instances or restarts. Use persistent volumes for reliable retained history and unattended work. This app currently treats an installation as one rep's workspace; it does not isolate multiple authenticated users.
+Double-click a business name or non-interactive row area to hide it across Swarms. Copy controls and checkboxes never trigger hiding. The row shakes while saving and fades away after success, with an Undo action. Keyboard users can hide from the profile. Saved businesses use the same behavior. Motion respects reduced-motion preferences.
+
+The compact batch sidebar uses an animated orbit icon and scrolls long names on hover/focus. Right-click or open the options button to rename, pause/resume, copy a batch link, or remove. Removal pauses the worker and archives the batch; Undo and the Removed batches section restore it without losing research.
+
+### Durable Convex storage
+
+Swarm, lead books and territory review memory use Convex whenever `CONVEX_URL` and `FINDBIZ_STORAGE_SECRET` are configured. Compressed immutable snapshots use Convex file storage; indexed database records hold the current snapshot, summary and revision. Compare-and-set mutations atomically advance checkpoints and worker leases across server instances. Large batches avoid database document/write-throughput limits. Old snapshots are retained for an hour for in-flight readers, then removed. Public file URLs are only fetched on the server, never returned to the browser.
+
+Serverless hosts **refuse to create temporary Swarm data** when Convex is missing. A storage outage preserves results already on screen and retries. Local development can still use `SWARM_STORE_PATH=data/swarm`. Previously expired serverless files cannot be reconstructed.
+
+1. Run `npx convex dev` to connect a FindBiz project.
+2. Configure `CONVEX_URL` and a randomly generated `FINDBIZ_STORAGE_SECRET` on the Next.js server. Set the same secret on Convex using `npx convex env set FINDBIZ_STORAGE_SECRET --from-file <secret-file>`. Never prefix the secret with `NEXT_PUBLIC_`.
+3. Deploy production functions with `npx convex deploy`, then point Netlify's server variables to the **production** deployment and matching secret.
+4. Set `FINDBIZ_APP_URL` on production Convex to the application's HTTPS origin. The one-minute Convex cron wakes up to four pending Swarms in oldest-updated order through an authenticated worker endpoint. Checkpoints recover interrupted jobs after the 90-second renewable lease expires. Work also advances from page requests.
+5. To import existing local batches and lead records, run `node --env-file=.env.local --import ./scripts/test-register.mjs scripts/migrate-swarm.mjs`. It never overwrites an existing cloud record and retains local originals. Run it with the target deployment's URL and matching secret.
+
+This installation is one shared rep workspace, not an authenticated multi-tenant application. Protect access to the deployment for private rep notes. Live's separate transcript store still uses `LIVE_STORE_PATH`; on serverless hosts those transcripts remain temporary unless placed on durable storage.
 
 ## Live memory
 

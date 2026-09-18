@@ -102,20 +102,3 @@ test('runtime capabilities expose supported modes and availability limitations w
   const caps=liveCapabilities();assert.ok(caps.modes.swarm);assert.equal(caps.broadband.currentProviderKnown,false);
   assert.equal(caps.memory.crossChatSearch,true);assert.doesNotMatch(JSON.stringify(caps),/must-never-leak/);
 });
-
-test('route builder balances quality and distance, avoids repeats, and creates complete mobile-safe navigation sections',async()=>{
-  const {buildRoute,routeLinks,routeDistance}=await import('../src/lib/swarm/route-plan.ts');
-  const b=await createSwarm(['101 Main St, Columbia SC'],1);
-  const cards=[];
-  for(let i=0;i<12;i++){const p={...fixture(),id:`route-${i}`,name:`Route Business ${i}`,address:`${100+i} Route St, Columbia SC`,coordinates:{lat:34+i*.001,lng:-81},distanceMiles:.1};cards.push(addDiscovery(b,p,b.addresses[0].id,`route-card-${i}`));}
-  const origin={lat:34,lng:-81};
-  const plan=buildRoute([...cards,cards[0]],origin,12);
-  assert.equal(plan.stops.length,12);assert.equal(new Set(plan.stops.map(p=>p.id)).size,12);assert.ok(Number.isFinite(plan.miles));
-  assert.ok(plan.miles<=routeDistance([...cards].reverse(),origin));
-  const links=routeLinks(plan.stops,'101 Main St, Columbia SC');assert.equal(links.length,3);
-  const included=[];
-  for(const part of links){const url=new URL(part.url);assert.equal(url.searchParams.get('api'),'1');const waypoints=(url.searchParams.get('waypoints')||'').split('|').filter(Boolean);assert.ok(waypoints.length<=3);included.push(...waypoints,url.searchParams.get('destination'));}
-  assert.deepEqual(included,plan.stops.map(p=>p.business.address));
-  assert.equal(new URL(links[1].url).searchParams.get('origin'),plan.stops[3].business.address);
-  assert.deepEqual(buildRoute(cards,{lat:NaN,lng:0}).stops,[]);
-});

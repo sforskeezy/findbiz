@@ -3,6 +3,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { latLngToCell } from "h3-js";
+import { sourceCache } from "@/lib/swarm/source-cache";
 
 import type {
   BroadbandObservation,
@@ -230,7 +231,7 @@ async function censusBlockFor(coordinates: Coordinates) {
   url.searchParams.set("longitude", String(coordinates.lng));
   url.searchParams.set("format", "json");
 
-  const response = await fetch(url, { cache: "no-store" });
+  const response = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(15_000) });
   if (!response.ok) throw new Error(`FCC census-block lookup failed (${response.status}).`);
   const payload = (await response.json()) as { Block?: { FIPS?: string }; status?: string };
   const fips = payload.Block?.FIPS?.trim();
@@ -238,8 +239,12 @@ async function censusBlockFor(coordinates: Coordinates) {
   return fips;
 }
 
+const blockReports = sourceCache<FccLookupResponse>(60_000);
 async function lookupForm477ByCoordinates(coordinates: Coordinates): Promise<FccLookupResponse> {
   const blockFips = await censusBlockFor(coordinates);
+  return blockReports(blockFips, () => lookupForm477Block(blockFips));
+}
+async function lookupForm477Block(blockFips: string): Promise<FccLookupResponse> {
   const url = new URL(`https://opendata.fcc.gov/resource/${FORM_477_DATASET}.json`);
   url.searchParams.set("$where", `blockcode='${blockFips}'`);
   url.searchParams.set("$limit", "200");
@@ -247,6 +252,7 @@ async function lookupForm477ByCoordinates(coordinates: Coordinates): Promise<Fcc
   const response = await fetch(url, {
     headers: { Accept: "application/json", "X-App-Token": process.env.FCC_OPENDATA_APP_TOKEN?.trim() || "" },
     cache: "no-store",
+    signal: AbortSignal.timeout(15_000),
   });
   if (!response.ok) throw new Error(`FCC Open Data lookup failed (${response.status}).`);
 

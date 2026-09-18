@@ -2,45 +2,27 @@ import { after } from "next/server";
 import { createSwarm, ensureSwarmWorker, runSwarm, swarmPending } from "@/lib/swarm/engine";
 import { listSwarmBatches, mutateSwarm, readSwarm } from "@/lib/swarm/store";
 import { parseAddressBatch } from "@/lib/swarm/logic";
-import { isServerlessFilesystem } from "@/lib/writable-store";
+import { cloudConfigured, StorageUnavailable } from "@/lib/swarm/cloud-store";
+import { sameOrigin } from "@/lib/swarm/request-origin";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 async function payload(id?: string | null) {
-  return { batch: id ? await readSwarm(id) : null, batches: await listSwarmBatches(), persistent: !isServerlessFilesystem() };
-}
-
-function originFor(value: string | null) {
-  if (!value) return null;
-  try { return new URL(value).origin.toLowerCase(); } catch { return null; }
-}
-
-/** Netlify terminates TLS before forwarding the request, so request.url can use an internal origin. */
-function allowedOrigins(request: Request) {
-  const origins = new Set<string>();
-  const requestOrigin = originFor(request.url);
-  if (requestOrigin) origins.add(requestOrigin);
-  const host = request.headers.get("x-forwarded-host")?.split(",")[0]?.trim() || request.headers.get("host")?.trim();
-  const proto = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim() || new URL(request.url).protocol.replace(":", "");
-  if (host && /^(?:https?|http)$/i.test(proto) && /^[a-z0-9.-]+(?::\d+)?$/i.test(host)) origins.add(`${proto.toLowerCase()}://${host.toLowerCase()}`);
-  for (const configured of [process.env.NEXT_PUBLIC_APP_URL, process.env.APP_URL]) {
-    const configuredOrigin = originFor(configured ?? null);
-    if (configuredOrigin) origins.add(configuredOrigin);
-  }
-  return origins;
+  const [batch, all] = await Promise.all([id ? readSwarm(id) : null, listSwarmBatches(true)]);
+  return { batch, batches: all.filter(b=>!b.archivedAt), archivedBatches: all.filter(b=>b.archivedAt), persistent: true, storage: cloudConfigured() ? 'convex' : 'local' };
 }
 
 export async function GET(request: Request) {
   try {
     ensureSwarmWorker();
     const result = await payload(new URL(request.url).searchParams.get('id'));
+    if (new URL(request.url).searchParams.get('id') && !result.batch) return Response.json({ ...result, error: 'This batch is not in saved storage. Retry the connection or choose another saved batch.' }, { status: 404, headers: { 'Cache-Control': 'private, no-store' } });
     if (result.batch && swarmPending(result.batch)) { const id = result.batch.id; after(() => runSwarm(id)); }
     return Response.json(result, { headers: { 'Cache-Control': 'private, no-store' } });
-  } catch { return Response.json({ error: 'Could not load this batch.' }, { status: 503 }); }
+  } catch (error) { return Response.json({ error: error instanceof StorageUnavailable ? error.message : 'Storage is temporarily unavailable. Your saved results have not been deleted. Retrying…' }, { status: 503 }); }
 }
 export async function POST(request: Request) {
-  const origin = request.headers.get('origin');
-  if (origin && !allowedOrigins(request).has(originFor(origin) ?? "")) return Response.json({ error: 'Cross-origin request rejected.' }, { status: 403 });
+  if (!sameOrigin(request)) return Response.json({ error: 'Cross-origin request rejected.' }, { status: 403 });
   try {
     const body = await request.json();
     if (!body || typeof body !== 'object') throw new Error('A JSON request is required.');
@@ -56,7 +38,13 @@ export async function POST(request: Request) {
       id = batch.id;
     } else {
       await mutateSwarm(id, (batch) => {
+        if (batch.archivedAt && ['refresh','resume','research'].includes(body.action)) throw new Error('Restore this batch before running it.');
         switch (body.action) {
+          case 'remove': batch.archivedAt = new Date().toISOString(); batch.status = 'paused'; batch.lease = null; batch.leaseUntil = null; break;
+          case 'restore': batch.archivedAt = null; break;
+          case 'rename':
+            if (typeof body.title !== 'string' || !body.title.trim() || body.title.trim().length > 100) throw new Error('Give this batch a name, up to 100 characters.');
+            batch.title = body.title.trim(); break;
           case 'pause': batch.status = 'paused'; batch.lease = null; batch.leaseUntil = null; break;
           case 'refresh':
             if (swarmPending(batch)) throw new Error('Pause the current scan before refreshing.');
@@ -65,6 +53,7 @@ export async function POST(request: Request) {
             for (const card of batch.prospects) card.broadbandChecked = false;
             break;
           case 'resume':
+            if (batch.archivedAt) throw new Error('Restore this batch before resuming.');
             batch.status = 'queued';
             for (const address of batch.addresses) if (address.status === 'error') { address.status = 'pending'; address.error = null; }
             for (const card of batch.prospects) if (card.error && !card.broadband) card.broadbandChecked = false;
@@ -79,7 +68,7 @@ export async function POST(request: Request) {
         }
       });
     }
-    if (body.action !== 'pause') after(() => runSwarm(id));
+    if (['create','refresh','resume','research'].includes(body.action)) after(() => runSwarm(id));
     return Response.json(await payload(id), { headers: { 'Cache-Control': 'private, no-store' } });
   } catch (error) { return Response.json({ error: error instanceof Error ? error.message : 'Could not save this batch.' }, { status: 400 }); }
 }

@@ -9,7 +9,7 @@ import type { SwarmBatch } from "@/lib/swarm/types";
 import type { CompanyIntelligence, FccLookupResponse, Prospect, ResearchResponse } from "@/lib/types";
 
 const BUSY = new Set(["queued", "scanning", "qualifying", "researching"]);
-export function swarmPending(batch: Pick<SwarmBatch, "status">) { return BUSY.has(batch.status); }
+export function swarmPending(batch: Pick<SwarmBatch, "status" | "archivedAt">) { return !batch.archivedAt && BUSY.has(batch.status); }
 export async function createSwarm(addresses: string[], radiusMiles: number, title?: string) {
   const now = new Date().toISOString();
   const batch: SwarmBatch = { id: randomUUID(), title: title?.trim().slice(0, 100) || `${addresses.length} addresses · ${addresses[0]}`, createdAt: now, updatedAt: now, status: "queued", radiusMiles, addresses: addresses.map((text) => ({ id: randomUUID(), text, status: "pending", coordinates: null, discovered: 0, error: null })), prospects: [], lease: null, leaseUntil: null, warnings: [] };
@@ -23,21 +23,20 @@ async function deadline<T>(promise: Promise<T>, milliseconds: number): Promise<T
 type Providers = { discover: (address: string, radius: number) => Promise<ResearchResponse>; broadband: (p: Prospect) => Promise<FccLookupResponse>; research: (p: Prospect) => Promise<CompanyIntelligence> };
 const providers: Providers = { discover: researchAcrossSources, broadband: (p) => lookupFccAvailability({ address: p.address, coordinates: p.coordinates }), research: (p) => researchCompany(p, { businessOnly: true }) };
 
-/** Three addresses / four profiles at a time, with a persisted checkpoint after each result. */
+/** Bounded parallel discovery and qualification, with durable checkpoints. */
 export async function runSwarm(id: string, deps: Providers = providers) {
   const token = randomUUID();
-  let claimed = false;
-  await mutateSwarm(id, (batch) => {
+  const claim = await mutateSwarm(id, (batch) => {
     if (!swarmPending(batch) || (batch.lease && Date.parse(batch.leaseUntil ?? '') > Date.now())) return;
-    claimed = true; batch.lease = token; batch.leaseUntil = new Date(Date.now() + 300_000).toISOString();
+    batch.lease = token; batch.leaseUntil = new Date(Date.now() + 90_000).toISOString();
     for (const address of batch.addresses) if (address.status === 'scanning') address.status = 'pending';
     for (const prospect of batch.prospects) if (prospect.researchStatus === 'researching') prospect.researchStatus = 'queued';
   });
-  if (!claimed) return;
+  if (claim.lease !== token) return;
   const started = Date.now();
-  const update = (fn: (batch: SwarmBatch) => void) => mutateSwarm(id, (batch) => { if (batch.lease === token && batch.status !== 'paused') fn(batch); });
+  const update = (fn: (batch: SwarmBatch) => void) => mutateSwarm(id, (batch) => { if (batch.lease === token && batch.status !== 'paused') { fn(batch); if (batch.lease) batch.leaseUntil = new Date(Date.now() + 90_000).toISOString(); } });
   try {
-    while (Date.now() - started < 180_000) {
+    while (Date.now() - started < (isServerlessFilesystem() ? 20_000 : 180_000)) {
       const batch = await readSwarm(id);
       if (!batch || batch.lease !== token || batch.status === 'paused') return;
       const research = batch.prospects.filter((p) => p.researchStatus === 'queued').slice(0, 3);
@@ -53,7 +52,7 @@ export async function runSwarm(id: string, deps: Providers = providers) {
         }));
         continue;
       }
-      const addresses = batch.addresses.filter((item) => item.status === 'pending').slice(0, 3);
+      const addresses = batch.addresses.filter((item) => item.status === 'pending').slice(0, 6);
       if (addresses.length) {
         await update((current) => { current.status = 'scanning'; for (const item of addresses) current.addresses.find((address) => address.id === item.id)!.status = 'scanning'; });
         await Promise.all(addresses.map(async (address) => {
@@ -73,16 +72,17 @@ export async function runSwarm(id: string, deps: Providers = providers) {
         }));
         continue;
       }
-      const qualify = batch.prospects.filter((p) => !p.broadbandChecked).slice(0, 4);
+      const qualify = batch.prospects.filter((p) => !p.broadbandChecked).slice(0, 12);
       if (qualify.length) {
         await update((current) => { current.status = 'qualifying'; });
-        await Promise.all(qualify.map(async (card) => {
+        const results = await Promise.all(qualify.map(async (card) => {
           let broadband: FccLookupResponse | null = null;
           let error: string | null = null;
           try { broadband = await deadline(deps.broadband(card.business), 20_000); }
           catch (cause) { error = cause instanceof Error ? cause.message : 'Broadband check unavailable.'; }
-          await update((current) => { const target = current.prospects.find((p) => p.id === card.id)!; target.broadband = broadband; target.broadbandChecked = true; target.error = error; Object.assign(target, rankSwarmProspect(target)); });
+          return { id: card.id, broadband, error };
         }));
+        await update(current => { for (const result of results) { const target = current.prospects.find(p => p.id === result.id)!; target.broadband = result.broadband; target.broadbandChecked = true; target.error = result.error; Object.assign(target, rankSwarmProspect(target)); } });
         continue;
       }
       await update((current) => { current.status = current.addresses.every((a) => a.status === 'error') ? 'error' : 'complete'; current.lease = null; current.leaseUntil = null; });
