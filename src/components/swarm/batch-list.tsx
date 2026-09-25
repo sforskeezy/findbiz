@@ -3,11 +3,16 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { ArchiveRestore, Check, Copy, MoreHorizontal, Pause, Pencil, Play, Trash2, X } from 'lucide-react';
-import { SwarmIcon } from './swarm-icon';
 import { SwarmDialog } from './swarm-dialog';
 import type { SwarmSummary } from '@/lib/swarm/types';
 const busy = (status: string) => ['queued','scanning','qualifying','researching'].includes(status);
-export const compactBatchTitle = (title: string) => title.replace(/^\d+ addresses?\s*·\s*/,'');
+const UPPER = new Set(['N','S','E','W','NE','NW','SE','SW','US','SR','CR','FM','PO','II','III']);
+/** Batch titles come from pasted addresses, which are often ALL CAPS; show them in readable title case. */
+function readable(title: string) {
+  if (!/[A-Z]{3}/.test(title) || title !== title.toUpperCase()) return title;
+  return title.toLowerCase().replace(/\b[a-z]+\b/g, word => UPPER.has(word.toUpperCase()) ? word.toUpperCase() : word[0].toUpperCase() + word.slice(1));
+}
+export const compactBatchTitle = (title: string) => readable(title.replace(/^\d+ addresses?\s*·\s*/,'').replace(/\s*\.{3}$/,'').trim());
 
 export function BatchList({ batches, removed, selected, choose, manage }: { batches: SwarmSummary[]; removed: SwarmSummary[]; selected: string | null; choose: (id: string) => void; manage: (action: string, id: string, title?: string) => Promise<void> }) {
   const [menu,setMenu] = useState<{batch:SwarmSummary;x:number;y:number}|null>(null);
@@ -37,7 +42,7 @@ export function BatchList({ batches, removed, selected, choose, manage }: { batc
   return <>
     <div className="sw-sidebar-label">Your batches <span>{batches.length}</span></div>
     <nav className="sw-compact-batches" aria-label="Saved Swarm batches"><AnimatePresence initial={false}>{batches.map(batch=><motion.div key={batch.id} layout="position" className={`sw-batch-item ${batch.id===selected?'selected':''}`} initial={{opacity:0,y:5}} animate={removing===batch.id&&!reduce?{x:[0,-3,3,-2,2,0]}:{x:0,opacity:1}} exit={reduce?{opacity:0}:{opacity:0,scale:.9,x:12,filter:'blur(5px)',height:0,marginBottom:0}} transition={{duration:.28}} onContextMenu={event=>{event.preventDefault();openMenu(batch,event.clientX,event.clientY,event.currentTarget);}}>
-      <button className="sw-batch-pick" onClick={()=>choose(batch.id)} aria-current={batch.id===selected?'page':undefined} title={batch.title} onKeyDown={e=>{if(e.key==='ContextMenu'||(e.shiftKey&&e.key==='F10')){e.preventDefault();const box=e.currentTarget.getBoundingClientRect();openMenu(batch,box.right-20,box.top,e.currentTarget);}}}><SwarmIcon size={17} active={busy(batch.status)}/><span className="sw-batch-copy"><HoverTitle text={compactBatchTitle(batch.title)}/><small>{batch.addresses} {batch.addresses===1?'address':'addresses'}<i/> {batch.prospects} prospects{busy(batch.status)&&<em>Scanning</em>}</small></span></button>
+      <button className="sw-batch-pick" onClick={()=>choose(batch.id)} aria-current={batch.id===selected?'page':undefined} title={`${compactBatchTitle(batch.title)}\n${batch.addresses} ${batch.addresses===1?'address':'addresses'} · ${batch.prospects} prospects`} onKeyDown={e=>{if(e.key==='ContextMenu'||(e.shiftKey&&e.key==='F10')){e.preventDefault();const box=e.currentTarget.getBoundingClientRect();openMenu(batch,box.right-20,box.top,e.currentTarget);}}}><span className="sw-batch-copy"><HoverTitle text={compactBatchTitle(batch.title)}/></span>{busy(batch.status)?<span className="sw-batch-live" role="status" aria-label="Scanning"/>:<span className="sw-batch-count" aria-label={`${batch.prospects} prospects`}>{batch.prospects}</span>}</button>
       <button className="sw-batch-more" aria-label={`Batch settings: ${compactBatchTitle(batch.title)}`} aria-expanded={menu?.batch.id===batch.id} disabled={pending===batch.id} onClick={e=>{const box=e.currentTarget.getBoundingClientRect();openMenu(batch,box.right,box.top,e.currentTarget);}}><MoreHorizontal size={15}/></button>
     </motion.div>)}</AnimatePresence>{!batches.length&&<p className="sw-sidebar-empty">Your batches will appear here.</p>}
     {removed.length>0&&<details className="sw-removed-batches"><summary><ArchiveRestore size={13}/>Removed batches<span>{removed.length}</span></summary>{removed.map(batch=><div key={batch.id}><span title={batch.title}>{compactBatchTitle(batch.title)}</span><button aria-label={`Restore ${compactBatchTitle(batch.title)}`} disabled={pending===batch.id} onClick={()=>void run('restore',batch)}><ArchiveRestore size={14}/></button></div>)}</details>}</nav>

@@ -1,0 +1,28 @@
+.sw-sidebar{background:#f7f7f5;border-right-color:#ebebe8}
+.sw-new{background:#141518;box-shadow:0 1px 2px #0000001f,inset 0 1px 0 #ffffff1a}.sw-new:hover{background:#2a2c31}
+.sw-saved-nav{gap:10px;padding:0 11px;height:38px;margin-top:4px;border-radius:9px;color:#3a3d42;font-size:12.5px;font-weight:500}
+.sw-sidebar .sw-new+.sw-saved-nav{margin-top:12px}
+.sw-saved-nav>svg{color:#86898f}
+.sw-saved-nav>span{color:#8a8d93;font-variant-numeric:tabular-nums}
+.sw-saved-nav:hover{background:#eeeeeb;border-color:transparent}
+.sw-saved-nav.active{background:#fff;border-color:#e6e6e2;color:#141518;box-shadow:0 1px 2px #0000000d}
+.sw-saved-nav.active>svg{color:#141518}
+.sw-sidebar-label{margin:26px 0 8px;color:#8a8d93;font-size:11.5px;font-weight:550}
+.sw-sidebar-label>span{font-variant-numeric:tabular-nums}
+.sw-sidebar .sw-compact-batches{padding:0}
+.sw-batch-item{height:34px;margin-bottom:1px;border-radius:8px}
+.sw-batch-item:hover{background:#eeeeeb}
+.sw-batch-item.selected{background:#fff;border-color:#e6e6e2;box-shadow:0 1px 2px #0000000d}
+.sw-sidebar nav .sw-batch-pick{gap:8px;height:100%;padding:0 10px 0 11px;color:#3a3d42}
+.sw-batch-item.selected .sw-batch-pick{color:#141518}
+.sw-hover-title{font-size:12.5px;font-weight:500;letter-spacing:-.01em}
+.sw-batch-count{flex:none;min-width:18px;text-align:right;color:#9a9da3;font-size:11.5px;font-variant-numeric:tabular-nums;transition:opacity .12s}
+.sw-batch-item:hover .sw-batch-count,.sw-batch-item:focus-within .sw-batch-count{opacity:0}
+.sw-batch-live{flex:none;width:7px;height:7px;margin-right:5px;border-radius:50%;background:#3b76e1;box-shadow:0 0 0 0 #3b76e166;animation:sw-live 1.6s ease-out infinite}
+@keyframes sw-live{70%{box-shadow:0 0 0 6px #3b76e100}100%{box-shadow:0 0 0 0 #3b76e100}}
+.sw-sidebar nav .sw-batch-more{top:3px;right:3px;width:26px;height:26px;color:#6e7179}
+.sw-sidebar nav .sw-batch-more:hover{background:#e6e6e2}
+.sw-batch-menu{border-color:#e6e6e2;box-shadow:0 12px 32px -8px #0000002e,0 2px 6px #0000000d}
+.sw-batch-menu button{color:#34373d}.sw-batch-menu button:hover,.sw-batch-menu button:focus-visible{background:#f4f4f1}
+.sw-batch-menu>small{color:#a2a5ab}
+@media(prefers-reduced-motion:reduce){.sw-batch-live{animation:none}}
