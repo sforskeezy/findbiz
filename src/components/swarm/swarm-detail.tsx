@@ -1,7 +1,7 @@
 "use client";
 import { useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { ArrowUpRight, Bookmark, BookmarkCheck, Building2, Copy, EyeOff, Globe, LoaderCircle, MapPin, Search, Star, Wifi, X } from 'lucide-react';
+import { ArrowUpRight, Bookmark, BookmarkCheck, Building2, Check, Copy, EyeOff, FunnelPlus, Globe, LoaderCircle, MapPin, Phone, Search, Star, Wifi, X } from 'lucide-react';
 import { SwarmDialog } from '@/components/swarm/swarm-dialog';
 import { CopyContact } from '@/components/swarm/copy-contact';
 import { ProviderLabels } from '@/components/swarm/provider-labels';
@@ -9,9 +9,11 @@ import { digits, draftLead, isSpectrumProvider, type LeadRecord } from '@/lib/sw
 import { normalizePhonesForCopy } from '@/lib/phone';
 import type { SwarmBatch, SwarmProspect } from '@/lib/swarm/types';
 
+function formatPhone(phone?: string | null) { const d = digits(phone); const local = d.length === 11 && d.startsWith('1') ? d.slice(1) : d; return local.length === 10 ? `(${local.slice(0,3)}) ${local.slice(3,6)}-${local.slice(6)}` : phone ?? ''; }
 function safeUrl(value?: string | null) { try { const url = new URL(value ?? ''); return ['http:', 'https:'].includes(url.protocol) ? url.href : undefined; } catch { return undefined; } }
-export function SwarmDetail({ card, batch, close, research, pending = false, record, saveLead }: {
+export function SwarmDetail({ card, batch, close, research, pending = false, record, saveLead, inFunnel = false, addToFunnel }: {
   card: SwarmProspect; batch: SwarmBatch; close: () => void; research?: () => void; pending?: boolean;
+  inFunnel?: boolean; addToFunnel?: () => Promise<void>;
   record?: LeadRecord;
   saveLead: (disposition: LeadRecord['disposition'], edits: { contactName: string; notes: string }) => Promise<void>;
 }) {
@@ -23,6 +25,7 @@ export function SwarmDetail({ card, batch, close, research, pending = false, rec
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
   const [saveError, setSaveError] = useState('');
+  const [funneling, setFunneling] = useState(false);
   const p = card.business;
   const facts = card.intelligence?.facts ?? [];
   const researching = ['queued', 'researching'].includes(card.researchStatus);
@@ -42,7 +45,9 @@ export function SwarmDetail({ card, batch, close, research, pending = false, rec
       <div className="sw-modal-topline"><span><Building2 size={14}/>Business profile</span><button className="sw-icon" aria-label="Close profile" onClick={close}><X size={20}/></button></div>
       <div className="sw-profile-identity"><div><span className="sw-profile-category">{p.category}</span><h2>{p.name}</h2><CopyContact value={p.address} label="address"><MapPin size={13}/>{p.address}</CopyContact></div><span className={`sw-status ${card.opportunity}`}>{card.opportunity === 'high' ? 'High priority' : card.opportunity === 'contact_needed' ? 'Find contact' : 'Review'}</span></div>
       <div className="sw-profile-actions">
-        {digits(p.phone) && <CopyContact value={digits(p.phone)} label="phone number" className="sw-phone-action"/>}
+        {digits(p.phone) && <a className="sw-phone-action" href={`tel:${digits(p.phone)}`}><Phone size={14}/>Call {formatPhone(p.phone)}</a>}
+        {digits(p.phone) && <CopyContact value={digits(p.phone)} label="phone number">Copy number</CopyContact>}
+        {addToFunnel && <button className={`swx-funnel-cta ${inFunnel ? 'done' : ''}`} disabled={inFunnel || funneling} onClick={() => { setFunneling(true); void addToFunnel().finally(() => setFunneling(false)); }}>{funneling ? <LoaderCircle className="sw-spin" size={14}/> : inFunnel ? <Check size={14}/> : <FunnelPlus size={14}/>}{inFunnel ? 'In your funnel' : 'Add to funnel'}</button>}
         {safeUrl(p.website) && <a href={safeUrl(p.website)} target="_blank" rel="noreferrer"><Globe size={14}/>Website<ArrowUpRight size={12}/></a>}
         {research && <button className="sw-research-cta" disabled={researching || pending} onClick={research}>{researching ? <LoaderCircle className="sw-spin" size={14}/> : <Search size={14}/>} {researching ? 'Researching' : card.intelligence ? 'Refresh research' : 'Research business'}</button>}
       </div>

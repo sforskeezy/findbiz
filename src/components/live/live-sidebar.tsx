@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
-import Image from "next/image";
+import { PaiLogo } from "@/components/pai-logo";
 import Link from "next/link";
 import { ChevronDown, ChevronsLeft, ChevronsRight, House, Menu, MessageSquare, Search, SquarePen, X } from "lucide-react";
 
@@ -64,8 +64,7 @@ export function LiveSidebar({
     <>
       <div className={cn("flex min-h-[76px] shrink-0 items-center", compact ? "flex-col justify-center gap-1" : "justify-between px-2")}>
         <Link href="/" aria-label="PAI home" className="shrink-0 rounded-lg">
-          <Image src={compact ? "/pai-logo-icon.png" : "/pai-logo-lockup.png"} alt="PAI"
-            width={compact ? 462 : 960} height={321} className={compact ? "h-6 w-auto" : "h-7 w-auto"} priority />
+          <PaiLogo height={compact ? 24 : 28} iconOnly={compact}/>
         </Link>
         <SettingsButton />
         <button type="button" onClick={mobile ? () => dialogRef.current?.close() : onToggleCollapse}

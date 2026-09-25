@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import Image from "next/image";
+import { PaiLogo } from "@/components/pai-logo";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Pencil } from "lucide-react";
@@ -270,14 +270,7 @@ export function ProspectHeader({
     >
       <div className="flex min-w-0 items-center gap-3 sm:gap-5">
         <Link href="/" className="flex shrink-0 items-center" aria-label="PAI home">
-          <Image
-            src="/pai-logo-lockup.png"
-            alt="PAI"
-            width={960}
-            height={321}
-            className={compact ? "h-[19px] w-auto sm:h-6" : "h-6 w-auto sm:h-9"}
-            priority
-          />
+          <PaiLogo height={compact ? 22 : 30}/>
         </Link>
         <SettingsButton />
         <ModeSwitch />

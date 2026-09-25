@@ -1,0 +1,18 @@
+.pai-logo{--h:24px;--u:calc(var(--h) / 321);display:inline-flex;align-items:center;height:var(--h);vertical-align:middle;line-height:0}
+.pai-logo-word{display:block;width:calc(var(--u) * 447);height:var(--h);background:url(/pai-logo-lockup.png) left center / auto 100% no-repeat}
+.pai-logo-map{position:relative;display:flex;margin-left:calc(var(--u) * 51);width:calc(var(--u) * 462);height:var(--h);perspective:calc(var(--h) * 5);transform-style:preserve-3d}
+.pai-logo-map.solo{margin-left:0}
+.pai-fold{display:block;height:100%;background-image:url(/pai-logo-icon.png);background-repeat:no-repeat;background-size:calc(var(--u) * 462) 100%;backface-visibility:hidden;will-change:transform}
+.pai-fold-1{width:calc(var(--u) * 150);background-position:0 0;transform-origin:right center;animation:pai-unfold-left .95s cubic-bezier(.2,.85,.25,1.12) .12s both}
+.pai-fold-2{width:calc(var(--u) * 180);background-position:calc(var(--u) * -150) 0;animation:pai-settle .95s cubic-bezier(.2,.85,.25,1.12) .12s both}
+.pai-fold-3{width:calc(var(--u) * 132);background-position:calc(var(--u) * -330) 0;transform-origin:left center;animation:pai-unfold-right .95s cubic-bezier(.2,.85,.25,1.12) .12s both}
+.pai-logo-sheen{position:absolute;inset:0;pointer-events:none;background:linear-gradient(105deg,transparent 38%,#ffffffb8 50%,transparent 62%) no-repeat;background-size:260% 100%;background-position:120% 0;-webkit-mask:url(/pai-logo-icon.png) center / 100% 100% no-repeat;mask:url(/pai-logo-icon.png) center / 100% 100% no-repeat;animation:pai-sheen 1.1s ease-out .9s both}
+@keyframes pai-unfold-left{from{transform:rotateY(-105deg);opacity:0}35%{opacity:1}to{transform:rotateY(0)}}
+@keyframes pai-unfold-right{from{transform:rotateY(105deg);opacity:0}35%{opacity:1}to{transform:rotateY(0)}}
+@keyframes pai-settle{from{transform:scale(.82);opacity:0}40%{opacity:1}to{transform:scale(1)}}
+@keyframes pai-sheen{from{background-position:120% 0}to{background-position:-20% 0}}
+a:hover>.pai-logo .pai-fold-1,.pai-logo:hover .pai-fold-1{animation:none;transform:rotateY(-22deg);transition:transform .45s cubic-bezier(.3,1.4,.4,1)}
+a:hover>.pai-logo .pai-fold-3,.pai-logo:hover .pai-fold-3{animation:none;transform:rotateY(22deg);transition:transform .45s cubic-bezier(.3,1.4,.4,1)}
+a:hover>.pai-logo .pai-logo-sheen,.pai-logo:hover .pai-logo-sheen{animation:pai-sheen .9s ease-out both}
+.pai-fold-1,.pai-fold-3{transition:transform .5s cubic-bezier(.3,1.3,.4,1)}
+@media(prefers-reduced-motion:reduce){.pai-fold,.pai-logo-sheen{animation:none!important;transform:none!important}.pai-logo-sheen{display:none}}
