@@ -108,70 +108,57 @@ export function FunnelLeadPanel({ lead, position, step, onClose, onSave, onStatu
   const entries = noteEntries(fields.notes).reverse();
   const listening = voice.listening || voice.transcribing;
 
-  return <motion.div className="fn-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: .16 }} onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
-    <motion.aside className="fn-panel" data-status={fields.status} role="dialog" aria-modal="true" aria-label={lead ? lead.businessName : 'New lead'} initial={{ x: 28, opacity: 0 }} animate={{ x: 0, opacity: 1 }} exit={{ x: 20, opacity: 0 }} transition={{ type: 'spring', stiffness: 460, damping: 40 }}>
-      <div className="fn-panel-bar">
-        {lead && position ? <div className="fn-panel-nav">
-          <button className="fn-icon-btn" aria-label="Previous lead" title="Previous (K)" disabled={position.index === 0} onClick={() => step(-1)}><ChevronUp size={16}/></button>
-          <button className="fn-icon-btn" aria-label="Next lead" title="Next (J)" disabled={position.index >= position.total - 1} onClick={() => step(1)}><ChevronDown size={16}/></button>
-          <span>{position.index + 1} of {position.total}</span>
-        </div> : <span className="fn-panel-kicker">{lead ? 'Lead' : 'New lead'}</span>}
-        <div className="fn-panel-bar-end">
-          {lead && <button className="fn-icon-btn" title={lead.archivedAt ? 'Restore lead' : 'Archive lead'} aria-label={lead.archivedAt ? 'Restore lead' : 'Archive lead'} onClick={() => void onArchive(lead, !!lead.archivedAt).catch(e => setError(e instanceof Error ? e.message : 'Could not archive.'))}>{lead.archivedAt ? <ArchiveRestore size={16}/> : <Archive size={16}/>}</button>}
-          <button className="fn-icon-btn" aria-label="Close" title="Close (Esc)" onClick={onClose}><X size={17}/></button>
+  const updatedLine = lead && <>Added {new Date(lead.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} · updated {relative(lead.updatedAt)}{lead.source && lead.source !== 'Manual' && <> · <span title={lead.source}>{lead.source}</span></>}</>;
+
+  return <motion.div className="fn-overlay fn-overlay-center" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: .16 }} onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
+    <motion.section className="fn-lead" data-status={fields.status} role="dialog" aria-modal="true" aria-label={lead ? lead.businessName : 'New lead'} initial={{ y: 16, opacity: 0, scale: .985 }} animate={{ y: 0, opacity: 1, scale: 1 }} exit={{ y: 10, opacity: 0, scale: .99 }} transition={{ type: 'spring', stiffness: 440, damping: 36 }}>
+      <header className="fn-lead-head">
+        <div className="fn-lead-top">
+          {lead && position ? <div className="fn-panel-nav">
+            <button className="fn-icon-btn" aria-label="Previous lead" title="Previous (K)" disabled={position.index === 0} onClick={() => step(-1)}><ChevronUp size={16}/></button>
+            <button className="fn-icon-btn" aria-label="Next lead" title="Next (J)" disabled={position.index >= position.total - 1} onClick={() => step(1)}><ChevronDown size={16}/></button>
+            <span>{position.index + 1} of {position.total}</span>
+          </div> : <span className="fn-lead-kicker"><i className={`fn-sw fn-bg-${fields.status}`}/>{lead ? STAGE[fields.status].label : 'New lead'}</span>}
+          <div className="fn-panel-bar-end">
+            {lead && <button className="fn-icon-btn" title={lead.archivedAt ? 'Restore lead' : 'Archive lead'} aria-label={lead.archivedAt ? 'Restore lead' : 'Archive lead'} onClick={() => void onArchive(lead, !!lead.archivedAt).catch(e => setError(e instanceof Error ? e.message : 'Could not archive.'))}>{lead.archivedAt ? <ArchiveRestore size={16}/> : <Archive size={16}/>}</button>}
+            <button className="fn-icon-btn" aria-label="Close" title="Close (Esc)" onClick={onClose}><X size={17}/></button>
+          </div>
         </div>
-      </div>
-
-      <div className="fn-panel-scroll">
-        {!lead && <section className="fn-capture">
-          <label htmlFor="fn-capture"><Sparkles size={14}/>Quick capture</label>
-          <textarea id="fn-capture" autoFocus rows={4} maxLength={10000} value={update} onChange={event => setUpdate(event.target.value)} placeholder={'Acme Cafe 502-555-0123 acc 0042, spoke w/ Jane about stand, follow up Tuesday at 2'}/>
-          <div className="fn-capture-foot"><span>{processing ? <><LoaderCircle className="fn-spin" size={12}/>Organizing…</> : notice || 'Type it messy. Names, numbers, and dates get sorted into the fields below.'}</span>
-            <button className={`fn-mic ${voice.listening ? 'on' : ''}`} aria-label="Dictate" title="Dictate" onPointerDown={voice.handlePointerDown} onClick={voice.handleClick} disabled={voice.transcribing || processing}><Mic size={15}/></button></div>
-        </section>}
-
-        <header className="fn-panel-head">
-          <input className="fn-title-input" aria-label="Business name" placeholder="Business name" maxLength={200} value={fields.businessName} onChange={event => edit({ businessName: event.target.value })}/>
-          {lead && <p className="fn-panel-meta">Added {new Date(lead.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} · updated {relative(lead.updatedAt)}{lead.source && lead.source !== 'Manual' && <> · <span title={lead.source}>{lead.source}</span></>}</p>}
-        </header>
-
-        <div className="fn-stage-pick" role="radiogroup" aria-label="Stage">
-          {STAGE_ORDER.map((status, index) => <button key={status} role="radio" aria-checked={fields.status === status} data-status={status} className={fields.status === status ? 'on' : ''} onClick={() => pickStatus(status)}>
-            <i className={`fn-sw fn-bg-${status}`}/><strong>{STAGE[status].label}</strong><small>{STAGE[status].hint}</small><kbd>{index + 1}</kbd>
+        <div className="fn-lead-id">
+          <div className="fn-lead-name">
+            <input className="fn-title-input" aria-label="Business name" placeholder="Business name" maxLength={200} value={fields.businessName} onChange={event => edit({ businessName: event.target.value })}/>
+            <p className="fn-panel-meta">
+              {fields.kind !== 'other' && <em className={`fn-kind fn-kind-${fields.kind}`}>{KIND_HINT[fields.kind]}</em>}
+              {fields.contactName && <span>{fields.contactName}</span>}
+              {lead ? <span>{updatedLine}</span> : <span>Fill in what you know. Only the name is required.</span>}
+            </p>
+          </div>
+          {(fields.phone || fields.accountNumber) && <div className="fn-actions">
+            {fields.phone && <a className="fn-btn fn-btn-dark" href={telHref(fields.phone)}><Phone size={14}/>Call {displayPhone(fields.phone)}</a>}
+            {fields.phone && <button className="fn-btn" onClick={() => copy('phone', fields.phone)} aria-label="Copy number" title="Copy number">{copied === 'phone' ? <Check size={14}/> : <Copy size={14}/>}{copied === 'phone' ? 'Copied' : 'Number'}</button>}
+            {fields.accountNumber && <button className="fn-btn" onClick={() => copy('account', fields.accountNumber)} aria-label="Copy account" title="Copy account">{copied === 'account' ? <Check size={14}/> : <Copy size={14}/>}{copied === 'account' ? 'Copied' : 'Account'}</button>}
+          </div>}
+        </div>
+        <div className="fn-stage-track" role="radiogroup" aria-label="Stage">
+          {STAGE_ORDER.map((status, index) => <button key={status} role="radio" aria-checked={fields.status === status} data-status={status} className={fields.status === status ? 'on' : ''} onClick={() => pickStatus(status)} title={`${STAGE[status].hint} (${index + 1})`}>
+            <i className={`fn-sw fn-bg-${status}`}/><span><strong>{STAGE[status].label}</strong><small>{STAGE[status].hint}</small></span>
           </button>)}
         </div>
+      </header>
 
-        {(fields.phone || fields.accountNumber) && <div className="fn-actions">
-          {fields.phone && <a className="fn-btn fn-btn-dark" href={telHref(fields.phone)}><Phone size={14}/>Call {displayPhone(fields.phone)}</a>}
-          {fields.phone && <button className="fn-btn" onClick={() => copy('phone', fields.phone)}>{copied === 'phone' ? <Check size={14}/> : <Copy size={14}/>}{copied === 'phone' ? 'Copied' : 'Copy number'}</button>}
-          {fields.accountNumber && <button className="fn-btn" onClick={() => copy('account', fields.accountNumber)}>{copied === 'account' ? <Check size={14}/> : <Copy size={14}/>}{copied === 'account' ? 'Copied' : 'Copy account'}</button>}
-        </div>}
-
-        <section className="fn-sect">
-          <h3>Details</h3>
-          <div className="fn-fields">
-            <label><span>Phone</span><input type="tel" maxLength={80} value={fields.phone} onChange={event => edit({ phone: event.target.value })} placeholder="Add phone"/></label>
-            <label><span>Account #</span><input maxLength={100} value={fields.accountNumber} onChange={event => edit({ accountNumber: event.target.value })} placeholder="Add account"/></label>
-            <label><span>Contact</span><input maxLength={160} value={fields.contactName} onChange={event => edit({ contactName: event.target.value })} placeholder="Who you spoke with"/></label>
-            <div className="fn-field"><span>Lead type</span><div className="fn-seg fn-seg-fill" role="group" aria-label="Lead type">{(['stand', 'upgrade', 'other'] as const).map(value => <button key={value} aria-pressed={fields.kind === value} title={KIND_HINT[value]} onClick={() => edit({ kind: value })}>{value === 'stand' ? 'Stand' : value === 'upgrade' ? 'Upgrade' : 'Other'}</button>)}</div></div>
-          </div>
-        </section>
-
-        <section className="fn-sect">
-          <h3>Next follow-up{fields.followUpAt && <em>{dateLabel(fields.followUpAt)}</em>}</h3>
-          <div className="fn-quick-dates">{QUICK_DATES.map(([label, days]) => <button key={label} aria-pressed={fields.followUpAt === addDays(days)} onClick={() => edit({ followUpAt: addDays(days) })}>{label}</button>)}{fields.followUpAt && <button className="fn-quick-clear" onClick={() => edit({ followUpAt: '', followUpTime: '' })}>Clear</button>}</div>
-          <div className="fn-fields">
-            <label><span>Date</span><input type="date" value={fields.followUpAt} onChange={event => edit({ followUpAt: event.target.value, ...(event.target.value ? {} : { followUpTime: '' }) })}/></label>
-            <label><span>Time</span><input type="time" value={fields.followUpTime} disabled={!fields.followUpAt} onChange={event => edit({ followUpTime: event.target.value })}/></label>
-          </div>
-        </section>
-
-        <section className="fn-sect">
-          <h3>Activity{lead && <button className="fn-link" onClick={() => setEditNotes(!editNotes)}><Pencil size={12}/>{editNotes ? 'Done editing' : 'Edit notes'}</button>}</h3>
+      <div className="fn-lead-body">
+        <div className="fn-lead-main">
+          {!lead && <section className="fn-capture">
+            <label htmlFor="fn-capture"><Sparkles size={14}/>Quick capture</label>
+            <textarea id="fn-capture" autoFocus rows={4} maxLength={10000} value={update} onChange={event => setUpdate(event.target.value)} placeholder={'Acme Cafe 502-555-0123 acc 0042, spoke w/ Jane about stand, follow up Tuesday at 2'}/>
+            <div className="fn-capture-foot"><span>{processing ? <><LoaderCircle className="fn-spin" size={12}/>Organizing…</> : notice || 'Type it messy. Names, numbers, and dates get sorted into the fields.'}</span>
+              <button className={`fn-mic ${voice.listening ? 'on' : ''}`} aria-label="Dictate" title="Dictate" onPointerDown={voice.handlePointerDown} onClick={voice.handleClick} disabled={voice.transcribing || processing}><Mic size={15}/></button></div>
+          </section>}
+          <div className="fn-lead-h"><h3>{lead ? 'Activity' : 'Information and notes'}</h3>{lead && <button className="fn-link" onClick={() => setEditNotes(!editNotes)}><Pencil size={12}/>{editNotes ? 'Done editing' : 'Edit notes'}</button>}</div>
           {lead && <div className={`fn-log ${listening ? 'live' : ''}`}>
             {listening ? <div className="fn-log-live" role="status"><AudioLines size={18}/><span><strong>{voice.transcribing ? 'Writing it up…' : 'Listening'}</strong><small>{voice.transcribing ? 'Adding this to the timeline.' : 'Pause when you’re done and it saves itself.'}</small></span>{voice.listening && <button className="fn-btn" onClick={voice.finish}>Done</button>}<button className="fn-icon-btn" aria-label="Cancel recording" onClick={voice.cancel}><X size={15}/></button></div>
             : <>
-              <textarea aria-label="Log an update" rows={2} maxLength={10000} value={update} onChange={event => setUpdate(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) void organize(update, true); }} placeholder="What happened? e.g. Went well, wants 400 to 750, call back Friday at 11"/>
+              <textarea aria-label="Log an update" rows={3} maxLength={10000} value={update} onChange={event => setUpdate(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) void organize(update, true); }} placeholder="What happened? e.g. Went well, wants 400 to 750, call back Friday at 11"/>
               <div className="fn-log-foot">
                 <button className="fn-mic" aria-label="Record a voice update" title="Record a voice update" onPointerDown={voice.handlePointerDown} onClick={voice.handleClick} disabled={processing || saving}><Mic size={15}/></button>
                 <span>{processing ? <><LoaderCircle className="fn-spin" size={12}/>Organizing…</> : 'Stage and follow-up update from what you write.'}</span>
@@ -183,7 +170,27 @@ export function FunnelLeadPanel({ lead, position, step, onClose, onSave, onStatu
           {editNotes || !lead ? <textarea className="fn-notes-edit" aria-label="Information and notes" rows={7} maxLength={20000} value={fields.notes} onChange={event => edit({ notes: event.target.value })} placeholder="Information and notes"/>
           : entries.length ? <ol className="fn-timeline">{entries.map((entry, index) => <li key={index}><span>{entry.date ? dateLabel(entry.date) : index === entries.length - 1 ? 'First note' : 'Note'}</span><p>{entry.text}</p></li>)}</ol>
           : <p className="fn-timeline-empty">No activity yet. Log your first conversation above.</p>}
-        </section>
+        </div>
+
+        <aside className="fn-lead-side">
+          <section className="fn-card-box">
+            <h3>Details</h3>
+            <div className="fn-fields fn-fields-stack">
+              <label><span>Phone</span><input type="tel" maxLength={80} value={fields.phone} onChange={event => edit({ phone: event.target.value })} placeholder="Add phone"/></label>
+              <label><span>Account #</span><input maxLength={100} value={fields.accountNumber} onChange={event => edit({ accountNumber: event.target.value })} placeholder="Add account"/></label>
+              <label><span>Contact</span><input maxLength={160} value={fields.contactName} onChange={event => edit({ contactName: event.target.value })} placeholder="Who you spoke with"/></label>
+              <div className="fn-field"><span>Lead type</span><div className="fn-seg fn-seg-fill" role="group" aria-label="Lead type">{(['stand', 'upgrade', 'other'] as const).map(value => <button key={value} aria-pressed={fields.kind === value} title={KIND_HINT[value]} onClick={() => edit({ kind: value })}>{value === 'stand' ? 'Stand' : value === 'upgrade' ? 'Upgrade' : 'Other'}</button>)}</div></div>
+            </div>
+          </section>
+          <section className="fn-card-box">
+            <h3>Next follow-up{fields.followUpAt && <em>{dateLabel(fields.followUpAt)}</em>}</h3>
+            <div className="fn-quick-dates">{QUICK_DATES.map(([label, days]) => <button key={label} aria-pressed={fields.followUpAt === addDays(days)} onClick={() => edit({ followUpAt: addDays(days) })}>{label}</button>)}{fields.followUpAt && <button className="fn-quick-clear" onClick={() => edit({ followUpAt: '', followUpTime: '' })}>Clear</button>}</div>
+            <div className="fn-fields">
+              <label><span>Date</span><input type="date" value={fields.followUpAt} onChange={event => edit({ followUpAt: event.target.value, ...(event.target.value ? {} : { followUpTime: '' }) })}/></label>
+              <label><span>Time</span><input type="time" value={fields.followUpTime} disabled={!fields.followUpAt} onChange={event => edit({ followUpTime: event.target.value })}/></label>
+            </div>
+          </section>
+        </aside>
       </div>
 
       {(dirty || !lead || error) && <footer className="fn-panel-foot">
@@ -191,6 +198,6 @@ export function FunnelLeadPanel({ lead, position, step, onClose, onSave, onStatu
         {lead ? <button className="fn-btn" disabled={saving} onClick={() => { setDraft({}); setError(''); }}>Discard</button> : <button className="fn-btn" onClick={onClose}>Cancel</button>}
         <button className="fn-btn fn-btn-dark" disabled={saving || processing || (!!lead && !dirty)} onClick={() => void commit()}>{saving ? <LoaderCircle className="fn-spin" size={14}/> : <Check size={14}/>}{lead ? 'Save changes' : 'Create lead'}</button>
       </footer>}
-    </motion.aside>
+    </motion.section>
   </motion.div>;
 }
