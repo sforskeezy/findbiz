@@ -76,3 +76,37 @@ test('funnel API imports, merges duplicates, updates status, and archives',async
     assert.equal((await (await GET()).json()).leads.length,1);
   } finally {await rm(root,{recursive:true,force:true});if(old===undefined)delete process.env.SWARM_STORE_PATH;else process.env.SWARM_STORE_PATH=old;}
 });
+test('Excel import reads lead color from any shade of fill, theme tint, indexed palette, or font',async()=>{
+  const { statusFromHex } = await import('../src/lib/swarm/funnel-colors.ts');
+  const shades={red:['FF0000','C00000','FF7C80','F8CBAD','E6B8B7','FFC7CE','9C0006','FF6666','E06666','F4CCCC','D9534F'],yellow:['FFFF00','FFEB9C','FFE699','FFD966','FFC000','FFF2CC','BF9000','F1C232','FFE599','FFA500'],green:['00FF00','00B050','92D050','C6EFCE','E2EFDA','A9D08E','548235','006100','B6D7A8','6AA84F','375623'],blue:['0000FF','0070C0','00B0F0','BDD7EE','DDEBF7','9BC2E6','1F4E78','4472C4','CFE2F3','6FA8DC','A4C2F4']};
+  for(const [status,list] of Object.entries(shades))for(const hex of list)assert.equal(statusFromHex(hex),status,`${hex} should be ${status}`);
+  for(const hex of ['FFFFFF','000000','D9D9D9','808080','F2F2F2'])assert.equal(statusFromHex(hex),null,`${hex} is neutral`);
+  const book=new ExcelJS.Workbook();const sheet=book.addWorksheet('Leads');
+  sheet.addRow(['BIZ NAME','PHONE NUMBER OR ACC # OR BOTH','INFORMATIION AND NOTES']);
+  const solid=argb=>({type:'pattern',pattern:'solid',fgColor:{argb}});
+  const add=(values,fill)=>{const row=sheet.addRow(values);if(fill)for(let i=1;i<=values.length;i++)row.getCell(i).fill=fill;return row;};
+  add(['Pale Red Co','5025550001','400 to 750'],solid('FFFFC7CE'));
+  add(['Theme Green Co','ACC 0042','stand'],{type:'pattern',pattern:'solid',fgColor:{theme:6,tint:0.7999}});
+  add(['Indexed Yellow Co','5025550003','maybe'],{type:'pattern',pattern:'solid',fgColor:{indexed:13}});
+  add(['Plain Co','5025550004','haven\'t called']);
+  const fontOnly=add(['Red Text Co','5025550005','call tomorrow']);fontOnly.getCell(1).font={color:{argb:'FFC00000'}};
+  add(['Dark Blue Co','5025550006','new'],solid('FF1F4E78'));
+  const result=await parseFunnelFile('colors.xlsx',Buffer.from(await book.xlsx.writeBuffer()));
+  const by=Object.fromEntries(result.rows.map(row=>[row.businessName,row]));
+  assert.equal(by['Pale Red Co'].status,'red');assert.equal(by['Pale Red Co'].kind,'upgrade');assert.equal(by['Pale Red Co'].notes,'400 to 750');
+  assert.equal(by['Theme Green Co'].status,'green');assert.equal(by['Theme Green Co'].accountNumber,'0042');assert.equal(by['Theme Green Co'].kind,'stand');
+  assert.equal(by['Indexed Yellow Co'].status,'yellow');
+  assert.equal(by['Plain Co'].status,'blue');
+  assert.equal(by['Red Text Co'].status,'red');
+  assert.equal(by['Dark Blue Co'].status,'blue');
+  assert.equal(result.stats.fromCellColor,5);
+});
+test('text import understands status columns, emoji, and section headings',async()=>{
+  const csv=await parseFunnelFile('s.csv',Buffer.from('Business,Phone,Color,Notes\nA Co,5025551111,Hot,x\nB Co,5025552222,sold,y\nC Co,5025553333,50/50,z\nD Co,5025554444,,w'));
+  assert.deepEqual(csv.rows.map(r=>r.status),['red','green','yellow','blue']);
+  const txt=await parseFunnelFile('s.txt',Buffer.from('🔴 HOT\nFirst Co > 5025551111 > stand\n\nSOLD\nSecond Co > 5025552222 > 400 to 750\n🟡 Third Co > 5025553333 > spoke to owner\nHot Dog Stand > 5025554444 > menu'));
+  const s=Object.fromEntries(txt.rows.map(r=>[r.businessName,r.status]));
+  assert.equal(s['First Co'],'red');assert.equal(s['Second Co'],'green');assert.equal(s['Third Co'],'yellow');assert.equal(s['Hot Dog Stand'],'green');
+  const noHeader=await parseFunnelFile('n.csv',Buffer.from('Acme,5025551212,red,stand mobile\nBeta,000777,green,400 to 750'));
+  assert.equal(noHeader.rows[0].status,'red');assert.equal(noHeader.rows[1].status,'green');assert.equal(noHeader.rows[1].accountNumber,'000777');assert.doesNotMatch(noHeader.rows[0].notes,/red/);
+});
