@@ -7,7 +7,7 @@ import type { LeadRecord } from "@/lib/swarm/lead-book";
 export type { TerritoryReview } from "@/lib/swarm/territory";
 async function directory(collection: string) { const root = path.join(await swarmRoot(), collection); await mkdir(root, { recursive: true }); return root; }
 async function localFile(collection: string, key: string) { return path.join(await directory(collection), `${createHash('sha256').update(key).digest('hex')}.json`); }
-export async function listRepRecords<T>(collection: 'leads' | 'territory'): Promise<T[]> {
+export async function listRepRecords<T>(collection: 'leads' | 'territory' | 'notes' | 'funnel'): Promise<T[]> {
   requireDurableStorage();
   if (cloudConfigured()) {
     const summaries = await cloudList<{ key: string }>(collection);
@@ -21,7 +21,7 @@ export async function listRepRecords<T>(collection: 'leads' | 'territory'): Prom
   const root = await directory(collection);
   return Promise.all((await readdir(root)).filter(f => f.endsWith('.json')).map(async file => JSON.parse(await readFile(path.join(root, file), 'utf8')) as T));
 }
-export async function saveRepRecord<T extends { key: string }>(collection: 'leads' | 'territory', record: T, importOnly = false): Promise<T> {
+export async function saveRepRecord<T extends { key: string }>(collection: 'leads' | 'territory' | 'notes' | 'funnel', record: T, importOnly = false): Promise<T> {
   requireDurableStorage();
   if (cloudConfigured()) return updateCloud<T>(collection, record.key, existing => importOnly && existing ? existing : record, value => ({key:value.key}));
   const file = await localFile(collection, record.key);
