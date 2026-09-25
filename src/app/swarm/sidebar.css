@@ -26,3 +26,4 @@
 .sw-batch-menu button{color:#34373d}.sw-batch-menu button:hover,.sw-batch-menu button:focus-visible{background:#f4f4f1}
 .sw-batch-menu>small{color:#a2a5ab}
 @media(prefers-reduced-motion:reduce){.sw-batch-live{animation:none}}
+@media(hover:none){.sw-batch-count,.sw-batch-live{display:none}}

@@ -236,7 +236,7 @@ export function FunnelWorkspace({ records }: { records: LeadRecord[] }) {
       <div className="fn-toolbar-title"><h2>{heading}</h2><span>{filtered.length}</span>{filtersOn && <button className="fn-clear" onClick={() => { setQuery(''); setStage(null); setKind('all'); setScope('active'); resetPaging(); }}>Clear filters</button>}</div>
       <div className="fn-toolbar-tools">
         <label className="fn-search"><Search size={15}/><input ref={searchInput} aria-label="Search leads" placeholder="Search name, phone, account, notes" value={query} onChange={event => { setQuery(event.target.value); resetPaging(); }} onKeyDown={event => { if (event.key === 'Escape') { setQuery(''); event.currentTarget.blur(); } }}/>{query ? <button aria-label="Clear search" onClick={() => setQuery('')}><X size={13}/></button> : <kbd>/</kbd>}</label>
-        <div className="fn-seg" role="group" aria-label="Lead type">{(['all', 'stand', 'upgrade'] as const).map(value => <button key={value} aria-pressed={kind === value} onClick={() => { setKind(value); resetPaging(); }}>{value === 'all' ? 'All types' : KIND_LABEL[value]}</button>)}</div>
+        <div className="fn-seg" role="group" aria-label="Lead type">{(['all', 'stand', 'upgrade'] as const).map(value => <button key={value} aria-pressed={kind === value} onClick={() => { setKind(value); resetPaging(); }}>{value === 'all' ? 'All' : KIND_LABEL[value]}</button>)}</div>
         <div className="fn-seg" role="group" aria-label="Scope">
           <button aria-pressed={scope === 'due'} onClick={() => { setScope(scope === 'due' ? 'active' : 'due'); resetPaging(); }}>Due{due.length > 0 && <b>{due.length}</b>}</button>
           <button aria-pressed={scope === 'archived'} onClick={() => { setScope(scope === 'archived' ? 'active' : 'archived'); setStage(null); resetPaging(); }} title="Archived leads"><Archive size={14}/>{archivedCount > 0 && <b>{archivedCount}</b>}</button>
@@ -317,11 +317,11 @@ function Row({ lead, index, focused, pickerOpen, togglePicker, closePicker, open
     </span>
     <span className="fn-cell fn-cell-name" role="cell">
       <button className="fn-open" onClick={open} onFocus={onFocus}><strong>{lead.businessName}</strong></button>
-      <small>{lead.kind !== 'other' && <em className={`fn-kind fn-kind-${lead.kind}`}>{KIND_LABEL[lead.kind]}</em>}{lead.contactName || STAGE[lead.status].label}</small>
+      {(lead.kind !== 'other' || lead.contactName) && <small>{lead.kind !== 'other' && <em className={`fn-kind fn-kind-${lead.kind}`}>{KIND_LABEL[lead.kind]}</em>}{lead.contactName}</small>}
     </span>
     <span className="fn-cell fn-cell-contact" role="cell">
       {lead.phone ? <span className="fn-mono">{displayPhone(lead.phone)}</span> : !lead.accountNumber && <span className="fn-muted">—</span>}
-      {lead.accountNumber && <small className="fn-mono">{lead.phone ? 'Acct ' : ''}{lead.accountNumber}</small>}
+      {lead.accountNumber && (lead.phone ? <small className="fn-mono">Acct {lead.accountNumber}</small> : <span className="fn-mono"><em className="fn-acct">Acct</em>{lead.accountNumber}</span>)}
     </span>
     <span className="fn-cell fn-cell-note" role="cell">{note || <span className="fn-muted">No notes yet</span>}</span>
     <span className="fn-cell fn-cell-follow" role="cell">{lead.followUpAt ? <span className={`fn-chip ${isOverdue(lead) ? 'late' : isDue(lead) ? 'today' : ''}`}>{dateLabel(lead.followUpAt)}{lead.followUpTime && ` · ${timeLabel(lead.followUpTime)}`}</span> : <span className="fn-muted">—</span>}</span>

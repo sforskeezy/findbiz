@@ -40,7 +40,9 @@ function preliminary(text:string,existing:Partial<FunnelInput>,mode:PolishMode,t
   const lines=text.split(/\r?\n/).map(line=>line.trim()).filter(Boolean);
   const nameLabel=text.match(/\b(?:business|biz|company|customer)(?:\s*name)?\s*[:#-]\s*([^\n,;.]+)/i)?.[1]?.trim();
   const first=lines[0]?.split(/[>|,]/)[0]?.replace(/^(?:new lead|add lead)\s*[:#-]?/i,'').trim()??'';
-  const candidate=nameLabel||(!existing.businessName&&first&&!phonePattern.test(first)&&first.length<100?first:'');
+  const head=first.split(phonePattern)[0].replace(/\b(?:acc(?:ount)?|acct)\b.*$/i,'').replace(/[\s,;:·-]+$/,'').trim();
+  const narrative=/^(?:spoke|talked|called|left|went|things|follow|met|had|no answer|voicemail|they|he|she|owner|wants?)\b/i.test(head);
+  const candidate=nameLabel||(!existing.businessName&&head&&!narrative&&head.length<100&&/[a-z]/i.test(head)?head:'');
   const phone=text.match(phonePattern)?.[0]?.trim()??'';
   const account=text.match(/\b(?:acc(?:ount)?|acct)\s*(?:#|number|no)?\s*[:#-]?\s*([a-z0-9-]{2,})/i)?.[1]??'';
   const contact=text.match(/\b(?:spoke|talked)\s+(?:to|with)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})\b/)?.[1]??text.match(/\b(?:contact|owner)\s*[:#-]\s*([A-Za-z]+(?:\s+[A-Za-z]+){0,2})/i)?.[1]??'';

@@ -10,7 +10,7 @@ const UPPER = new Set(['N','S','E','W','NE','NW','SE','SW','US','SR','CR','FM','
 /** Batch titles come from pasted addresses, which are often ALL CAPS; show them in readable title case. */
 function readable(title: string) {
   if (!/[A-Z]{3}/.test(title) || title !== title.toUpperCase()) return title;
-  return title.toLowerCase().replace(/\b[a-z]+\b/g, word => UPPER.has(word.toUpperCase()) ? word.toUpperCase() : word[0].toUpperCase() + word.slice(1));
+  return title.toLowerCase().replace(/\b[a-z]+\b/g, word => UPPER.has(word.toUpperCase()) ? word.toUpperCase() : word[0].toUpperCase() + word.slice(1)).replace(/,\s*([A-Z][a-z])(?=\s*(?:\d{5}|$))/, (_, state: string) => `, ${state.toUpperCase()}`);
 }
 export const compactBatchTitle = (title: string) => readable(title.replace(/^\d+ addresses?\s*·\s*/,'').replace(/\s*\.{3}$/,'').trim());
 

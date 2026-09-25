@@ -110,3 +110,8 @@ test('text import understands status columns, emoji, and section headings',async
   const noHeader=await parseFunnelFile('n.csv',Buffer.from('Acme,5025551212,red,stand mobile\nBeta,000777,green,400 to 750'));
   assert.equal(noHeader.rows[0].status,'red');assert.equal(noHeader.rows[1].status,'green');assert.equal(noHeader.rows[1].accountNumber,'000777');assert.doesNotMatch(noHeader.rows[0].notes,/red/);
 });
+test('quick capture finds the business name before an inline phone or account',()=>{
+  const result=polishFunnelText('Ohio Valley Coffee 502-555-0190 acc 44120, spoke with Dana about stand',{},'capture','2026-09-25');
+  assert.equal(result.fields.businessName,'Ohio Valley Coffee');assert.equal(result.fields.accountNumber,'44120');assert.equal(result.fields.kind,'stand');
+  assert.equal(polishFunnelText('Spoke with Jane 502-555-0190 about pricing',{},'capture','2026-09-25').fields.businessName,'');
+});
