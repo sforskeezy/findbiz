@@ -1,8 +1,9 @@
 "use client";
-import { useState, type DragEvent, type FormEvent, type RefObject } from 'react';
+import { useEffect, useState, type DragEvent, type FormEvent, type RefObject } from 'react';
 import { motion } from 'motion/react';
-import { ArrowRight, ClipboardList, FileUp, LoaderCircle, Map as MapIcon, Radar, Waypoints } from 'lucide-react';
+import { ArrowRight, Check, FileUp, LoaderCircle, Map as MapIcon, Radar, WandSparkles } from 'lucide-react';
 import { compactBatchTitle } from './batch-list';
+import { fixAddresses } from '@/lib/swarm/address-fix';
 import type { SwarmSummary } from '@/lib/swarm/types';
 
 const RADII = [.25, .5, 1, 2, 5, 10];
@@ -34,7 +35,22 @@ export function SwarmEntry({ draft, setDraft, radius, setRadius, parsed, busy, d
   batches: SwarmSummary[]; choose: (id: string) => void;
 }) {
   const [over, setOver] = useState(false);
+  const [fix, setFix] = useState<{ tone: 'done' | 'error'; message: string } | null>(null);
+  useEffect(() => { if (!fix) return; const timer = setTimeout(() => setFix(null), 4000); return () => clearTimeout(timer); }, [fix]);
   const count = parsed.addresses.length;
+  async function addressFix() {
+    let source = '';
+    try { source = await navigator.clipboard.readText(); } catch { /* Fall back to the composer when clipboard access is blocked. */ }
+    const fromComposer = !source.trim();
+    if (fromComposer) source = draft;
+    if (!source.trim()) { setFix({ tone: 'error', message: 'Copy addresses from PRISM first, then press Address fix.' }); return; }
+    const lines = fixAddresses(source);
+    if (!lines.length) { setFix({ tone: 'error', message: 'No addresses found in what you copied.' }); return; }
+    const text = lines.join('\n');
+    if (fromComposer) { setDraft(text); setFix({ tone: 'done', message: `Cleaned ${lines.length} ${lines.length === 1 ? 'address' : 'addresses'} in the box` }); return; }
+    try { await navigator.clipboard.writeText(text); setFix({ tone: 'done', message: `${lines.length} ${lines.length === 1 ? 'address' : 'addresses'} copied. Paste them into the box.` }); }
+    catch { setDraft([draft.trim(), text].filter(Boolean).join('\n')); setFix({ tone: 'done', message: `Added ${lines.length} ${lines.length === 1 ? 'address' : 'addresses'} to the box` }); }
+  }
   const problem = parsed.error || (parsed.invalid.length ? `${parsed.invalid.length} ${parsed.invalid.length === 1 ? 'line needs' : 'lines need'} a street and a city or ZIP.` : '');
   async function drop(event: DragEvent) {
     event.preventDefault(); setOver(false);
@@ -47,9 +63,9 @@ export function SwarmEntry({ draft, setDraft, radius, setRadius, parsed, busy, d
   function onSubmit(event: FormEvent) { event.preventDefault(); if (!disabled) submit(); }
   return <motion.div className="swx-entry" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: .3 }}>
     <header className="swx-entry-head">
-      <span className="swx-date">{new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}</span>
+      <span className="swx-eyebrow"><Radar size={13}/>Swarm<i/>{new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}</span>
       <h1>New swarm</h1>
-      <p>Paste your addresses. Swarm finds every business around them, removes duplicates, checks reported broadband, and groups everything into territories you can work.</p>
+      <p>Paste your addresses and Swarm finds every business around them, checks reported broadband, and groups them into territories.</p>
     </header>
 
     <form onSubmit={onSubmit}>
@@ -66,17 +82,13 @@ export function SwarmEntry({ draft, setDraft, radius, setRadius, parsed, busy, d
         {over && <div className="swx-composer-drop"><FileUp size={20}/>Drop to add these addresses</div>}
       </div>
       <div className="swx-launch">
-        <div className="swx-radius"><span>Search radius</span><div className="fn-seg" role="group" aria-label="Radius around each address">{RADII.map(r => <button type="button" key={r} aria-pressed={radius === r} onClick={() => setRadius(r)}>{radiusLabel(r)}<small>mi</small></button>)}</div></div>
+        <div className="swx-radius"><span>Search radius</span><div className="fn-seg" role="group" aria-label="Radius around each address">{RADII.map(r => <button type="button" key={r} aria-pressed={radius === r} onClick={() => setRadius(r)}>{radiusLabel(r)}<small>mi</small></button>)}</div>
+          <button type="button" className={`swx-fix ${fix?.tone === 'done' ? 'done' : ''}`} onClick={() => void addressFix()} title="Clean up addresses copied from PRISM and copy them back, one per line">{fix?.tone === 'done' ? <Check size={14}/> : <WandSparkles size={14}/>}Address fix</button>
+        </div>
         <button type="submit" className="swx-go" disabled={disabled}>{busy ? <LoaderCircle size={16} className="sw-spin"/> : <Radar size={16}/>}Start swarm{count > 0 && <span>{count.toLocaleString()}</span>}<kbd>⌘↵</kbd></button>
       </div>
-      <p className="swx-note">Up to 1,000 addresses per swarm. Include a city or ZIP for each one.</p>
+      <p className={`swx-note ${fix ? fix.tone : ''}`} role="status">{fix?.message ?? 'Up to 1,000 addresses per swarm. Include a city or ZIP for each one.'}</p>
     </form>
-
-    <ol className="swx-steps">
-      <li><ClipboardList size={17}/><div><strong>Paste a route</strong><span>Any list of addresses, from a sheet or a text.</span></div></li>
-      <li><Radar size={17}/><div><strong>Swarm searches</strong><span>Every business within your radius, deduped into one list.</span></div></li>
-      <li><Waypoints size={17}/><div><strong>Work the territory</strong><span>Clusters, a map, broadband checks, and one-tap into your funnel.</span></div></li>
-    </ol>
 
     {batches.length > 0 && <section className="swx-recent">
       <h2>Recent swarms</h2>

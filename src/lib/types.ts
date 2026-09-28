@@ -171,10 +171,26 @@ export type ResearchDiagnostics = {
   cacheHit: boolean;
 };
 
+export type ResearchPerson = {
+  name: string;
+  roles: string[];
+  sources: Array<{ label: string; url: string; snippet: string }>;
+  confidence: Confidence;
+};
+
+export type CallBrief = {
+  askFor: string | null;
+  reason: string;
+  summary: string;
+  talkingPoints: string[];
+};
+
 export type CompanyIntelligence = {
   status: "complete" | "partial" | "unavailable";
   summary: string | null;
   facts: PublicFact[];
+  people?: ResearchPerson[];
+  brief?: CallBrief | null;
   searchResults: WebSearchResult[];
   sources: SourceRecord[];
   pagesScanned: number;

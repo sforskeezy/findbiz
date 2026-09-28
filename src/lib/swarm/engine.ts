@@ -44,7 +44,7 @@ export async function runSwarm(id: string, deps: Providers = providers) {
         await update((current) => { current.status = 'researching'; for (const p of research) current.prospects.find((item) => item.id === p.id)!.researchStatus = 'researching'; });
         await Promise.all(research.map(async (card) => {
           try {
-            const intelligence = await deadline(deps.research(card.business), 40_000);
+            const intelligence = await deadline(deps.research(card.business), 60_000);
             await update((current) => { const target = current.prospects.find((p) => p.id === card.id)!; target.intelligence = intelligence; target.researchStatus = intelligence.status === 'complete' ? 'complete' : 'partial'; target.updatedAt = new Date().toISOString(); target.error = null; });
           } catch (error) {
             await update((current) => { const target = current.prospects.find((p) => p.id === card.id)!; target.researchStatus = 'partial'; target.error = error instanceof Error ? error.message : 'Research unavailable.'; });

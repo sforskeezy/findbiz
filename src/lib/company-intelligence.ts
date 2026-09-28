@@ -4,8 +4,12 @@ import { isIP } from "node:net";
 
 import { researchGoogleWeb } from "@/lib/google-research-engine";
 import { publishedLeadership } from "@/lib/leadership";
+import { aiWebSearch, callBrief, collectPeople, contactQueries, mergePeople } from "@/lib/swarm/contact-research";
+import { askFunnelModel, askSearchModel, funnelModelConfigured, searchModelConfigured } from "@/lib/swarm/funnel-ai";
 import type {
+  CallBrief,
   CompanyIntelligence,
+  ResearchPerson,
   Confidence,
   Prospect,
   PublicFact,
@@ -18,6 +22,7 @@ import type {
 const MAX_HTML_BYTES = 1_000_000;
 const MAX_PAGES = 5;
 const FETCH_TIMEOUT_MS = 8_000;
+const OWNER_RECORD_HOSTS = /\/\/(?:www\.)?(?:bizapedia\.com|opencorporates\.com|bbb\.org|corporationwiki\.com|buzzfile\.com|[^/]+\.gov)\//i;
 const CONTACT_LINK = /\b(about|contact|company|team|location|our-story|who-we-are)\b/i;
 const PHONE_PATTERN = /(?:\+?1[\s.()-]*)?(?:\(\s*\d{3}\s*\)|\d{3})[\s.-]*\d{3}[\s.-]*\d{4}(?:\s*(?:x|ext\.?|extension)\s*\d{1,6})?/gi;
 const EMAIL_PATTERN = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
@@ -494,12 +499,16 @@ export async function researchCompany(prospect: Prospect, options: { businessOnl
     }
   })();
 
-  const googleSearch = researchGoogleWeb(prospect).then(
+  const googleSearch = (options.businessOnly ? researchGoogleWeb(prospect, contactQueries(prospect), 14) : researchGoogleWeb(prospect)).then(
     (value) => ({ ok: true as const, value }),
     (error: unknown) => ({ ok: false as const, error }),
   );
 
-  const [crawled, googleOutcome] = await Promise.all([sitePages, googleSearch]);
+  const modelSearch = options.businessOnly && searchModelConfigured()
+    ? aiWebSearch(prospect, (prompt) => askSearchModel(prompt)).catch(() => ({ people: [], documents: [] }))
+    : Promise.resolve({ people: [] as ResearchPerson[], documents: [] as Array<{ url: string; title: string; text: string }> });
+
+  const [crawled, googleOutcome, modelFound] = await Promise.all([sitePages, googleSearch, modelSearch]);
   pages.push(...crawled);
 
   for (const page of pages) addPageFacts(page, facts, retrievedAt, Boolean(options.businessOnly && prospect.website && comparableHost(page.url) === comparableHost(prospect.website)));
@@ -509,11 +518,9 @@ export async function researchCompany(prospect: Prospect, options: { businessOnl
   try {
     if (!googleOutcome.ok) throw googleOutcome.error;
     const google = googleOutcome.value;
-    searchResults = options.businessOnly
-      ? google.results.filter((result) => ["official_site", "government_registry", "professional_registry", "news"].includes(result.sourceKind))
-      : google.results;
+    searchResults = google.results;
     research = { ...google.diagnostics };
-    addSearchFacts(searchResults, facts, retrievedAt);
+    addSearchFacts(options.businessOnly ? searchResults.filter((result) => ["official_site", "government_registry", "professional_registry", "news"].includes(result.sourceKind)) : searchResults, facts, retrievedAt);
 
     const already = new Set(
       pages.flatMap((page) => {
@@ -537,7 +544,8 @@ export async function researchCompany(prospect: Prospect, options: { businessOnl
         (result) =>
           result.sourceKind === "government_registry" ||
           result.sourceKind === "professional_registry" ||
-          result.sourceKind === "official_site",
+          result.sourceKind === "official_site" ||
+          (Boolean(options.businessOnly) && OWNER_RECORD_HOSTS.test(result.url)),
       )
       .filter((result) => {
         try {
@@ -546,7 +554,7 @@ export async function researchCompany(prospect: Prospect, options: { businessOnl
           return false;
         }
       })
-      .slice(0, 4);
+      .slice(0, options.businessOnly ? 6 : 4);
     research.pagesSelected = extra.length;
 
     const extraPages = await Promise.allSettled(extra.map((result) => fetchHtml(result.url)));
@@ -572,11 +580,45 @@ export async function researchCompany(prospect: Prospect, options: { businessOnl
     );
   }
 
+  for (const document of modelFound.documents) {
+    if (searchResults.some((result) => result.url === document.url)) continue;
+    const hostname = sourceLabel(document.url);
+    searchResults.push({
+      id: hashId("qwen-search", document.url, document.text),
+      title: hostname,
+      url: document.url,
+      snippet: document.text,
+      provider: "Qwen web search",
+      query: prospect.name,
+      matchedQueries: [prospect.name],
+      rank: 60,
+      authorityScore: 60,
+      sourceKind: /\.gov$/.test(hostname) ? "government_registry" : /bizapedia|opencorporates|bbb\.org/.test(hostname) ? "professional_registry" : /linkedin|facebook|instagram/.test(hostname) ? "social" : "other",
+    });
+  }
+  if (modelFound.documents.length || modelFound.people.length) research.providers = [...new Set([...research.providers, "Qwen web search"])];
+
   if (!searchResults.length) {
     const engineNote = research.failures[0]
       ? `Google research found no usable sources. ${research.failures[0]}`
       : "Google research completed with no usable indexed sources for this company.";
     warnings.push(engineNote);
+  }
+
+  let people: ResearchPerson[] = [];
+  let brief: CallBrief | null = null;
+  if (options.businessOnly) {
+    const ownPage = (url: string) => { try { return Boolean(prospect.website) && comparableHost(url) === comparableHost(prospect.website!); } catch { return false; } };
+    people = mergePeople(collectPeople([
+      ...searchResults.map((result) => ({ url: result.url, title: result.title, text: result.snippet })),
+      ...pages.filter((page) => OWNER_RECORD_HOSTS.test(page.url) || ownPage(page.url)).map((page) => ({ url: page.url, title: page.title, text: page.text.slice(0, 60_000) })),
+    ], prospect.name), modelFound.people);
+    for (const person of people) {
+      addFact(facts, { kind: "leadership", label: person.roles[0] ?? "Contact", value: person.name, sourceUrl: person.sources[0].url, retrievedAt, confidence: person.confidence });
+    }
+    if (funnelModelConfigured()) {
+      brief = await callBrief(prospect, people, searchResults, (system, user) => askFunnelModel<Partial<CallBrief>>(system, user, 700, 14_000)).catch(() => null);
+    }
   }
 
   if (!facts.length) warnings.push("No additional public contact or registration facts were found. Nothing was guessed.");
@@ -612,8 +654,9 @@ export async function researchCompany(prospect: Prospect, options: { businessOnl
 
   return {
     status: facts.length ? (pages.length ? "complete" : "partial") : pages.length || searchResults.length ? "partial" : "unavailable",
-    summary: descriptionFromHome(pages[0]) || prospect.publicNotes,
+    summary: brief?.summary || descriptionFromHome(pages[0]) || prospect.publicNotes,
     facts,
+    ...(options.businessOnly ? { people, brief } : {}),
     searchResults,
     sources,
     pagesScanned: pages.length,

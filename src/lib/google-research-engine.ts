@@ -99,8 +99,8 @@ function addressContext(address: string) {
   return [city, stateZip].filter(Boolean).join(" ").slice(0, 100);
 }
 
-export function planCompanyResearchQueries(prospect: Prospect, requested?: string[]) {
-  const maximum = numberEnv("GOOGLE_RESEARCH_MAX_QUERIES", 9, 1, 16);
+export function planCompanyResearchQueries(prospect: Prospect, requested?: string[], limit?: number) {
+  const maximum = limit ?? numberEnv("GOOGLE_RESEARCH_MAX_QUERIES", 9, 1, 16);
   if (requested?.length) {
     return [...new Set(requested.map((value) => value.replace(/\s+/g, " ").trim()).filter(Boolean))]
       .filter((value) => value.length >= 2 && value.length <= 240)
@@ -665,8 +665,9 @@ async function runResearch(prospect: Prospect, queries: string[]): Promise<Googl
 export async function researchGoogleWeb(
   prospect: Prospect,
   requestedQueries?: string[],
+  limit?: number,
 ): Promise<GoogleResearchResult> {
-  const queries = planCompanyResearchQueries(prospect, requestedQueries);
+  const queries = planCompanyResearchQueries(prospect, requestedQueries, limit);
   if (!queries.length) throw new Error("The Google research engine has no valid search queries.");
   return cachedResearch(cacheKey(prospect, queries), () => runResearch(prospect, queries));
 }
