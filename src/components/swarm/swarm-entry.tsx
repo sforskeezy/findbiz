@@ -63,7 +63,6 @@ export function SwarmEntry({ draft, setDraft, radius, setRadius, parsed, busy, d
   function onSubmit(event: FormEvent) { event.preventDefault(); if (!disabled) submit(); }
   return <motion.div className="swx-entry" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: .3 }}>
     <header className="swx-entry-head">
-      <span className="swx-eyebrow"><Radar size={13}/>Swarm<i/>{new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}</span>
       <h1>New swarm</h1>
       <p>Paste your addresses and Swarm finds every business around them, checks reported broadband, and groups them into territories.</p>
     </header>

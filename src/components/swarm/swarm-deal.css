@@ -1,0 +1,57 @@
+/* Game plan */
+.spd-kind{color:var(--muted);font-size:12px;font-weight:550}
+
+.spd-lane{position:relative;display:flex;gap:10px;margin:0 0 14px;padding:11px 12px;border-radius:12px;background:var(--amber-soft);border:1px solid #f1e2b8;color:var(--amber-ink)}
+.spd-lane svg{flex:none;margin-top:1px}
+.spd-lane strong{display:block;font-size:13px;font-weight:650}
+.spd-lane ul{margin:3px 0 0;padding:0;list-style:none;font-size:12.5px;line-height:1.5}
+.spd.out .spd-lane{margin:0;background:#fdeeee;border-color:#f5d0d1;color:#a02b30}
+
+.spd-lane-body{min-width:0;flex:1}
+.spd-lane-top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.spd-lane-top svg{margin-top:0;color:#c1595d}
+.spd-lane-sub{margin:2px 0 0;color:#bd5a5e;font-size:12.5px;line-height:1.5}
+
+.spd-lane.clickable{cursor:pointer;-webkit-tap-highlight-color:transparent;transition:background .15s,border-color .15s}
+.spd-lane.clickable:hover{background:#fbe6e6;border-color:#eec4c5}
+.spd-lane.clickable:active{background:#f8dcdd}
+.spd-lane.clickable:focus-visible{outline:2px solid var(--red);outline-offset:2px}
+
+.spd-detail{overflow:hidden}
+.spd-detail-inner{display:grid;gap:6px;margin-top:10px;padding-top:10px;border-top:1px solid #f5d0d1}
+.spd-detail-row{display:flex;gap:10px;font-size:12.5px;line-height:1.5}
+.spd-detail-row span{flex:none;width:56px;color:#c4888a;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.04em;padding-top:1px}
+.spd-detail-row b{color:#8a2e33;font-weight:560}
+
+.spd-step{margin:18px 0 8px;color:var(--faint);font-size:10.5px;font-weight:650;letter-spacing:.08em;text-transform:uppercase}
+.spd-step:first-of-type{margin-top:4px}
+.spd-open{display:grid;gap:2px;margin:0;padding:0;list-style:none}
+.spd-open li{position:relative;padding:5px 0 5px 16px;color:var(--ink);font-size:13.5px;line-height:1.5;text-wrap:pretty}
+.spd-open li::before{content:"";position:absolute;left:3px;top:13px;width:5px;height:5px;border-radius:50%;background:#cfd0d3}
+
+.spd-products{display:grid;gap:4px;margin:0;padding:0;list-style:none}
+.spd-products li{display:flex;gap:12px;padding:10px 12px;margin:0 -12px;border-radius:12px;transition:background .15s}
+.spd-products li:hover{background:var(--soft)}
+.spd-products button{flex:none;display:grid;place-items:center;width:18px;height:18px;margin-top:2px;border-radius:6px;border:1.5px solid #cfd0d3;background:var(--paper);color:#fff;transition:background .15s,border-color .15s!important}
+.spd-products button:hover{border-color:var(--ink)}
+.spd-products button[aria-pressed=true]{background:var(--green);border-color:var(--green)}
+.spd-products div{min-width:0}
+.spd-q{margin:0;color:var(--ink);font-size:13.5px;font-weight:560;line-height:1.5;text-wrap:pretty;transition:color .15s}
+.spd-follow{display:flex;gap:6px;align-items:flex-start;margin:4px 0 0;color:var(--muted);font-size:13px;line-height:1.5;text-wrap:pretty}
+.spd-follow svg{flex:none;margin-top:4px;color:#c4c5c9}
+.spd-products small{display:block;margin-top:6px;color:var(--faint);font-size:11px;font-weight:600}
+.spd-products li.on .spd-q,.spd-products li.on .spd-follow{color:var(--faint)}
+
+.spd-drivers{display:flex;flex-wrap:wrap;gap:6px;margin-top:16px}
+.spd-drivers span{display:inline-flex;align-items:center;gap:5px;min-height:24px;padding:3px 9px;border-radius:99px;background:var(--soft);color:var(--ink-2);font-size:11.5px;font-weight:560;line-height:1.35}
+.spd-drivers span.warn{background:var(--amber-soft);color:var(--amber-ink)}
+
+.spd-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+.spd-actions button{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 11px;border-radius:9px;border:1px solid var(--line);background:var(--paper);color:var(--ink-2);font-size:12px;font-weight:600}
+.spd-actions button:hover:not(:disabled){background:var(--soft);color:var(--ink)}
+.spd-actions button:disabled{opacity:.5}
+
+/* Prospect table */
+.swx-tag.lane-out{background:#fdeeee;color:#a02b30}
+.swx-tag.lane-check{background:#fdf6e2;color:#8d5f00}
+tr.lane-out td{opacity:.55}

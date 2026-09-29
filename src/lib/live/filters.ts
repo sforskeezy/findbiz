@@ -30,9 +30,12 @@ const NATIONAL_CHAINS = [
 
 const GAS_OR_BOX = /\b(gas station|fuel|convenience store|c-store|big box|supermarket|grocery|pharmacy chain)\b/i;
 
+const CHAIN_PATTERNS = NATIONAL_CHAINS.map((chain) => new RegExp(`(?:^|[^a-z0-9])${chain.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![a-z0-9])`));
+
+/** Whole words only, so "Shellma's Market" is not Shell. */
 export function isNationalChain(name: string) {
-  const hay = ` ${name.toLowerCase().replace(/[|]/g, " ")} `;
-  return NATIONAL_CHAINS.some((chain) => hay.includes(` ${chain} `) || hay.includes(chain));
+  const hay = name.toLowerCase().replace(/[|]/g, " ");
+  return CHAIN_PATTERNS.some((pattern) => pattern.test(hay));
 }
 
 export function isMassRetail(prospect: Pick<Prospect, "name" | "category" | "publicNotes">) {

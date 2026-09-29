@@ -21,10 +21,7 @@
 /* New swarm */
 .swx-entry{max-width:880px;margin:clamp(8px,4vh,48px) auto 0}
 .swx-entry-head{margin-bottom:28px}
-.swx-eyebrow{display:inline-flex;align-items:center;gap:7px;height:26px;padding:0 11px 0 9px;border:1px solid var(--line);border-radius:99px;background:var(--paper);color:var(--ink-2);font-size:12px;font-weight:550;box-shadow:0 1px 2px #0000000a}
-.swx-eyebrow svg{color:var(--ink)}
-.swx-eyebrow i{width:3px;height:3px;border-radius:50%;background:var(--faint)}
-.swx-entry-head h1{margin:16px 0 10px;font-size:44px;line-height:1;font-weight:680;letter-spacing:-.055em;background:linear-gradient(180deg,var(--ink) 30%,#4a4d55);-webkit-background-clip:text;background-clip:text;color:transparent}
+.swx-entry-head h1{margin:0 0 10px;font-size:44px;line-height:1;font-weight:680;letter-spacing:-.055em;background:linear-gradient(180deg,var(--ink) 30%,#4a4d55);-webkit-background-clip:text;background-clip:text;color:transparent}
 .swx-entry-head p{max-width:520px;margin:0;color:var(--muted);font-size:15px;line-height:1.6;text-wrap:pretty}
 .swx-composer{position:relative;background:var(--paper);border:1px solid var(--line);border-radius:16px;box-shadow:0 1px 2px #0000000a,0 12px 32px -20px #00000033;transition:border-color .15s,box-shadow .15s}
 .swx-composer:focus-within{border-color:#c9c9c4;box-shadow:0 0 0 4px #0000000a,0 12px 32px -20px #00000033}
@@ -175,7 +172,7 @@ tr[data-priority=high] .swx-rank i{background:var(--green)}
 .sw-cluster-menu{border-color:var(--line)!important;border-radius:12px!important;box-shadow:0 12px 32px -8px #0000002e!important}
 
 /* Business profile */
-.sw-modal-shade{background:#0f111466!important;backdrop-filter:blur(2px)}
+.sw-modal-shade{background:#0f111466!important;backdrop-filter:none!important}
 .sw-modal{border-radius:20px!important;box-shadow:0 40px 90px -30px #00000066,0 0 0 1px #0000000f!important}
 .sw-profile-header{background:linear-gradient(180deg,#f6f6f3,#fff)!important;border-bottom:1px solid var(--line-2)}
 .sw-modal-topline,.sw-modal-topline>span>svg{color:var(--muted)!important}
