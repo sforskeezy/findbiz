@@ -1,5 +1,5 @@
 import type { CompanyIntelligence, Coordinates, FccLookupResponse, Prospect } from "@/lib/types";
-export type SwarmAddress = { id: string; text: string; status: "pending" | "scanning" | "complete" | "error"; coordinates: Coordinates | null; discovered: number; error: string | null };
+export type SwarmAddress = { id: string; text: string; status: "pending" | "scanning" | "complete" | "error"; coordinates: Coordinates | null; discovered: number; error: string | null; blockedRetries?: number };
 export type SwarmProspect = {
   id: string; business: Prospect; sourceAddressIds: string[]; clusterId: string;
   opportunity: "high" | "review" | "contact_needed"; rank: number; reasons: string[];

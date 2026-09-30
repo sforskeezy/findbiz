@@ -72,6 +72,9 @@ type CacheEntry = {
 
 const scrapeCache = new Map<string, CacheEntry>();
 const inFlight = new Map<string, Promise<GoogleMapsScrapeResult>>();
+/** How long batch work holds off after Google pushes back. Also caps how long a partial result is cached. */
+const BLOCK_COOLDOWN_MS = 3 * 60 * 1_000;
+let lastBlockedAt = 0;
 
 class GoogleMapsBlockedError extends Error {
   constructor(message: string) {
@@ -204,6 +207,7 @@ async function fetchGoogle(url: URL, referer?: string) {
   });
   const body = await responseText(response);
   if (blockedResponse(response, body)) {
+    lastBlockedAt = Date.now();
     throw new GoogleMapsBlockedError(
       `Google Maps blocked the public-page request (${response.status}). No CAPTCHA or access control was bypassed.`,
     );
@@ -478,6 +482,15 @@ export function googleMapsScraperEnabled() {
   return process.env.ENABLE_GOOGLE_MAPS_SCRAPER !== "false";
 }
 
+/** True when Google rejected a request at or after `sinceMs`, so that scrape may be partial. */
+export function googleMapsBlockedSince(sinceMs: number) {
+  return lastBlockedAt >= sinceMs;
+}
+
+export function googleMapsCoolingDown() {
+  return Date.now() - lastBlockedAt < BLOCK_COOLDOWN_MS;
+}
+
 export async function scrapeGoogleMaps(
   center: Coordinates,
   radiusMiles: number,
@@ -497,8 +510,9 @@ export async function scrapeGoogleMaps(
 
   const pending = scrapeUncached(center, radiusMiles, queries)
     .then((result) => {
-      const ttl = numberEnv("GOOGLE_MAPS_SCRAPER_CACHE_TTL_SECONDS", DEFAULT_CACHE_TTL_MS / 1_000, 30, 86_400);
-      scrapeCache.set(key, { expiresAt: Date.now() + ttl * 1_000, result });
+      const ttlMs = numberEnv("GOOGLE_MAPS_SCRAPER_CACHE_TTL_SECONDS", DEFAULT_CACHE_TTL_MS / 1_000, 30, 86_400) * 1_000;
+      const expiresAt = Date.now() + (result.diagnostics.blocked ? Math.min(ttlMs, BLOCK_COOLDOWN_MS) : ttlMs);
+      scrapeCache.set(key, { expiresAt, result });
       return result;
     })
     .finally(() => inFlight.delete(key));

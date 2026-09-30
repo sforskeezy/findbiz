@@ -41,8 +41,21 @@ export function rankSwarmProspect(card: SwarmProspect): SwarmProspect {
   if (card.broadband?.matchQuality === "exact" && card.broadband.observations.length) { rank += 5; reasons.push("Address-level broadband availability found"); }
   return { ...card, rank: Math.max(0, Math.min(100, rank)), opportunity: !p.phone && !p.website ? "contact_needed" : rank >= 75 ? "high" : "review", reasons };
 }
-export function addDiscovery(batch: SwarmBatch, prospect: Prospect, addressId: string, id: string) {
-  const existing = batch.prospects.find((card) => sameSwarmBusiness(card.business, prospect));
+/** Lookup for addDiscovery. Build once per mutation so a large batch is not rescanned per business. */
+export type DiscoveryIndex = { byId: Map<string, SwarmProspect>; byName: Map<string, SwarmProspect[]> };
+export function discoveryIndex(batch: SwarmBatch): DiscoveryIndex {
+  const index: DiscoveryIndex = { byId: new Map(), byName: new Map() };
+  for (const card of batch.prospects) indexCard(index, card);
+  return index;
+}
+function indexCard(index: DiscoveryIndex, card: SwarmProspect) {
+  if (card.business.id && !index.byId.has(card.business.id)) index.byId.set(card.business.id, card);
+  const name = norm(card.business.name);
+  index.byName.set(name, [...(index.byName.get(name) ?? []), card]);
+}
+export function addDiscovery(batch: SwarmBatch, prospect: Prospect, addressId: string, id: string, index = discoveryIndex(batch)) {
+  const existing = (prospect.id ? index.byId.get(prospect.id) : undefined)
+    ?? index.byName.get(norm(prospect.name))?.find((card) => sameSwarmBusiness(card.business, prospect));
   if (existing) {
     if (!existing.sourceAddressIds.includes(addressId)) existing.sourceAddressIds.push(addressId);
     existing.business = { ...existing.business, phone: existing.business.phone || prospect.phone, website: existing.business.website || prospect.website };
@@ -52,6 +65,7 @@ export function addDiscovery(batch: SwarmBatch, prospect: Prospect, addressId: s
   const now = new Date().toISOString();
   const card = rankSwarmProspect({ id, business: prospect, sourceAddressIds: [addressId], clusterId: clusterFor(prospect.coordinates), opportunity: "review", rank: 0, reasons: [], broadband: null, broadbandChecked: false, intelligence: null, researchStatus: "listing", error: null, firstSeenAt: now, updatedAt: now });
   batch.prospects.push(card);
+  indexCard(index, card);
   return card;
 }
 export function swarmClusters(prospects: SwarmProspect[]) {

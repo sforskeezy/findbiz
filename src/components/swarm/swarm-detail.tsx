@@ -8,6 +8,7 @@ import { DealCard } from '@/components/swarm/swarm-deal';
 import { FitCard } from '@/components/swarm/swarm-fit';
 import { WhoToAsk } from '@/components/swarm/swarm-who';
 import { ProviderLabels } from '@/components/swarm/provider-labels';
+import { PromotionsTab } from '@/components/swarm/swarm-promotions';
 import { Card, ResearchTab, researchPeople, rise, safeUrl, stagger } from '@/components/swarm/swarm-research';
 import { digits, draftLead, isSpectrumProvider, type LeadRecord } from '@/lib/swarm/lead-book';
 import { dealPlan } from '@/lib/swarm/deal-plan';
@@ -24,7 +25,7 @@ function CopyButton({ value, label, done, dark = false }: { value: string; label
   }
   return <button type="button" className={`spx-btn ${dark ? 'dark' : ''} ${copied ? 'copied' : ''}`} aria-label={`${label}: ${value}`} onClick={() => void copy()}>{copied ? <Check size={14}/> : <Copy size={14}/>}{copied ? done : label}</button>;
 }
-const TABS = [['overview', 'Overview'], ['research', 'Research'], ['sources', 'Sources']] as const;
+const TABS = [['overview', 'Overview'], ['research', 'Research'], ['promotions', 'Promotions'], ['sources', 'Sources']] as const;
 
 export function SwarmDetail({ card, batch, close, research, pending = false, record, saveLead, inFunnel = false, addToFunnel, position, step }: {
   card: SwarmProspect; batch: SwarmBatch; close: () => void; research?: () => void; pending?: boolean;
@@ -34,7 +35,7 @@ export function SwarmDetail({ card, batch, close, research, pending = false, rec
   /** Lets the header offer "next/previous lead" through the same filtered list the table shows. */
   position?: { index: number; total: number }; step?: (delta: number) => void;
 }) {
-  const [tab, setTab] = useState<'overview' | 'research' | 'sources'>('overview');
+  const [tab, setTab] = useState<(typeof TABS)[number][0]>('overview');
   const [contactDraft, setContactName] = useState<string | null>(null);
   const [notesDraft, setNotes] = useState<string | null>(null);
   const contactName = contactDraft ?? record?.contactName ?? draftLead(card).contactName;
@@ -100,7 +101,7 @@ export function SwarmDetail({ card, batch, close, research, pending = false, rec
     <div className="spx-body"><motion.div key={tab} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: .12 }}>
       {tab === 'overview' ? <motion.div className="spx-grid" variants={stagger} initial="hidden" animate="show">
         <div className="spx-col">
-          <WhoToAsk card={card} contactName={contactName} applyContact={applyContact} research={research} researching={researching} pending={pending}/>
+          <WhoToAsk card={card} contactName={contactName} applyContact={applyContact}/>
           <DealCard plan={plan} notify={setMessage} logToNotes={line => { setNotes([notes.trim(), line].filter(Boolean).join('\n')); setMessage('Added to notes. Save to keep it.'); }}/>
           <Card><h3>About the business</h3><p className="spx-summary">{normalizePhonesForCopy(card.intelligence?.summary || p.publicNotes || `Listed as ${p.category.toLowerCase()}. Run research for more company details.`)}</p></Card>
           <Card className="spx-notes">
@@ -119,7 +120,7 @@ export function SwarmDetail({ card, batch, close, research, pending = false, rec
           </Card>
           {p.hours?.length ? <Card><h3><Clock3 size={15}/>Listed hours</h3><ul className="spx-hours">{p.hours.map((hours, i) => <li key={i}>{hours}</li>)}</ul></Card> : null}
         </div>
-      </motion.div> : tab === 'research' ? <ResearchTab card={card} research={research} researching={researching} pending={pending} applyContact={applyContact}/> : <motion.div className="spx-grid" variants={stagger} initial="hidden" animate="show">
+      </motion.div> : tab === 'research' ? <ResearchTab card={card} research={research} researching={researching} pending={pending} applyContact={applyContact}/> : tab === 'promotions' ? <PromotionsTab card={card} plan={plan} notify={setMessage}/> : <motion.div className="spx-grid" variants={stagger} initial="hidden" animate="show">
         <Card><h3>Evidence sources</h3><div className="spx-sources">
           {safeUrl(p.directoryUrl) && <a href={safeUrl(p.directoryUrl)} target="_blank" rel="noreferrer"><div><strong>{p.source || 'Business listing'}</strong><small>{p.confidence} · Retrieved {new Date(p.retrievedAt).toLocaleDateString()}</small></div><ArrowUpRight size={14}/></a>}
           {card.intelligence?.sources.map((source) => safeUrl(source.url) ? <a key={source.id} href={safeUrl(source.url)} target="_blank" rel="noreferrer"><div><strong>{source.label}</strong><small>{source.status} · {new Date(source.sourceDate).toLocaleDateString()}</small></div><ArrowUpRight size={14}/></a> : null)}

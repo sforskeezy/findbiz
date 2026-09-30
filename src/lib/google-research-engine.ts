@@ -550,7 +550,8 @@ export function publicQueryRelevance(result: { query: string; title: string; sni
   return matched.length / tokens.length;
 }
 
-export type WebSearchOptions = { businessName?: string | null; location?: string | null; fresh?: boolean; signal?: AbortSignal };
+/** `stopAt` (epoch ms) ends the search early with what was found, instead of failing like `signal`. */
+export type WebSearchOptions = { businessName?: string | null; location?: string | null; fresh?: boolean; signal?: AbortSignal; stopAt?: number };
 
 async function gatherSearchResults(queries: string[], options: WebSearchOptions = {}) {
   const failures: string[] = [];
@@ -569,6 +570,10 @@ async function gatherSearchResults(queries: string[], options: WebSearchOptions 
   let nextIndex = 0;
   async function worker() {
     while (nextIndex < queries.length) {
+      if (options.stopAt && Date.now() >= options.stopAt) {
+        failures.push(`Stopped after ${completed} of ${queries.length} searches to stay within the time budget.`);
+        break;
+      }
       const query = queries[nextIndex++];
       let succeeded = false;
       for (const provider of candidates) {
@@ -657,8 +662,8 @@ async function cachedResearch(key: string, build: () => Promise<GoogleResearchRe
   return request;
 }
 
-async function runResearch(prospect: Prospect, queries: string[]): Promise<GoogleResearchResult> {
-  const gathered = await gatherSearchResults(queries);
+async function runResearch(prospect: Prospect, queries: string[], stopAt?: number): Promise<GoogleResearchResult> {
+  const gathered = await gatherSearchResults(queries, { stopAt });
   return asResearchResult(queries, gathered, rankAndDedupe(gathered.raw, prospect));
 }
 
@@ -666,10 +671,11 @@ export async function researchGoogleWeb(
   prospect: Prospect,
   requestedQueries?: string[],
   limit?: number,
+  options: { stopAt?: number } = {},
 ): Promise<GoogleResearchResult> {
   const queries = planCompanyResearchQueries(prospect, requestedQueries, limit);
   if (!queries.length) throw new Error("The Google research engine has no valid search queries.");
-  return cachedResearch(cacheKey(prospect, queries), () => runResearch(prospect, queries));
+  return cachedResearch(cacheKey(prospect, queries), () => runResearch(prospect, queries, options.stopAt));
 }
 
 /** Open Google-backed web search for any query, not just a listed prospect. */

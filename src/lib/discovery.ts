@@ -26,13 +26,41 @@ function phoneDigits(value: string | null) {
   return value?.replace(/\D/g, "").slice(-10) || null;
 }
 
-function websiteHost(value: string | null) {
+/** Hosts that serve many unrelated businesses, so the host alone identifies nobody. */
+const SHARED_SITE_HOSTS =
+  /(^|\.)(facebook\.com|fb\.com|instagram\.com|linkedin\.com|twitter\.com|x\.com|yelp\.com|google\.com|goo\.gl|business\.site|sites\.google\.com|wixsite\.com|square\.site|godaddysites\.com|weebly\.com|wordpress\.com|blogspot\.com|linktr\.ee|nextdoor\.com|yellowpages\.com|bbb\.org|mapquest\.com|tiktok\.com|youtube\.com)$/;
+
+function websiteKey(value: string | null) {
   if (!value) return null;
   try {
-    return new URL(value).hostname.toLowerCase().replace(/^www\./, "");
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase().replace(/^www\./, "");
+    if (!SHARED_SITE_HOSTS.test(host)) return host;
+    const firstSegment = url.pathname.split("/").find(Boolean);
+    return firstSegment ? `${host}/${firstSegment.toLowerCase()}` : null;
   } catch {
     return null;
   }
+}
+
+function nameTokens(value: string) {
+  return normalized(value).split(" ").filter((token) => token.length >= 2);
+}
+
+/**
+ * Every word of one name appears in the other, or they lead with the same word and
+ * share most of the rest. Shared place words alone ("Columbia Downtown") are not enough.
+ */
+function namesOverlap(a: string, b: string) {
+  const left = nameTokens(a);
+  const right = nameTokens(b);
+  if (!left.length || !right.length) return false;
+  const [small, large] = left.length <= right.length ? [left, right] : [right, left];
+  const larger = new Set(large);
+  const shared = new Set(small.filter((token) => larger.has(token))).size;
+  const smallSize = new Set(small).size;
+  if (shared === smallSize) return true;
+  return left[0] === right[0] && shared / smallSize >= 0.6;
 }
 
 function distanceMiles(a: Coordinates, b: Coordinates) {
@@ -47,16 +75,71 @@ function distanceMiles(a: Coordinates, b: Coordinates) {
   return earthRadiusMiles * 2 * Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine));
 }
 
-function sameBusiness(a: Prospect, b: Prospect) {
+const SAME_PLACE_MILES = 0.2;
+
+/**
+ * Chains share a website and franchises share a switchboard, so neither can
+ * merge listings on its own: they only confirm a nearby, similarly named match.
+ */
+export function sameBusiness(a: Prospect, b: Prospect) {
+  if (a.id === b.id) return true;
+  if (distanceMiles(a.coordinates, b.coordinates) > SAME_PLACE_MILES) return false;
+  if (normalized(a.name) === normalized(b.name)) return true;
+  if (!namesOverlap(a.name, b.name)) return false;
+
   const aPhone = phoneDigits(a.phone);
   const bPhone = phoneDigits(b.phone);
   if (aPhone && bPhone && aPhone === bPhone) return true;
 
-  const aHost = websiteHost(a.website);
-  const bHost = websiteHost(b.website);
-  if (aHost && bHost && aHost === bHost) return true;
+  const aSite = websiteKey(a.website);
+  const bSite = websiteKey(b.website);
+  return Boolean(aSite && bSite && aSite === bSite);
+}
 
-  return normalized(a.name) === normalized(b.name) && distanceMiles(a.coordinates, b.coordinates) <= 0.2;
+/** Grid cells a little larger than SAME_PLACE_MILES, so a match is always in a neighboring cell. */
+const CELL_DEGREES = 0.004;
+
+function cellOf(coordinates: Coordinates) {
+  return [Math.floor(coordinates.lat / CELL_DEGREES), Math.floor(coordinates.lng / CELL_DEGREES)] as const;
+}
+
+function mergeAcrossSources(providers: ProviderResult[]) {
+  const prospects: Prospect[] = [];
+  const grid = new Map<string, number[]>();
+  const unmapped: number[] = [];
+
+  const candidatesNear = (prospect: Prospect) => {
+    if (!Number.isFinite(prospect.coordinates.lat) || !Number.isFinite(prospect.coordinates.lng)) return unmapped;
+    const [row, column] = cellOf(prospect.coordinates);
+    const found: number[] = [];
+    // Longitude cells narrow toward the poles; two columns each side covers Alaska.
+    for (let dRow = -1; dRow <= 1; dRow += 1) {
+      for (let dColumn = -2; dColumn <= 2; dColumn += 1) {
+        found.push(...(grid.get(`${row + dRow}:${column + dColumn}`) ?? []));
+      }
+    }
+    return found;
+  };
+
+  for (const provider of providers) {
+    for (const incoming of provider.response.prospects) {
+      const existingIndex = candidatesNear(incoming).find((index) => sameBusiness(prospects[index], incoming));
+      if (existingIndex !== undefined) {
+        prospects[existingIndex] = mergeProspect(prospects[existingIndex], incoming);
+        continue;
+      }
+      prospects.push(incoming);
+      const index = prospects.length - 1;
+      if (!Number.isFinite(incoming.coordinates.lat) || !Number.isFinite(incoming.coordinates.lng)) {
+        unmapped.push(index);
+        continue;
+      }
+      const [row, column] = cellOf(incoming.coordinates);
+      const key = `${row}:${column}`;
+      grid.set(key, [...(grid.get(key) ?? []), index]);
+    }
+  }
+  return prospects;
 }
 
 function combineSources(a: string, b: string) {
@@ -185,14 +268,7 @@ export async function researchAcrossSources(
   }
 
   successes.sort((a, b) => a.priority - b.priority);
-  const prospects: Prospect[] = [];
-  for (const provider of successes) {
-    for (const incoming of provider.response.prospects) {
-      const existingIndex = prospects.findIndex((prospect) => sameBusiness(prospect, incoming));
-      if (existingIndex === -1) prospects.push(incoming);
-      else prospects[existingIndex] = mergeProspect(prospects[existingIndex], incoming);
-    }
-  }
+  const prospects = mergeAcrossSources(successes);
 
   const primary = successes[0].response;
   const providerSummary = successes.map((item) => item.label).join(", ");

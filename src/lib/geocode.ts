@@ -46,7 +46,10 @@ const STREET_EXPAND: Record<string, string> = {
   rte: "route", route: "rte",
 };
 
+/** A slow geocoder moves on to the next provider instead of stalling the whole search. */
+const GEOCODER_TIMEOUT_MS = 8_000;
 const geocodeCache = new Map<string, { value: GeocodeResult; expiresAt: number }>();
+const geocodeInFlight = new Map<string, Promise<GeocodeResult>>();
 let lastNominatimRequest = 0;
 
 function userAgent() {
@@ -225,7 +228,7 @@ async function geocodeWithCensus(query: string): Promise<GeocodeResult | null> {
   url.searchParams.set("benchmark", "Public_AR_Current");
   url.searchParams.set("format", "json");
 
-  const response = await fetch(url, { cache: "no-store" });
+  const response = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(GEOCODER_TIMEOUT_MS) });
   if (!response.ok) return null;
   const payload = (await response.json()) as {
     result?: {
@@ -282,6 +285,7 @@ async function geocodeWithPhoton(query: string, parsed: ParsedAddress): Promise<
   const response = await fetch(url, {
     headers: { Accept: "application/json", "User-Agent": userAgent() },
     cache: "no-store",
+    signal: AbortSignal.timeout(GEOCODER_TIMEOUT_MS),
   });
   if (!response.ok) return [];
 
@@ -351,6 +355,7 @@ async function geocodeWithNominatim(query: string, parsed: ParsedAddress): Promi
   const response = await fetch(url, {
     headers: { "User-Agent": userAgent(), Accept: "application/json" },
     cache: "no-store",
+    signal: AbortSignal.timeout(GEOCODER_TIMEOUT_MS),
   });
   if (!response.ok) return null;
   const results = (await response.json()) as Array<{ lat: string; lon: string; display_name: string }>;
@@ -388,6 +393,7 @@ async function geocodeWithRapidApi(query: string, parsed: ParsedAddress): Promis
       Accept: "application/json",
     },
     cache: "no-store",
+    signal: AbortSignal.timeout(GEOCODER_TIMEOUT_MS),
   });
   if (!response.ok) return [];
 
@@ -420,11 +426,19 @@ async function geocodeWithRapidApi(query: string, parsed: ParsedAddress): Promis
   return out;
 }
 
+/** Discovery providers geocode the same address at the same moment; they share one lookup. */
 export async function geocodeAddress(inputAddress: string): Promise<GeocodeResult> {
   const key = collapse(inputAddress).toLowerCase();
   const cached = geocodeCache.get(key);
   if (cached && cached.expiresAt > Date.now()) return cached.value;
+  const pending = geocodeInFlight.get(key);
+  if (pending) return pending;
+  const lookup = geocodeUncached(inputAddress, key).finally(() => geocodeInFlight.delete(key));
+  geocodeInFlight.set(key, lookup);
+  return lookup;
+}
 
+async function geocodeUncached(inputAddress: string, key: string): Promise<GeocodeResult> {
   const parsed = parseUsAddress(inputAddress);
   const queries = buildQueryVariants(parsed);
   // Also try a zero-stripped house number variant without mutating the primary parse.

@@ -413,8 +413,10 @@ function descriptionFromHome(page: PageSnapshot | undefined) {
   return metaContent(page.html, ["description", "og:description"])?.replace(/\s+/g, " ").trim().slice(0, 320) || null;
 }
 
-export async function researchCompany(prospect: Prospect, options: { businessOnly?: boolean } = {}): Promise<CompanyIntelligence> {
+/** `searchBudgetMs` caps time spent starting new web searches; results found so far are kept. */
+export async function researchCompany(prospect: Prospect, options: { businessOnly?: boolean; searchBudgetMs?: number } = {}): Promise<CompanyIntelligence> {
   const retrievedAt = new Date().toISOString();
+  const stopAt = options.searchBudgetMs ? Date.now() + options.searchBudgetMs : undefined;
   const facts: PublicFact[] = [];
   const pages: PageSnapshot[] = [];
   const warnings: string[] = [];
@@ -499,7 +501,7 @@ export async function researchCompany(prospect: Prospect, options: { businessOnl
     }
   })();
 
-  const googleSearch = (options.businessOnly ? researchGoogleWeb(prospect, contactQueries(prospect), 14) : researchGoogleWeb(prospect)).then(
+  const googleSearch = (options.businessOnly ? researchGoogleWeb(prospect, contactQueries(prospect), 14, { stopAt }) : researchGoogleWeb(prospect, undefined, undefined, { stopAt })).then(
     (value) => ({ ok: true as const, value }),
     (error: unknown) => ({ ok: false as const, error }),
   );

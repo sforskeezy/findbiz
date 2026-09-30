@@ -153,7 +153,9 @@ Saved businesses remain in browser `localStorage`; selected search state uses `s
 
 ## Swarm mode
 
-`/swarm` replaces Auto. Paste up to 1,000 addresses, one per line with a city/state or ZIP. Discovery runs six addresses concurrently; availability runs twelve profiles concurrently, with one checkpoint per qualification group. Census-block FCC reports share in-flight requests for one minute. This is a bounded provider search, not an exhaustive census.
+`/swarm` replaces Auto. Paste up to 1,000 addresses, one per line with a city/state or ZIP. Discovery keeps six addresses in flight and availability keeps twelve profiles in flight; availability checks start as soon as the first businesses are found, and a slow address never holds back the rest. Completed work is saved together at most once a second, not once per item. Selected-company research and Maps discovery take turns so the combined load on Google does not grow. If Google Maps pushes back, Swarm keeps what it found, pauses Maps discovery for three minutes and rechecks the affected addresses (up to twice). The final June 2021 Form 477 census-block reports are cached for twelve hours and stored once per batch snapshot. This is a bounded provider search, not an exhaustive census.
+
+When results from several discovery sources are combined, listings merge only when they are within 0.2 mi and have matching names. A shared phone number or website confirms a match between similar names but never merges differently named businesses on its own, so chain hotels, franchise branches and businesses that list a Facebook page as their website stay separate.
 
 Swarm preserves source-address provenance and merges duplicate business locations. Results include ranked prospects, an interactive territory map, geographic clusters, CSV/copy export and public company research. Provider reports keep their vintage and matching quality; availability does not establish the current ISP or orderability. Spectrum/Charter reports are highlighted in green. Address and phone buttons copy values; phone output uses digits only.
 

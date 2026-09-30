@@ -239,9 +239,13 @@ async function censusBlockFor(coordinates: Coordinates) {
   return fips;
 }
 
-const blockReports = sourceCache<FccLookupResponse>(60_000);
+// The June 2021 Form 477 filing is final, so a block's report never changes; one
+// Swarm territory shares a handful of blocks across hundreds of businesses.
+const blockReports = sourceCache<FccLookupResponse>(12 * 60 * 60 * 1_000, 4_096);
+const blocksByPoint = sourceCache<string>(12 * 60 * 60 * 1_000, 8_192);
 async function lookupForm477ByCoordinates(coordinates: Coordinates): Promise<FccLookupResponse> {
-  const blockFips = await censusBlockFor(coordinates);
+  const point = `${coordinates.lat.toFixed(6)},${coordinates.lng.toFixed(6)}`;
+  const blockFips = await blocksByPoint(point, () => censusBlockFor(coordinates));
   return blockReports(blockFips, () => lookupForm477Block(blockFips));
 }
 async function lookupForm477Block(blockFips: string): Promise<FccLookupResponse> {

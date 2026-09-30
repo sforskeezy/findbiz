@@ -30,19 +30,24 @@ function reasons(card: SwarmProspect, plan: DealPlan) {
   return [...warn.map(text => ({ text, good: false })), ...good.map(text => ({ text, good: true }))].slice(0, 3);
 }
 
-/** A beaded dash pattern (using `pathLength` so units are percent, not pixels) that fills
- *  proportionally with dots instead of one solid arc — a string of beads up to `rank`, then
- *  one long gap for the rest, so the ring reads as segmented rather than a plain progress bar. */
-function beadedArc(rank: number, bead = 2.4, gap = 5.2) {
-  const filled = Math.max(0, Math.min(100, rank));
-  if (filled <= 0) return '0 100';
-  const unit = bead + gap;
+const RING_R = 30;
+const RING_CIRCUMFERENCE = 2 * Math.PI * RING_R;
+
+/** A plain dotted line, filled up to `rank` and blank for the rest — same idea as a CSS
+ *  dotted border, just proportional. Dash units are real (viewBox) pixels, not `pathLength`
+ *  percent: Chrome doesn't reliably normalize `pathLength` on a plain `<circle>`, so computing
+ *  the dash pattern against the true circumference keeps the math (and the gap vs. stroke-width
+ *  sizing that keeps dots from merging into a solid line) unambiguous. */
+function dottedArc(rank: number, dot = 1.8, gap = 7.6) {
+  const filled = Math.max(0, Math.min(100, rank)) / 100 * RING_CIRCUMFERENCE;
+  if (filled <= 0) return `0 ${RING_CIRCUMFERENCE}`;
+  const unit = dot + gap;
   const values: number[] = [];
   let used = 0;
-  while (used + unit <= filled) { values.push(bead, gap); used += unit; }
+  while (used + unit <= filled) { values.push(dot, gap); used += unit; }
   const remainder = filled - used;
-  if (remainder > 0.4) values.push(remainder, 0);
-  values.push(100 - filled);
+  if (remainder > 0.5) values.push(remainder, 0);
+  values.push(RING_CIRCUMFERENCE - filled);
   return values.join(' ');
 }
 
@@ -51,7 +56,7 @@ export function FitCard({ card, plan }: { card: SwarmProspect; plan: DealPlan })
   return <Card className={`spf ${tone}`}>
     <div className="spf-top">
       <div className="spf-ring" role="img" aria-label={`Prospecting fit ${card.rank} out of 100`}>
-        <svg viewBox="0 0 72 72"><circle cx="36" cy="36" r="30" pathLength={100}/><circle cx="36" cy="36" r="30" pathLength={100} className="bar" strokeDasharray={beadedArc(card.rank)}/></svg>
+        <svg viewBox="0 0 72 72"><circle cx="36" cy="36" r={RING_R}/><circle cx="36" cy="36" r={RING_R} className="bar" strokeDasharray={dottedArc(card.rank)}/></svg>
         <strong>{card.rank}</strong>
       </div>
       <div><small>Prospecting fit</small><h3>{label}</h3></div>
