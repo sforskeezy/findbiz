@@ -30,13 +30,28 @@ function reasons(card: SwarmProspect, plan: DealPlan) {
   return [...warn.map(text => ({ text, good: false })), ...good.map(text => ({ text, good: true }))].slice(0, 3);
 }
 
+/** A beaded dash pattern (using `pathLength` so units are percent, not pixels) that fills
+ *  proportionally with dots instead of one solid arc — a string of beads up to `rank`, then
+ *  one long gap for the rest, so the ring reads as segmented rather than a plain progress bar. */
+function beadedArc(rank: number, bead = 2.4, gap = 5.2) {
+  const filled = Math.max(0, Math.min(100, rank));
+  if (filled <= 0) return '0 100';
+  const unit = bead + gap;
+  const values: number[] = [];
+  let used = 0;
+  while (used + unit <= filled) { values.push(bead, gap); used += unit; }
+  const remainder = filled - used;
+  if (remainder > 0.4) values.push(remainder, 0);
+  values.push(100 - filled);
+  return values.join(' ');
+}
+
 export function FitCard({ card, plan }: { card: SwarmProspect; plan: DealPlan }) {
   const { label, tone } = verdict(card.rank, plan.lane.status);
-  const circumference = 2 * Math.PI * 30;
   return <Card className={`spf ${tone}`}>
     <div className="spf-top">
       <div className="spf-ring" role="img" aria-label={`Prospecting fit ${card.rank} out of 100`}>
-        <svg viewBox="0 0 72 72"><circle cx="36" cy="36" r="30"/><circle cx="36" cy="36" r="30" className="bar" strokeDasharray={circumference} strokeDashoffset={circumference * (1 - card.rank / 100)}/></svg>
+        <svg viewBox="0 0 72 72"><circle cx="36" cy="36" r="30" pathLength={100}/><circle cx="36" cy="36" r="30" pathLength={100} className="bar" strokeDasharray={beadedArc(card.rank)}/></svg>
         <strong>{card.rank}</strong>
       </div>
       <div><small>Prospecting fit</small><h3>{label}</h3></div>

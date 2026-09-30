@@ -3,12 +3,11 @@ import { useMemo } from 'react';
 import { ArrowUpRight, BadgeCheck, Building2, Check, LoaderCircle, MessagesSquare, PhoneIncoming, Search, Sparkles, UserRoundCheck } from 'lucide-react';
 import { Card, hue, initials, researchPeople, safeUrl } from '@/components/swarm/swarm-research';
 import { lookupLinks } from '@/lib/swarm/lookup-links';
-import type { DealPlan } from '@/lib/swarm/deal-plan';
 import type { SwarmProspect } from '@/lib/swarm/types';
 import './swarm-who.css';
 
-export function WhoToAsk({ card, plan, contactName, applyContact, research, researching, pending }: {
-  card: SwarmProspect; plan: DealPlan; contactName: string; applyContact: (name: string) => void;
+export function WhoToAsk({ card, contactName, applyContact, research, researching, pending }: {
+  card: SwarmProspect; contactName: string; applyContact: (name: string) => void;
   research?: () => void; researching: boolean; pending: boolean;
 }) {
   const p = card.business;
@@ -18,7 +17,6 @@ export function WhoToAsk({ card, plan, contactName, applyContact, research, rese
   const others = people.filter(person => person !== lead).slice(0, 3);
   const links = useMemo(() => lookupLinks(p, []), [p]);
   const link = (id: string) => links.find(item => item.id === id)?.url;
-  const gatekeeper = plan.discovery.gatekeeper;
 
   if (lead) return <Card className="spw found">
     <div className="spw-row">
@@ -50,6 +48,5 @@ export function WhoToAsk({ card, plan, contactName, applyContact, research, rese
       {link('tps-phone') && <a href={link('tps-phone')} target="_blank" rel="noreferrer"><PhoneIncoming size={13}/>Reverse phone<ArrowUpRight size={11}/></a>}
       {link('fps-address') && <a href={link('fps-address')} target="_blank" rel="noreferrer"><Building2 size={13}/>Who&apos;s at this address<ArrowUpRight size={11}/></a>}
     </div>}
-    <div className="spw-script"><MessagesSquare size={14}/><div><small>If you can&apos;t get a name</small><q>Who takes care of the phone and internet for {p.name}?</q><span>Ask for {gatekeeper}.</span></div></div>
   </Card>;
 }

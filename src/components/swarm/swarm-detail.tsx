@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { ArrowUpRight, Bookmark, BookmarkCheck, Check, Clock3, Copy, EyeOff, FunnelPlus, Globe, LoaderCircle, MapPin, Sparkles, Wifi, X } from 'lucide-react';
+import { ArrowUpRight, Bookmark, BookmarkCheck, Check, ChevronLeft, ChevronRight, Clock3, Copy, EyeOff, FunnelPlus, Globe, LoaderCircle, MapPin, Sparkles, Wifi, X } from 'lucide-react';
 import { SwarmDialog } from '@/components/swarm/swarm-dialog';
 import { CopyContact } from '@/components/swarm/copy-contact';
 import { DealCard } from '@/components/swarm/swarm-deal';
@@ -26,11 +26,13 @@ function CopyButton({ value, label, done, dark = false }: { value: string; label
 }
 const TABS = [['overview', 'Overview'], ['research', 'Research'], ['sources', 'Sources']] as const;
 
-export function SwarmDetail({ card, batch, close, research, pending = false, record, saveLead, inFunnel = false, addToFunnel }: {
+export function SwarmDetail({ card, batch, close, research, pending = false, record, saveLead, inFunnel = false, addToFunnel, position, step }: {
   card: SwarmProspect; batch: SwarmBatch; close: () => void; research?: () => void; pending?: boolean;
   inFunnel?: boolean; addToFunnel?: (edits: { contactName: string; notes: string }) => Promise<void>;
   record?: LeadRecord;
   saveLead: (disposition: LeadRecord['disposition'], edits: { contactName: string; notes: string }) => Promise<void>;
+  /** Lets the header offer "next/previous lead" through the same filtered list the table shows. */
+  position?: { index: number; total: number }; step?: (delta: number) => void;
 }) {
   const [tab, setTab] = useState<'overview' | 'research' | 'sources'>('overview');
   const [contactDraft, setContactName] = useState<string | null>(null);
@@ -58,15 +60,17 @@ export function SwarmDetail({ card, batch, close, research, pending = false, rec
   }
   function applyContact(name: string) { setContactName(name); setTab('overview'); setMessage(`${name} set as the contact. Save to keep it.`); }
   // A contact or note typed in this profile is real work, even if the rep never hits "Save business."
-  // Closing (X, backdrop click, or Escape) should not silently throw it away.
-  async function closeWithDraftSaved() {
+  // Leaving the profile — close (X, backdrop click, Escape) or stepping to another lead, which
+  // remounts this component from scratch — should not silently throw an unsaved draft away.
+  async function persistDraftIfDirty() {
     const contactChanged = contactDraft !== null && contactDraft !== (record?.contactName ?? draftLead(card).contactName);
     const notesChanged = notesDraft !== null && notesDraft !== (record?.notes ?? draftLead(card).notes);
     if (contactChanged || notesChanged) {
-      try { await saveLead(record?.disposition ?? 'active', { contactName, notes }); } catch { /* Best-effort: closing should never hang on a failed autosave. */ }
+      try { await saveLead(record?.disposition ?? 'active', { contactName, notes }); } catch { /* Best-effort: leaving should never hang on a failed autosave. */ }
     }
-    close();
   }
+  async function closeWithDraftSaved() { await persistDraftIfDirty(); close(); }
+  async function stepWithDraftSaved(delta: number) { await persistDraftIfDirty(); step?.(delta); }
 
   return <SwarmDialog label={p.name} close={() => void closeWithDraftSaved()} className="sw-profile-modal spx">
     <header className="spx-head">
@@ -74,7 +78,14 @@ export function SwarmDetail({ card, batch, close, research, pending = false, rec
       <button className="spx-close" aria-label="Close profile" onClick={() => void closeWithDraftSaved()}><X size={17}/></button>
       <motion.div className="spx-identity" variants={stagger} initial="hidden" animate="show">
         <motion.h2 variants={rise}>{p.name}</motion.h2>
-        <motion.p variants={rise} className="spx-address"><MapPin size={13}/>{p.address}</motion.p>
+        <motion.p variants={rise} className="spx-address">
+          <MapPin size={13}/>{p.address}
+          {position && step && <span className="spx-nav">
+            <button type="button" aria-label="Previous lead" title="Previous lead" disabled={position.index <= 0} onClick={() => void stepWithDraftSaved(-1)}><ChevronLeft size={14}/></button>
+            <b>{position.index + 1} of {position.total}</b>
+            <button type="button" aria-label="Next lead" title="Next lead" disabled={position.index >= position.total - 1} onClick={() => void stepWithDraftSaved(1)}><ChevronRight size={14}/></button>
+          </span>}
+        </motion.p>
         <motion.div variants={rise} className="spx-actions">
           <CopyButton value={p.address} label="Copy address" done="Address copied" dark/>
           {digits(p.phone) && <CopyButton value={digits(p.phone)} label="Copy number" done="Number copied"/>}
@@ -89,7 +100,7 @@ export function SwarmDetail({ card, batch, close, research, pending = false, rec
     <div className="spx-body"><motion.div key={tab} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: .12 }}>
       {tab === 'overview' ? <motion.div className="spx-grid" variants={stagger} initial="hidden" animate="show">
         <div className="spx-col">
-          <WhoToAsk card={card} plan={plan} contactName={contactName} applyContact={applyContact} research={research} researching={researching} pending={pending}/>
+          <WhoToAsk card={card} contactName={contactName} applyContact={applyContact} research={research} researching={researching} pending={pending}/>
           <DealCard plan={plan} notify={setMessage} logToNotes={line => { setNotes([notes.trim(), line].filter(Boolean).join('\n')); setMessage('Added to notes. Save to keep it.'); }}/>
           <Card><h3>About the business</h3><p className="spx-summary">{normalizePhonesForCopy(card.intelligence?.summary || p.publicNotes || `Listed as ${p.category.toLowerCase()}. Run research for more company details.`)}</p></Card>
           <Card className="spx-notes">
