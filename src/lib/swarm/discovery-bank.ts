@@ -16,6 +16,15 @@ export type Profile = {
   ask: Partial<Record<ProductId, Ask>>;
 };
 
+/**
+ * Field crews and home services. Exported so deal-plan's product reasoning and this
+ * profile's selection share one definition instead of two copies drifting apart.
+ * Roots like `plumb` and `electric` use `\w*` so "Plumbing"/"Plumber" and
+ * "Electrical"/"Electrician" match too — `\b(plumb)\b` alone only matches the bare
+ * word "plumb", never its real-world category forms.
+ */
+export const CREW = /\b(home ?care|home health|hospice|caregiv\w*|in-home|hvac|refrigeration|heating|air condition\w*|plumb\w*|electric\w*|roof\w*|landscap\w*|lawn|pest|termite|exterminat\w*|clean\w*|janitor\w*|maid|pressure wash|pool|construction|contractor|builder|remodel|handyman|painting|painter|drywall|flooring|concrete|paving|fence|gutter|tree|towing|tow service|moving|movers|junk|hauling|septic|well drilling|excavat\w*|garage door|locksmith|appliance repair|courier|delivery|security system|alarm)\b/i;
+
 const GENERIC: Record<ProductId, Ask> = {
   internet: ['Who do you have for internet right now, and how has it been?', 'When was the last time it gave you trouble?'],
   mobile: ['How many of you carry a phone for work?', 'Is that on a business plan, or is everyone using their own?'],
@@ -41,7 +50,7 @@ export const PROFILES: Profile[] = [
     },
   },
   {
-    id: 'faith', label: 'Church or nonprofit', place: 'the building', test: /\b(church|chapel|ministr|parish|congregation|temple|mosque|synagogue|nonprofit|non-profit|foundation|food pantry|faith)\b/i,
+    id: 'faith', label: 'Church or nonprofit', place: 'the building', test: /\b(church|chapel|ministr\w*|parish|congregation|temple|mosque|synagogue|nonprofit|non-profit|foundation|food pantry|faith)\b/i,
     gatekeeper: 'the pastor or the church office administrator',
     open: ['Besides Sunday, what is the building used for during the week?', 'Do you stream your services?', 'Who looks after the phones and internet for you?'],
     ask: {
@@ -63,7 +72,7 @@ export const PROFILES: Profile[] = [
     },
   },
   {
-    id: 'trades', label: 'Trades and field crews', place: 'the shop', test: /\b(home ?care|home health|hospice|caregiv|in-home|hvac|refrigeration|heating|air condition|plumb|electric|roof|landscap|lawn|pest|termite|exterminat|clean|janitor|maid|pressure wash|pool|construction|contractor|builder|remodel|handyman|painting|painter|drywall|flooring|concrete|paving|fence|gutter|tree|towing|tow service|moving|movers|junk|hauling|septic|well drilling|excavat|garage door|locksmith|appliance repair|courier|delivery|security system|alarm)\b/i,
+    id: 'trades', label: 'Trades and field crews', place: 'the shop', test: CREW,
     gatekeeper: 'the owner, or whoever handles the office',
     open: ['How many trucks do you have running right now?', 'Is this a busy time of year for you?', 'How do most of your jobs come in?'],
     ask: {
@@ -75,7 +84,7 @@ export const PROFILES: Profile[] = [
     },
   },
   {
-    id: 'medical', label: 'Medical and dental', place: 'the practice', test: /\b(dental|dentist|orthodont|chiropract|clinic|medical|physician|doctor|dermatolog|pediatric|family practice|optometr|eye care|veterinar|animal hospital|vet clinic|urgent care|physical therapy|therap|counsel|pharmacy|podiatr|audiolog)\b/i,
+    id: 'medical', label: 'Medical and dental', place: 'the practice', test: /\b(dental|dentist|orthodont\w*|chiropract\w*|clinic|medical|physician|doctor|dermatolog\w*|pediatric\w*|family practice|optometr\w*|eye care|veterinar\w*|animal hospital|vet clinic|urgent care|physical therapy|therap\w*|counsel\w*|pharmacy|podiatr\w*|audiolog\w*)\b/i,
     gatekeeper: 'the office manager',
     open: ['How many providers do you have seeing patients?', 'What is the front desk like first thing in the morning?', 'How do most patients book with you?'],
     ask: {
@@ -153,7 +162,7 @@ export const PROFILES: Profile[] = [
     },
   },
   {
-    id: 'retail', label: 'Retail', place: 'the store', test: /\b(retail|store|shop|boutique|market|liquor|vape|smoke|florist|pet|grocery|gas|convenience|jewel|pawn|gift|furniture|hardware|antique|thrift|bookstore|dispensary|cannabis|firearm|gun|outfitters)\b/i,
+    id: 'retail', label: 'Retail', place: 'the store', test: /\b(retail|store|shop|boutique|market|liquor|vape|smoke|florist|pet|grocery|gas|convenience|jewel\w*|pawn|gift|furniture|hardware|antique|thrift|bookstore|dispensary|cannabis|firearm|gun|outfitters)\b/i,
     gatekeeper: 'the owner or the store manager',
     open: ['What kind of customers come in the most?', 'What is your busiest day?', 'Do you sell online too, or mostly in the store?'],
     ask: {
@@ -166,7 +175,7 @@ export const PROFILES: Profile[] = [
     },
   },
   {
-    id: 'industrial', label: 'Farm, warehouse, or industrial', place: 'the site', test: /\b(farm|ranch|feed|storage|warehouse|manufactur|machine|welding|fabricat|equine|nursery|greenhouse|supply|distribut|logistic|trucking|freight|lumber|sawmill|quarry|orchard|dairy|livestock|grain|equipment|agricultur)\b/i,
+    id: 'industrial', label: 'Farm, warehouse, or industrial', place: 'the site', test: /\b(farm|ranch|feed|storage|warehouse|manufactur\w*|machine|welding|fabricat\w*|equine|nursery|greenhouse|supply|distribut\w*|logistic\w*|trucking|freight|lumber|sawmill|quarry|orchard|dairy|livestock|grain|equipment|agricultur\w*)\b/i,
     gatekeeper: 'the owner or the operations manager',
     open: ['How many people are out here on a normal day?', 'How far out are you from town?', 'Do you get decent cell signal on the property?'],
     ask: {

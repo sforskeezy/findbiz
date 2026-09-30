@@ -67,7 +67,20 @@ test('DSL-only competition raises the score, a missing Spectrum report sinks it'
 
 test('ranking puts out-of-lane last and bigger bundles first', () => {
   const cards = [card('Lugoff Elementary School'), card('Quiet Consulting'), card('Pro Plumbing & Drain', 'Construction')];
-  assert.deepEqual([...cards].sort(compareDeals).map(c => c.id), ['Pro Plumbing & Drain', 'Quiet Consulting', 'Lugoff Elementary School']);
+  // Consulting picks up Voice and Connect (a front desk answers calls) on top of Internet and Mobile,
+  // a bigger bundle than the plumbing crew's Internet, Mobile and Connect.
+  assert.deepEqual([...cards].sort(compareDeals).map(c => c.id), ['Quiet Consulting', 'Pro Plumbing & Drain', 'Lugoff Elementary School']);
+});
+
+test('a generic listing name still gets the trades script from a category alone, even in its "-ing"/"-al" form', () => {
+  // Regression: `\b(plumb|electric|landscap|...)\b` only matches the bare root, never the
+  // category text a directory actually uses ("Plumbing", "Electrical", "Landscaping",
+  // "Janitorial"), because there's no word boundary between the root and its suffix.
+  for (const category of ['Plumbing', 'Electrical', 'Landscaping', 'Janitorial services', 'Roofing', 'Air Conditioning']) {
+    const plan = dealPlan(card('AAA Services LLC', category));
+    assert.equal(plan.discovery.kind, 'Trades and field crews', category);
+    assert.match(plan.products.find(p => p.id === 'mobile').ask, /crew/, category);
+  }
 });
 
 test('questions are written for the kind of business, not one script for everyone', () => {

@@ -28,7 +28,7 @@ const TABS = [['overview', 'Overview'], ['research', 'Research'], ['sources', 'S
 
 export function SwarmDetail({ card, batch, close, research, pending = false, record, saveLead, inFunnel = false, addToFunnel }: {
   card: SwarmProspect; batch: SwarmBatch; close: () => void; research?: () => void; pending?: boolean;
-  inFunnel?: boolean; addToFunnel?: () => Promise<void>;
+  inFunnel?: boolean; addToFunnel?: (edits: { contactName: string; notes: string }) => Promise<void>;
   record?: LeadRecord;
   saveLead: (disposition: LeadRecord['disposition'], edits: { contactName: string; notes: string }) => Promise<void>;
 }) {
@@ -57,18 +57,28 @@ export function SwarmDetail({ card, batch, close, research, pending = false, rec
     catch { setSaveError('Clipboard unavailable in this browser.'); }
   }
   function applyContact(name: string) { setContactName(name); setTab('overview'); setMessage(`${name} set as the contact. Save to keep it.`); }
+  // A contact or note typed in this profile is real work, even if the rep never hits "Save business."
+  // Closing (X, backdrop click, or Escape) should not silently throw it away.
+  async function closeWithDraftSaved() {
+    const contactChanged = contactDraft !== null && contactDraft !== (record?.contactName ?? draftLead(card).contactName);
+    const notesChanged = notesDraft !== null && notesDraft !== (record?.notes ?? draftLead(card).notes);
+    if (contactChanged || notesChanged) {
+      try { await saveLead(record?.disposition ?? 'active', { contactName, notes }); } catch { /* Best-effort: closing should never hang on a failed autosave. */ }
+    }
+    close();
+  }
 
-  return <SwarmDialog label={p.name} close={close} className="sw-profile-modal spx">
+  return <SwarmDialog label={p.name} close={() => void closeWithDraftSaved()} className="sw-profile-modal spx">
     <header className="spx-head">
       <div className="spx-aurora" aria-hidden/>
-      <button className="spx-close" aria-label="Close profile" onClick={close}><X size={17}/></button>
+      <button className="spx-close" aria-label="Close profile" onClick={() => void closeWithDraftSaved()}><X size={17}/></button>
       <motion.div className="spx-identity" variants={stagger} initial="hidden" animate="show">
         <motion.h2 variants={rise}>{p.name}</motion.h2>
         <motion.p variants={rise} className="spx-address"><MapPin size={13}/>{p.address}</motion.p>
         <motion.div variants={rise} className="spx-actions">
           <CopyButton value={p.address} label="Copy address" done="Address copied" dark/>
           {digits(p.phone) && <CopyButton value={digits(p.phone)} label="Copy number" done="Number copied"/>}
-          {addToFunnel && <button className={`spx-btn blue ${inFunnel ? 'done' : ''}`} disabled={inFunnel || funneling} onClick={() => { setFunneling(true); void addToFunnel().finally(() => setFunneling(false)); }}>{funneling ? <LoaderCircle className="sw-spin" size={14}/> : inFunnel ? <Check size={14}/> : <FunnelPlus size={14}/>}{inFunnel ? 'In your funnel' : 'Add to funnel'}</button>}
+          {addToFunnel && <button className={`spx-btn blue ${inFunnel ? 'done' : ''}`} disabled={inFunnel || funneling} onClick={() => { setFunneling(true); void addToFunnel({ contactName, notes }).finally(() => setFunneling(false)); }}>{funneling ? <LoaderCircle className="sw-spin" size={14}/> : inFunnel ? <Check size={14}/> : <FunnelPlus size={14}/>}{inFunnel ? 'In your funnel' : 'Add to funnel'}</button>}
           {safeUrl(p.website) && <a className="spx-btn" href={safeUrl(p.website)} target="_blank" rel="noreferrer"><Globe size={14}/>Website<ArrowUpRight size={12}/></a>}
           {research && <button className={`spx-btn glow ${researching ? 'busy' : ''}`} disabled={researching || pending} onClick={() => { research(); setTab('research'); }}>{researching ? <LoaderCircle className="sw-spin" size={14}/> : <Sparkles size={14}/>}{researching ? 'Researching' : card.intelligence ? 'Refresh research' : 'Research'}</button>}
         </motion.div>

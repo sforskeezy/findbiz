@@ -1,6 +1,6 @@
 import { homeBasedVerdict, isNationalChain } from '@/lib/live/filters';
 import { isSpectrumProvider } from '@/lib/swarm/lead-book';
-import { CLOSING, askFor, fill, profileFor } from '@/lib/swarm/discovery-bank';
+import { CLOSING, CREW, askFor, fill, profileFor } from '@/lib/swarm/discovery-bank';
 import type { SwarmProspect } from '@/lib/swarm/types';
 
 export type LaneStatus = 'clear' | 'check' | 'out';
@@ -45,7 +45,7 @@ const FINANCIAL = /\b(bank|credit union|savings (?:and|&) loan)\b/i;
 const PLANT = /\b(plant|factory|manufacturing|distribution center)\b/i;
 /** Corporate-run brands the shared national-chain list does not cover. */
 const MORE_CHAINS = /\b(citi trends|dg market|fedex|southern states|tractor supply|harbor freight|rent-a-center|aaron's|advance america|sherwin-williams|o'reilly|ace cash|cricket wireless|metro by t-mobile|boost mobile)\b/i;
-const SHOP_WORDS = /\b(pizza|pizzeria|grill|cafe|café|coffee|bakery|diner|deli|barber|salon|nails?|dental|dentist|orthodont|chiropract|tire|auto|mechanic|boutique|florist|liquor|vape|cleaners|laundr|tattoo|grooming|realty|insurance|cpa|attorney|law firm|pub|tavern|wings|tacos?|bbq|cleaning|plumbing|electric|roofing|lawn|landscap)\b/i;
+const SHOP_WORDS = /\b(pizza|pizzeria|grill|cafe|café|coffee|bakery|diner|deli|barber|salon|nails?|dental|dentist|orthodont\w*|chiropract\w*|tire|auto|mechanic|boutique|florist|liquor|vape|cleaners|laundr\w*|tattoo|grooming|realty|insurance|cpa|attorney|law firm|pub|tavern|wings|tacos?|bbq|cleaning|plumbing|electric\w*|roofing|lawn|landscap\w*)\b/i;
 
 export function laneVerdict(card: SwarmProspect): LaneVerdict {
   const p = card.business;
@@ -70,13 +70,12 @@ export function laneVerdict(card: SwarmProspect): LaneVerdict {
 
 type Need = { id: ProductId; test: RegExp; why: string };
 
-const CREW = /\b(home ?care|home health|hospice|caregiv|in-home|hvac|refrigeration|heating|air condition|plumb|electric|roof|landscap|lawn|pest|termite|exterminat|clean|janitor|maid|pressure wash|pool|construction|contractor|builder|remodel|handyman|painting|painter|drywall|flooring|concrete|paving|fence|gutter|tree|towing|tow service|moving|movers|junk|hauling|septic|well drilling|excavat|garage door|locksmith|appliance repair|courier|delivery|security system|alarm)\b/i;
-const WAITING = /\b(barber|salon|hair|nail|spa|auto repair|tire|mechanic|body shop|collision|oil change|car wash|dental|dentist|orthodont|chiropract|optometr|eye care|veterinar|animal hospital|vet clinic|urgent care|clinic|physical therapy|dermatolog|pediatric|family practice|laundromat|dealership|motors|auto sales)\b/i;
+const WAITING = /\b(barber|salon|hair|nail|spa|auto repair|tire|mechanic|body shop|collision|oil change|car wash|dental|dentist|orthodont\w*|chiropract\w*|optometr\w*|eye care|veterinar\w*|animal hospital|vet clinic|urgent care|clinic|physical therapy|dermatolog\w*|pediatric\w*|family practice|laundromat|dealership|motors|auto sales)\b/i;
 const SPORTS_TV = /\b(bar|pub|tavern|grill|sports|wings|brewery|taproom|saloon|lounge|pizza|restaurant|diner|bowling|billiards|gym|fitness|crossfit|boxing|martial arts)\b/i;
-const GUEST_WIFI = /\b(restaurant|cafe|café|coffee|bakery|diner|grill|pizza|bar|pub|brewery|salon|barber|spa|nail|laundromat|gym|fitness|hotel|motel|inn|lodge|cabin|bed (?:and|&) breakfast|b&b|waiting|clinic|dental|chiropract|veterinar|tire|auto repair|church|daycare|child care|boutique|store|shop|market)\b/i;
-const TAKES_CARDS = /\b(restaurant|cafe|café|coffee|bakery|diner|grill|pizza|bar|pub|brewery|salon|barber|spa|nail|retail|boutique|store|shop|market|pharmacy|liquor|vape|smoke|florist|pet|grocery|deli|gas|convenience|auto repair|tire|dental|clinic|veterinar)\b/i;
-const OFFICE = /\b(law|attorney|legal|cpa|accounting|accountant|tax|bookkeep|insurance|realty|real estate|mortgage|title|financial|advis|consult|agency|architect|engineer|dental|dentist|chiropract|clinic|veterinar|medical|therap|counsel|staffing|property management|funeral)\b/i;
-const CAMERAS_REMOTE = /\b(dental|dentist|clinic|medical|veterinar|pharmacy|auto|tire|body shop|storage|warehouse|jewel|pawn|liquor|vape|smoke|firearm|gun|cannabis|dispensary|car wash|daycare|child care|law|cpa|accounting|architect|engineer)\b/i;
+const GUEST_WIFI = /\b(restaurant|cafe|café|coffee|bakery|diner|grill|pizza|bar|pub|brewery|salon|barber|spa|nail|laundromat|gym|fitness|hotel|motel|inn|lodge|cabin|bed (?:and|&) breakfast|b&b|waiting|clinic|dental|chiropract\w*|veterinar\w*|tire|auto repair|church|daycare|child care|boutique|store|shop|market)\b/i;
+const TAKES_CARDS = /\b(restaurant|cafe|café|coffee|bakery|diner|grill|pizza|bar|pub|brewery|salon|barber|spa|nail|retail|boutique|store|shop|market|pharmacy|liquor|vape|smoke|florist|pet|grocery|deli|gas|convenience|auto repair|tire|dental|clinic|veterinar\w*)\b/i;
+const OFFICE = /\b(law|attorney|legal|cpa|accounting|accountant|tax|bookkeep\w*|insurance|realty|real estate|mortgage|title|financial|advis\w*|consult\w*|agency|architect|engineer\w*|dental|dentist|chiropract\w*|clinic|veterinar\w*|medical|therap\w*|counsel\w*|staffing|property management|funeral)\b/i;
+const CAMERAS_REMOTE = /\b(dental|dentist|clinic|medical|veterinar\w*|pharmacy|auto|tire|body shop|storage|warehouse|jewel\w*|pawn|liquor|vape|smoke|firearm|gun|cannabis|dispensary|car wash|daycare|child care|law|cpa|accounting|architect|engineer\w*)\b/i;
 
 const NEEDS: Need[] = [
   { id: 'mobile', test: CREW, why: 'Crews in the field each carry a phone' },
@@ -110,7 +109,7 @@ const BEST_TIMES: [RegExp, string][] = [
   [/\b(restaurant|cafe|café|diner|grill|pizza|bar|pub|brewery|bakery|deli)\b/i, '2–4:30 PM, between lunch and dinner'],
   [/\b(barber|salon|nail|spa)\b/i, 'Tuesday–Wednesday mornings, the slowest chairs of the week'],
   [/\b(auto repair|tire|mechanic|body shop|collision)\b/i, '8–9 AM or 1–2 PM, when the bays are loaded'],
-  [/\b(dental|dentist|chiropract|clinic|veterinar|optometr|medical|therap)\b/i, '12–1 PM, or the first 15 minutes after opening'],
+  [/\b(dental|dentist|chiropract\w*|clinic|veterinar\w*|optometr\w*|medical|therap\w*)\b/i, '12–1 PM, or the first 15 minutes after opening'],
   [/\b(law|attorney|cpa|accounting|tax|insurance|realty|real estate|mortgage)\b/i, '8:30–10 AM, before meetings stack up'],
   [/\b(hotel|motel|inn|lodge|cabin|bed (?:and|&) breakfast|b&b)\b/i, '10 AM–1 PM, after checkout and before check-in'],
 ];

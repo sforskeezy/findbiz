@@ -5,7 +5,9 @@ import type { DealPlan } from '@/lib/swarm/deal-plan';
 import type { SwarmProspect } from '@/lib/swarm/types';
 import './swarm-fit.css';
 
-function verdict(rank: number) {
+function verdict(rank: number, lane: DealPlan['lane']['status']) {
+  // An out-of-lane account never reads as a fit, no matter how the old prospecting rank scored it.
+  if (lane === 'out') return { label: 'Out of your lane', tone: 'out' };
   if (rank >= 75) return { label: 'Strong fit', tone: 'high' };
   if (rank >= 55) return { label: 'Good fit', tone: 'good' };
   if (rank >= 35) return { label: 'Fair fit', tone: 'fair' };
@@ -29,7 +31,7 @@ function reasons(card: SwarmProspect, plan: DealPlan) {
 }
 
 export function FitCard({ card, plan }: { card: SwarmProspect; plan: DealPlan }) {
-  const { label, tone } = verdict(card.rank);
+  const { label, tone } = verdict(card.rank, plan.lane.status);
   const circumference = 2 * Math.PI * 30;
   return <Card className={`spf ${tone}`}>
     <div className="spf-top">

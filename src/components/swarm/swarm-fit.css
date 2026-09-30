@@ -1,6 +1,6 @@
 /* Prospecting fit */
 .spf{--c:#9a9ca2;padding:18px}
-.spf.fair{--c:#d99a1e}.spf.good{--c:#3b76e1}.spf.high{--c:#1f9e6a}
+.spf.fair{--c:#d99a1e}.spf.good{--c:#3b76e1}.spf.high{--c:#1f9e6a}.spf.out{--c:#a02b30}
 .spf-top{display:flex;align-items:center;gap:14px}
 .spf-ring{position:relative;flex:none;display:grid;place-items:center;width:60px;height:60px}
 .spf-ring svg{position:absolute;inset:0;width:100%;height:100%;transform:rotate(-90deg)}
