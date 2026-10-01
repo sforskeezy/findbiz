@@ -38,13 +38,27 @@ export function SwarmEntry({ draft, setDraft, radius, setRadius, parsed, busy, d
   const [fix, setFix] = useState<{ tone: 'done' | 'error'; message: string } | null>(null);
   useEffect(() => { if (!fix) return; const timer = setTimeout(() => setFix(null), 4000); return () => clearTimeout(timer); }, [fix]);
   const count = parsed.addresses.length;
+  /** An AI pass handles messy/wrapped PRISM pastes far better than the regex parser alone; the
+   *  regex parser (`fixAddresses`) stays as the fallback so this never breaks offline or without
+   *  a model key configured. */
+  async function cleanedAddresses(source: string): Promise<string[]> {
+    try {
+      const response = await fetch('/api/swarm/address-fix', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: source }) });
+      const result = await response.json() as { lines?: unknown; error?: string };
+      if (response.ok && Array.isArray(result.lines) && result.lines.every(line => typeof line === 'string')) return result.lines as string[];
+    } catch { /* Offline or the route is unreachable; fall through to the local parser. */ }
+    return fixAddresses(source);
+  }
+  const [fixing, setFixing] = useState(false);
   async function addressFix() {
     let source = '';
     try { source = await navigator.clipboard.readText(); } catch { /* Fall back to the composer when clipboard access is blocked. */ }
     const fromComposer = !source.trim();
     if (fromComposer) source = draft;
     if (!source.trim()) { setFix({ tone: 'error', message: 'Copy addresses from PRISM first, then press Address fix.' }); return; }
-    const lines = fixAddresses(source);
+    setFixing(true);
+    const lines = await cleanedAddresses(source);
+    setFixing(false);
     if (!lines.length) { setFix({ tone: 'error', message: 'No addresses found in what you copied.' }); return; }
     const text = lines.join('\n');
     if (fromComposer) { setDraft(text); setFix({ tone: 'done', message: `Cleaned ${lines.length} ${lines.length === 1 ? 'address' : 'addresses'} in the box` }); return; }
@@ -82,7 +96,7 @@ export function SwarmEntry({ draft, setDraft, radius, setRadius, parsed, busy, d
       </div>
       <div className="swx-launch">
         <div className="swx-radius"><span>Search radius</span><div className="fn-seg" role="group" aria-label="Radius around each address">{RADII.map(r => <button type="button" key={r} aria-pressed={radius === r} onClick={() => setRadius(r)}>{radiusLabel(r)}<small>mi</small></button>)}</div>
-          <button type="button" className={`swx-fix ${fix?.tone === 'done' ? 'done' : ''}`} onClick={() => void addressFix()} title="Clean up addresses copied from PRISM and copy them back, one per line">{fix?.tone === 'done' ? <Check size={14}/> : <WandSparkles size={14}/>}Address fix</button>
+          <button type="button" className={`swx-fix ${fix?.tone === 'done' ? 'done' : ''}`} disabled={fixing} onClick={() => void addressFix()} title="Clean up addresses copied from PRISM and copy them back, one per line">{fixing ? <LoaderCircle size={14} className="sw-spin"/> : fix?.tone === 'done' ? <Check size={14}/> : <WandSparkles size={14}/>}Address fix</button>
         </div>
         <button type="submit" className="swx-go" disabled={disabled}>{busy ? <LoaderCircle size={16} className="sw-spin"/> : <Radar size={16}/>}Start swarm{count > 0 && <span>{count.toLocaleString()}</span>}<kbd>⌘↵</kbd></button>
       </div>

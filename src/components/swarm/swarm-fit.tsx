@@ -31,24 +31,19 @@ function reasons(card: SwarmProspect, plan: DealPlan) {
 }
 
 const RING_R = 30;
-const RING_CIRCUMFERENCE = 2 * Math.PI * RING_R;
+const RING_DOTS = 24;
 
-/** A plain dotted line, filled up to `rank` and blank for the rest — same idea as a CSS
- *  dotted border, just proportional. Dash units are real (viewBox) pixels, not `pathLength`
- *  percent: Chrome doesn't reliably normalize `pathLength` on a plain `<circle>`, so computing
- *  the dash pattern against the true circumference keeps the math (and the gap vs. stroke-width
- *  sizing that keeps dots from merging into a solid line) unambiguous. */
-function dottedArc(rank: number, dot = 1.8, gap = 7.6) {
-  const filled = Math.max(0, Math.min(100, rank)) / 100 * RING_CIRCUMFERENCE;
-  if (filled <= 0) return `0 ${RING_CIRCUMFERENCE}`;
-  const unit = dot + gap;
-  const values: number[] = [];
-  let used = 0;
-  while (used + unit <= filled) { values.push(dot, gap); used += unit; }
-  const remainder = filled - used;
-  if (remainder > 0.5) values.push(remainder, 0);
-  values.push(RING_CIRCUMFERENCE - filled);
-  return values.join(' ');
+/** A plain dotted line, filled up to `rank` and blank for the rest — same idea as a CSS dotted
+ *  border. This is drawn as discrete dots at fixed angles rather than a `stroke-dasharray` on
+ *  the circle: dasharray on a plain `<circle>` renders inconsistently here (some repeats of the
+ *  same dash/gap pair merge into a solid run, others don't), so placing real dot elements around
+ *  the ring sidesteps that entirely. */
+function fitDots(rank: number, total = RING_DOTS) {
+  const count = Math.round(Math.max(0, Math.min(100, rank)) / 100 * total);
+  return Array.from({ length: count }, (_, i) => {
+    const angle = (i / total) * 2 * Math.PI;
+    return { cx: 36 + RING_R * Math.cos(angle), cy: 36 + RING_R * Math.sin(angle) };
+  });
 }
 
 export function FitCard({ card, plan }: { card: SwarmProspect; plan: DealPlan }) {
@@ -56,7 +51,10 @@ export function FitCard({ card, plan }: { card: SwarmProspect; plan: DealPlan })
   return <Card className={`spf ${tone}`}>
     <div className="spf-top">
       <div className="spf-ring" role="img" aria-label={`Prospecting fit ${card.rank} out of 100`}>
-        <svg viewBox="0 0 72 72"><circle cx="36" cy="36" r={RING_R}/><circle cx="36" cy="36" r={RING_R} className="bar" strokeDasharray={dottedArc(card.rank)}/></svg>
+        <svg viewBox="0 0 72 72">
+          <circle cx="36" cy="36" r={RING_R}/>
+          {fitDots(card.rank).map((d, i) => <circle key={i} cx={d.cx} cy={d.cy} r={2.3} className="bar"/>)}
+        </svg>
         <strong>{card.rank}</strong>
       </div>
       <div><small>Prospecting fit</small><h3>{label}</h3></div>
