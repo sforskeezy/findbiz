@@ -8,6 +8,16 @@ export function splitAddress(address: string) {
   return { street: parts.slice(0, -2).join(' '), city: parts.at(-2) ?? '', state: region[1].toUpperCase(), zip: region[2] ?? '' };
 }
 
+/** Spectrum GIS (PROD) routes a serviceability check by the full one-line address plus its ZIP; city and state stay blank, the way the tool itself fills them. */
+const GIS_SERVICEABILITY = 'https://gis.corp.chartercom.com/chartercommserv/pages/serviceability.jsp';
+
+export function gisServiceabilityUrl(address: string) {
+  const line = address.replace(/,?\s*(?:USA|United States(?: of America)?)\.?\s*$/i, '').replace(/\s+/g, ' ').trim();
+  if (!line) return '';
+  const zip = line.match(/\b(\d{5})(?:-\d{4})?\s*$/)?.[1] ?? '';
+  return `${GIS_SERVICEABILITY}?${new URLSearchParams({ address: line, city: '', state: '', zip })}`;
+}
+
 const slug = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 const google = (query: string) => `https://www.google.com/search?q=${encodeURIComponent(query)}`;
 

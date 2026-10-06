@@ -80,11 +80,73 @@ function format(street: string, city: string, state: string, zip: string) {
   return [titleCase(street), city && titleCase(city), region].filter(Boolean).join(', ');
 }
 
+const HOUSE_CELL = /^(?:\d{1,4}\s+)*(\d{1,6}[a-z]?(?:-\d{1,5})?)$/i;
+const UNIT_CELL = /^(?:apt|apartment|unit|ste|suite|bldg|building|fl|floor|lot|rm|room|rear|front|upper|lower|bsmt|basement|trlr|trailer|spc|space|#)\.?$/i;
+const CITY_CELL = /^[a-z][a-z .'-]{0,40}$/i;
+const PLACEHOLDER = /^[.\s…-]*$/;
+const STREET_WINDOW = 8;
+
+/** A city, state, and ZIP that PRISM puts in their own cells ("LOCKPORT⇥KY⇥40036"), or one cell when tabs were lost ("LOCKPORT KY 40036 2"). */
+function prismLocality(cells: string[], i: number) {
+  const zip = cells[i + 2]?.match(/^(\d{5})(?:-\d{4})?$/);
+  const state = cells[i + 1]?.toUpperCase() ?? '';
+  if (zip && CITY_CELL.test(cells[i]) && ABBREVIATIONS.has(state) && !SUFFIX.test(cells[i])) return { city: cells[i], state, zip: zip[1], end: i + 2 };
+  const joined = cells[i].match(/^([a-z][a-z .'-]*?)\s+([A-Z]{2})\s+(\d{5})(?:-\d{4})?(?:\s+\d{1,3})?$/i);
+  if (joined && ABBREVIATIONS.has(joined[2].toUpperCase())) return { city: joined[1], state: joined[2].toUpperCase(), zip: joined[3], end: i };
+  return null;
+}
+
+/** PRISM rows scatter one address over cells: house number, street name, suffix, an optional unit ("Rear", "1"), then city/state/ZIP, all buried in plant columns. Walk back from each locality to the nearest house number that is followed by a street name. */
+export function prismAddresses(text: string) {
+  const cells = text.split(/\r?\n/).flatMap(line => line.split('\t')).map(cell => cell.replace(/\s+/g, ' ').trim()).filter(Boolean);
+  const found: string[] = [];
+  let floor = 0;
+  for (let i = 0; i < cells.length; i++) {
+    const place = prismLocality(cells, i);
+    if (!place) continue;
+    for (let k = i - 1; k >= Math.max(floor, i - STREET_WINDOW); k--) {
+      const house = cells[k].match(HOUSE_CELL);
+      const next = cells[k + 1];
+      if (!house || k + 1 >= i || !/[a-z]/i.test(next) || UNIT_CELL.test(next)) continue;
+      const street = cells.slice(k + 1, i).filter(cell => !PLACEHOLDER.test(cell)).map(clean).filter(Boolean);
+      if (!street.length) break;
+      found.push(format([house[1], ...street].join(' '), place.city, place.state, place.zip));
+      break;
+    }
+    floor = place.end + 1;
+    i = place.end;
+  }
+  return found;
+}
+
+const UNIT_TAIL = /\s+(?:apt|apartment|unit|ste|suite|bldg|building|fl|floor|lot|rm|room|rear|front|upper|lower|bsmt|basement|trlr|trailer|spc|space|#)\b.*$/i;
+
+function routeKey(address: string) {
+  const [first = '', ...rest] = address.split(',').map(part => part.trim());
+  const house = first.match(/^(\d+)([a-z]?)(?:-\d+)?\s+(.*)$/i);
+  const street = house ? house[3] : first;
+  return {
+    area: rest.join(', '),
+    street: street.replace(UNIT_TAIL, '').toLowerCase(),
+    number: house ? Number(house[1]) : Number.MAX_SAFE_INTEGER,
+    unit: (street.match(UNIT_TAIL)?.[0] ?? '').trim().toLowerCase(),
+  };
+}
+
+/** Route order: by city/state/ZIP, then street, then house number low to high, so every door on a street sits together. */
+export function sortAddresses(addresses: string[]) {
+  const keyed = addresses.map(address => ({ address, key: routeKey(address) }));
+  const text = (a: string, b: string) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+  keyed.sort((a, b) => text(a.key.area, b.key.area) || text(a.key.street, b.key.street) || a.key.number - b.key.number || text(a.key.unit, b.key.unit) || text(a.address, b.address));
+  return keyed.map(item => item.address);
+}
+
 export function fixAddresses(text: string) {
   const lines = text.split(/\r?\n/).map(clean);
   const found: string[] = [];
   const seen = new Set<string>();
   const add = (address: string) => { const key = address.toLowerCase().replace(/[^a-z0-9]/g, ''); if (!seen.has(key)) { seen.add(key); found.push(address); } };
+  prismAddresses(text).forEach(add);
   for (let i = 0; i < lines.length; i++) {
     if (!STREET_START.test(lines[i])) continue;
     const { street, rest } = splitStreet(lines[i]);

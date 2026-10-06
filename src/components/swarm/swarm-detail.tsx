@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from 'motion/react';
 import { ArrowUpRight, Bookmark, BookmarkCheck, Check, ChevronLeft, ChevronRight, Clock3, Copy, EyeOff, FunnelPlus, Globe, LoaderCircle, MapPin, Sparkles, Wifi, X } from 'lucide-react';
 import { SwarmDialog } from '@/components/swarm/swarm-dialog';
 import { CopyContact } from '@/components/swarm/copy-contact';
+import { ProdLink } from '@/components/swarm/prod-link';
 import { DealCard } from '@/components/swarm/swarm-deal';
 import { FitCard } from '@/components/swarm/swarm-fit';
 import { WhoToAsk } from '@/components/swarm/swarm-who';
@@ -89,6 +90,7 @@ export function SwarmDetail({ card, batch, close, research, pending = false, rec
         </motion.p>
         <motion.div variants={rise} className="spx-actions">
           <CopyButton value={p.address} label="Copy address" done="Address copied" dark/>
+          <ProdLink address={p.address}/>
           {digits(p.phone) && <CopyButton value={digits(p.phone)} label="Copy number" done="Number copied"/>}
           {addToFunnel && <button className={`spx-btn blue ${inFunnel ? 'done' : ''}`} disabled={inFunnel || funneling} onClick={() => { setFunneling(true); void addToFunnel({ contactName, notes }).finally(() => setFunneling(false)); }}>{funneling ? <LoaderCircle className="sw-spin" size={14}/> : inFunnel ? <Check size={14}/> : <FunnelPlus size={14}/>}{inFunnel ? 'In your funnel' : 'Add to funnel'}</button>}
           {safeUrl(p.website) && <a className="spx-btn" href={safeUrl(p.website)} target="_blank" rel="noreferrer"><Globe size={14}/>Website<ArrowUpRight size={12}/></a>}

@@ -3,7 +3,7 @@ import { useEffect, useState, type DragEvent, type FormEvent, type RefObject } f
 import { motion } from 'motion/react';
 import { ArrowRight, Check, FileUp, LoaderCircle, Map as MapIcon, Radar, WandSparkles } from 'lucide-react';
 import { compactBatchTitle } from './batch-list';
-import { fixAddresses } from '@/lib/swarm/address-fix';
+import { fixAddresses, prismAddresses, sortAddresses } from '@/lib/swarm/address-fix';
 import type { SwarmSummary } from '@/lib/swarm/types';
 
 const RADII = [.25, .5, 1, 2, 5, 10];
@@ -30,7 +30,7 @@ function addressesFromFile(name: string, text: string) {
 
 export function SwarmEntry({ draft, setDraft, radius, setRadius, parsed, busy, disabled, submit, input, batches, choose }: {
   draft: string; setDraft: (value: string) => void; radius: number; setRadius: (value: number) => void;
-  parsed: { addresses: unknown[]; duplicates: number; invalid: unknown[]; error: string };
+  parsed: { addresses: string[]; duplicates: number; invalid: string[]; error: string };
   busy: boolean; disabled: boolean; submit: () => void; input: RefObject<HTMLTextAreaElement | null>;
   batches: SwarmSummary[]; choose: (id: string) => void;
 }) {
@@ -42,12 +42,13 @@ export function SwarmEntry({ draft, setDraft, radius, setRadius, parsed, busy, d
    *  regex parser (`fixAddresses`) stays as the fallback so this never breaks offline or without
    *  a model key configured. */
   async function cleanedAddresses(source: string): Promise<string[]> {
+    if (prismAddresses(source).length) return sortAddresses(fixAddresses(source));
     try {
       const response = await fetch('/api/swarm/address-fix', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: source }) });
       const result = await response.json() as { lines?: unknown; error?: string };
-      if (response.ok && Array.isArray(result.lines) && result.lines.every(line => typeof line === 'string')) return result.lines as string[];
+      if (response.ok && Array.isArray(result.lines) && result.lines.every(line => typeof line === 'string')) return sortAddresses(result.lines as string[]);
     } catch { /* Offline or the route is unreachable; fall through to the local parser. */ }
-    return fixAddresses(source);
+    return sortAddresses(fixAddresses(source));
   }
   const [fixing, setFixing] = useState(false);
   async function addressFix() {

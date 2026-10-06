@@ -279,3 +279,7 @@ tr[data-priority=high] .swx-rank i{background:var(--green)}
 .sw-finder-footer button{border-radius:9px!important}
 .sw-finder-disclosure{color:var(--muted)!important}
 .sw-book-actions{display:flex;align-items:center;justify-content:flex-end;gap:6px}
+
+/* Open in PROD links */
+.swx-act.sw-prod{width:auto;padding:0 7px;font-size:11px;font-weight:600;letter-spacing:.02em}
+.sw-address-log>div{grid-template-columns:1fr auto auto;align-items:center}

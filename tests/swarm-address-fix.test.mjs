@@ -1,7 +1,43 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { fixAddresses } from '../src/lib/swarm/address-fix.ts';
+import { readFileSync } from 'node:fs';
+import { fixAddresses, sortAddresses } from '../src/lib/swarm/address-fix.ts';
 import { parseAddressBatch } from '../src/lib/swarm/logic.ts';
+import { gisServiceabilityUrl } from '../src/lib/swarm/lookup-links.ts';
+
+const prism = readFileSync(new URL('./fixtures/prism-export.txt', import.meta.url), 'utf8');
+
+test('address fix pulls one address per PRISM row out of the plant columns', () => {
+  assert.deepEqual(fixAddresses(prism), [
+    '3099 Carters Road, Lockport, KY 40036',
+    '1415 Carters Road, Lockport, KY 40036',
+    '4476 Harpers Ferry Road, Lockport, KY 40036',
+    '2189 Harpers Ferry Road Rear 1, Lockport, KY 40036',
+    '2189 Harpers Ferry Road, Lockport, KY 40036',
+    '1743 Albert Moore Road, Lockport, KY 40036',
+    '1478 Harpers Ferry Road, Lockport, KY 40036',
+  ]);
+});
+
+test('PRISM rows still parse when the copy turned tabs into spaces', () => {
+  assert.deepEqual(fixAddresses(prism.replaceAll('\t', '  ')).length, 7);
+});
+
+test('address order groups each street and sorts house numbers low to high', () => {
+  assert.deepEqual(sortAddresses(fixAddresses(prism)), [
+    '1743 Albert Moore Road, Lockport, KY 40036',
+    '1415 Carters Road, Lockport, KY 40036',
+    '3099 Carters Road, Lockport, KY 40036',
+    '1478 Harpers Ferry Road, Lockport, KY 40036',
+    '2189 Harpers Ferry Road, Lockport, KY 40036',
+    '2189 Harpers Ferry Road Rear 1, Lockport, KY 40036',
+    '4476 Harpers Ferry Road, Lockport, KY 40036',
+  ]);
+});
+
+test('PROD link routes the full address and ZIP the way the tool does', () => {
+  assert.equal(gisServiceabilityUrl('616 Columbia Rd, Winnsboro, SC 29180, USA'), 'https://gis.corp.chartercom.com/chartercommserv/pages/serviceability.jsp?address=616+Columbia+Rd%2C+Winnsboro%2C+SC+29180&city=&state=&zip=29180');
+});
 
 test('address fix pulls addresses out of scattered PRISM-style junk', () => {
   const copied = [

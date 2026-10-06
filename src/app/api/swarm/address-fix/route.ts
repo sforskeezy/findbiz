@@ -1,6 +1,6 @@
 import { sameOrigin } from '@/lib/swarm/request-origin';
 import { askFunnelModel } from '@/lib/swarm/funnel-ai';
-import { fixAddresses } from '@/lib/swarm/address-fix';
+import { fixAddresses, prismAddresses } from '@/lib/swarm/address-fix';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -37,6 +37,7 @@ export async function POST(request: Request) {
     if (!text) throw Error('Nothing to clean up.');
     if (text.length > MAX_INPUT) throw Error(`Paste up to ${MAX_INPUT.toLocaleString()} characters at a time.`);
 
+    if (prismAddresses(text).length) return Response.json({ lines: fixAddresses(text).slice(0, MAX_LINES), source: 'prism' }, { headers });
     const model = await askFunnelModel<unknown>(SYSTEM, text, 4000, 30_000).catch(() => null);
     let lines = sanitize(model);
     let source: 'ai' | 'rules' = 'ai';

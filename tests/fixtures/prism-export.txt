@@ -1,0 +1,171 @@
+3099	
+CARTERS	
+ROAD
+
+. . .
+LOCKPORT	KY	40036	2	
+Aerial
+
+House
+
+Updated
+
+FTTH with EPON
+
+BL280E
+BL280E
+BL280E_A
+...	
+. . .
+19877542	
+
+	
+SYNERGY
+
+Full
+401
+	
+1
+2		1415	
+CARTERS	
+ROAD
+
+. . .
+LOCKPORT	KY	40036	2	
+Aerial
+
+House
+
+New
+
+FTTH with EPON
+
+BL280E
+BL280E
+BL280E_A
+...	
+. . .
+20467319	
+
+	
+SYNERGY
+
+Full
+200
+	
+2
+3		4476	
+HARPERS FERRY	
+ROAD
+
+. . .
+LOCKPORT	KY	40036	2	
+Aerial
+
+House
+
+New
+
+FTTH with EPON
+
+BL280E
+BL280E
+BL280E_A
+...	
+Aerial
+19877555	
+
+	
+synergy
+
+Full
+	
+3
+4		2189	
+HARPERS FERRY	
+ROAD
+
+Rear
+1
+LOCKPORT	KY	40036	2	
+Aerial
+
+House
+
+New
+
+FTTH with EPON
+
+BL280E
+BL280E
+BL280E_A
+...	
+Transition With Bore
+19877532	
+
+	
+synergy
+
+Full
+	
+4
+5		2189	
+HARPERS FERRY	
+ROAD
+
+. . .
+LOCKPORT	KY	40036	2	
+Aerial
+
+House
+
+New
+
+FTTH with EPON
+
+BL280E
+BL280E
+BL280E_A
+...	
+Transition With Bore
+19877531	
+
+	
+synergy
+
+Full
+	
+5
+6		1743	
+ALBERT MOORE	
+ROAD
+
+. . .
+LOCKPORT	KY	40036	2	
+Aerial
+
+House
+
+New
+
+FTTH with EPON
+
+BL280E
+BL280E
+BL280E_A
+...	
+Aerial
+19877520	
+
+	
+synergy
+
+Full
+	
+6
+7		1478	
+HARPERS FERRY	
+ROAD
+
+. . .
+LOCKPORT	KY	40036	2

@@ -19,6 +19,7 @@ import { FunnelWorkspace } from '@/components/swarm/funnel-workspace';
 import { SavedBusinesses } from '@/components/swarm/saved-businesses';
 import { useLeadBook } from '@/components/swarm/use-lead-book';
 import { CopyContact } from '@/components/swarm/copy-contact';
+import { ProdLink } from '@/components/swarm/prod-link';
 import { ProviderLabels } from '@/components/swarm/provider-labels';
 import { digits, findLead, isSpectrumProvider, leadBatch, type LeadRecord } from '@/lib/swarm/lead-book';
 import { SwarmDetail } from "@/components/swarm/swarm-detail";
@@ -234,11 +235,11 @@ export function SwarmPage() {
           <td>{digits(p.business.phone)?<CopyContact label="phone number" value={digits(p.business.phone)} className="swx-phone">{displayPhone(digits(p.business.phone))}</CopyContact>:<span className="swx-muted">No phone</span>}</td>
           <td><span className={`swx-pri ${p.opportunity}`}>{p.opportunity==='high'?'High':p.opportunity==='contact_needed'?'Find contact':'Review'}</span><span className="swx-rank" title={`Prospecting rank ${p.rank}/100`}><i style={{width:`${p.rank}%`}}/></span></td>
           <td><span className="swx-prov">{p.broadband?.observations.length?<ProviderLabels providers={p.broadband.observations.map(o=>o.provider)}/>:p.broadbandChecked?<span className="swx-muted">None confirmed</span>:<span className="swx-muted">Checking…</span>}</span></td>
-          <td><div className="swx-row-actions"><button className={`swx-act ${inFunnel?'done':''}`} title={inFunnel?'Already in your funnel':'Add to funnel'} aria-label={`Add ${p.business.name} to funnel`} disabled={inFunnel||adding.has(p.id)} onClick={()=>void sendToFunnel([p])}>{adding.has(p.id)?<LoaderCircle size={15} className="sw-spin"/>:inFunnel?<Check size={15}/>:<FunnelPlus size={15}/>}</button><button className="swx-act" aria-label={`Open ${p.business.name}`} onClick={()=>setDetail(p.id)}><ChevronRight size={16}/></button></div></td>
+          <td><div className="swx-row-actions"><button className={`swx-act ${inFunnel?'done':''}`} title={inFunnel?'Already in your funnel':'Add to funnel'} aria-label={`Add ${p.business.name} to funnel`} disabled={inFunnel||adding.has(p.id)} onClick={()=>void sendToFunnel([p])}>{adding.has(p.id)?<LoaderCircle size={15} className="sw-spin"/>:inFunnel?<Check size={15}/>:<FunnelPlus size={15}/>}</button><ProdLink address={p.business.address} className="swx-act" compact/><button className="swx-act" aria-label={`Open ${p.business.name}`} onClick={()=>setDetail(p.id)}><ChevronRight size={16}/></button></div></td>
         </motion.tr>;})}</AnimatePresence></tbody></table>{!visible.length&&<div className="swx-empty">{busy?<><LoaderCircle size={18} className="sw-spin"/>Prospects appear as each address finishes.</>:<><Search size={18}/>No prospects match these filters.</>}</div>}</div>
         <div className="swx-pages"><span>{prospects.length?`${Math.min(page,maxPage)*PAGE_SIZE+1}–${Math.min((Math.min(page,maxPage)+1)*PAGE_SIZE,prospects.length)} of ${prospects.length}`:'0 prospects'}<em>Double-click a row to hide a business from every swarm.</em></span><div><button className="fn-icon-btn" disabled={page===0} aria-label="Previous page" onClick={()=>setPage(page-1)}><ChevronLeft size={16}/></button><button className="fn-icon-btn" disabled={page>=maxPage} aria-label="Next page" onClick={()=>setPage(page+1)}><ChevronRight size={16}/></button></div></div></>}
         </motion.div></AnimatePresence>
-        <details className="sw-address-log"><summary>Address results · {failures.length} failed</summary>{batch.addresses.map((a)=><div key={a.id}><CopyContact label="source address" value={a.text}/><span>{a.status==='complete'?`${a.discovered} found`:a.status}</span>{a.error&&<small>{a.error}</small>}</div>)}</details>
+        <details className="sw-address-log"><summary>Address results · {failures.length} failed</summary>{batch.addresses.map((a)=><div key={a.id}><CopyContact label="source address" value={a.text}/><ProdLink address={a.text} className="swx-act" compact/><span>{a.status==='complete'?`${a.discovered} found`:a.status}</span>{a.error&&<small>{a.error}</small>}</div>)}</details>
         <p className="sw-data-note">Priority is a prospecting rank, not buying intent. Broadband reports show availability, not the current ISP.</p>
       </>}
       </main>
