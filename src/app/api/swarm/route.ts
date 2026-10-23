@@ -27,7 +27,10 @@ export async function GET(request: Request) {
     const result = { batch: requested ? await readSwarm(requested) : null, batches: summaries.filter(b=>!b.archivedAt), archivedBatches: summaries.filter(b=>b.archivedAt), persistent: true, storage: cloudConfigured() ? 'convex' : 'local' };
     if (new URL(request.url).searchParams.get('id') && !result.batch) return Response.json({ ...result, error: 'This batch is not in saved storage. Retry the connection or choose another saved batch.' }, { status: 404, headers: { 'Cache-Control': 'private, no-store' } });
     return Response.json(result, { headers });
-  } catch (error) { return Response.json({ error: error instanceof StorageUnavailable ? error.message : 'Storage is temporarily unavailable. Your saved results have not been deleted. Retrying…' }, { status: 503 }); }
+  } catch (error) {
+    console.error('Swarm storage read failed', error);
+    return Response.json({ error: error instanceof StorageUnavailable ? error.message : 'Storage is temporarily unavailable. Your saved results have not been deleted. Retrying…' }, { status: 503 });
+  }
 }
 export async function POST(request: Request) {
   if (!sameOrigin(request)) return Response.json({ error: 'Cross-origin request rejected.' }, { status: 403 });

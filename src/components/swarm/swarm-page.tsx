@@ -104,7 +104,7 @@ export function SwarmPage() {
       try { setDraft(localStorage.getItem('pai.swarm.draft') ?? ''); } catch { /* Storage is optional. */ }
       void refresh(requested);
     },0);
-    const interval = setInterval(() => { if (!document.hidden) void refresh(currentId.current); },4000);
+    const interval = setInterval(() => { if (!document.hidden) void refresh(currentId.current); },6000);
     return () => {clearTimeout(timer);clearInterval(interval);polling.current?.controller?.abort();};
   },[refresh]);
   useEffect(() => { if (initial.current) { try {localStorage.setItem('pai.swarm.draft',draft);} catch { /* Storage is optional. */ } } },[draft]);

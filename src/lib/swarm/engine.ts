@@ -28,7 +28,8 @@ const providers: Providers = { discover: researchAcrossSources, broadband: (p) =
 const LANES = { discover: 6, qualify: 12, research: 3 } as const;
 type Lane = keyof typeof LANES;
 /** Completed work is saved together at most this often, so a large snapshot is not rewritten per item. */
-const FLUSH_MS = 1_000;
+// Each checkpoint re-reads and re-uploads the whole snapshot, so it dominates storage bandwidth.
+const FLUSH_MS = 5_000;
 const HEARTBEAT_MS = 30_000;
 const LEASE_MS = 90_000;
 const MAX_BLOCKED_RETRIES = 2;
