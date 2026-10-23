@@ -11,7 +11,7 @@ export type LeadRecord = {
   notes: string;
   createdAt: string;
   updatedAt: string;
-  activity?: { outcome: 'connected' | 'no_answer' | 'callback'; at: string; callbackAt?: string };
+  activity?: { outcome: 'connected' | 'no_answer' | 'callback'; at: string; callbackAt?: string; result?: 'interested' | 'not_interested' };
 };
 export type LeadEdits = { contactName: string; notes: string; activity?: LeadRecord['activity'] };
 export const digits = (phone: string | null | undefined) => (phone ?? '').replace(/\D/g, '');
